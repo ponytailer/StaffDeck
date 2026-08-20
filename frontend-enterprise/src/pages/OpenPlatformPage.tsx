@@ -18,6 +18,9 @@ import IconFolder from '../assets/icons/cap-folder.svg?react';
 import IconMagicWand from '../assets/icons/cap-magicwand.svg?react';
 import IconClipboard from '../assets/icons/cap-clipboard.svg?react';
 import IconBriefcase from '../assets/icons/cap-briefcase.svg?react';
+import IconSearch from '../assets/icons/search.svg?react';
+import IconRefresh from '../assets/icons/refresh.svg?react';
+import IconAdd from '../assets/icons/add.svg?react';
 import plazaKnowledgeIcon from '../assets/icons/plaza-knowledge.svg';
 import plazaSkillIcon from '../assets/icons/plaza-skill.svg';
 import plazaSopIcon from '../assets/icons/plaza-sop.svg';
@@ -32,11 +35,11 @@ import {
 import type { AgentProfileRead, GeneralSkillRead, KnowledgeBaseRead, SkillRead, ToolRead } from '../types';
 
 import AppHeader from '@/components/AppHeader';
+import { Button as UIButton } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import {
-  PlatformColumn,
   PlatformEmployeeCard,
   PlatformEmployeeDrawer,
-  PlatformKindDetailView,
   PlatformResourceCard,
   PlatformResourceDrawer,
   type PlatformResourceAccent,
@@ -171,6 +174,23 @@ function resourceDrawerBadge(kind: PlatformKind, item: PlatformItem): string {
   return item.tags[0] || '';
 }
 
+function DetailSkeleton({ kind }: { kind: PlatformKind }) {
+  const cardHeight = kind === 'agents' ? 'h-[140px]' : 'h-[112px]';
+  return (
+    <div className="grid grid-cols-1 gap-[16px] sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+      {Array.from({ length: 8 }, (_, index) => (
+        <div
+          key={index}
+          className={cn(
+            'w-full animate-pulse rounded-[20px] border-[0.5px] border-[#f0f1f5] bg-[#f6f6f6]',
+            cardHeight,
+          )}
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function OpenPlatformPage({
   currentUser,
   isAdmin = false,
@@ -182,7 +202,9 @@ export default function OpenPlatformPage({
 }) {
   const navigate = useNavigate();
   const { kind } = useParams<{ kind?: PlatformKind }>();
-  const selectedKind = kind && PLATFORM_BY_KIND.has(kind) ? kind : undefined;
+  const initialKind = kind && PLATFORM_BY_KIND.has(kind) ? kind : 'agents';
+  const [activeKind, setActiveKind] = useState<PlatformKind>(initialKind);
+  const [searchText, setSearchText] = useState('');
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
@@ -193,6 +215,16 @@ export default function OpenPlatformPage({
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [detailItem, setDetailItem] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
+
+  useEffect(() => {
+    if (kind && PLATFORM_BY_KIND.has(kind)) {
+      setActiveKind(kind);
+    }
+  }, [kind]);
+
+  useEffect(() => {
+    setSearchText('');
+  }, [activeKind]);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -303,10 +335,27 @@ export default function OpenPlatformPage({
       })),
   }), [generalSkills, knowledgeBases, skills, tools, visibleAgents]);
 
-  const platformStats = PLATFORM_CONFIGS.map((config) => ({
-    ...config,
-    count: platformItems[config.kind].length,
-  }));
+  const filteredItems = useMemo(() => {
+    const items = platformItems[activeKind];
+    const keyword = searchText.trim().toLowerCase();
+    if (!keyword) return items;
+    return items.filter((item) => [
+      item.title,
+      item.description,
+      item.meta,
+      item.tags.join(' '),
+    ].some((value) => value.toLowerCase().includes(keyword)));
+  }, [activeKind, platformItems, searchText]);
+
+  const tabItems = useMemo(
+    () =>
+      PLATFORM_CONFIGS.map((config) => ({
+        value: config.kind,
+        label: config.title,
+        count: platformItems[config.kind].length,
+      })),
+    [platformItems],
+  );
 
   function ensureTargetEmployee(): boolean {
     if (!targetEmployee) {
@@ -422,6 +471,24 @@ export default function OpenPlatformPage({
     setDetailItem({ kind: detailItem.kind, item: nextItem });
   }
 
+  function handleCreateGeneralSkill() {
+    const overall = agents.find((item) => item.is_overall);
+    if (!overall) {
+      notify.error('暂时无法找到开放广场');
+      return;
+    }
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, overall.id);
+    window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', {
+      detail: { agentId: overall.id },
+    }));
+    navigate('/enterprise/general-skills/new?scope=gallery');
+  }
+
+  function handleKindChange(next: PlatformKind) {
+    setActiveKind(next);
+    navigate(`/enterprise/platform/${next}`);
+  }
+
   function renderItemDrawer() {
     if (!detailItem) return null;
     const config = PLATFORM_BY_KIND.get(detailItem.kind) || PLATFORM_CONFIGS[0];
@@ -514,119 +581,166 @@ export default function OpenPlatformPage({
     );
   }
 
-  if (selectedKind) {
-    const config = PLATFORM_BY_KIND.get(selectedKind) || PLATFORM_CONFIGS[0];
-    const PlatformIcon = PLATFORM_ICON[selectedKind];
-    return (
-      <>
-        <PlatformKindDetailView
-          kind={selectedKind}
-          title={config.title}
-          subtitle={config.subtitle}
-          countLabel={platformCountLabel(selectedKind)}
-          signals={config.signals}
-          icon={PlatformIcon}
-          items={platformItems[selectedKind]}
-          loading={loading}
-          employeeStats={employeeStats}
-          onBack={() => navigate('/enterprise/platform')}
-          onRefresh={() => void loadPlatformData()}
-          onCreate={selectedKind === 'general-skills' ? () => {
-            const overall = agents.find((item) => item.is_overall);
-            if (!overall) {
-              notify.error('暂时无法找到开放广场');
-              return;
-            }
-            window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, overall.id);
-            window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', {
-              detail: { agentId: overall.id },
-            }));
-            navigate('/enterprise/general-skills/new?scope=gallery');
-          } : undefined}
-          onOpenItem={(item) => setDetailItem({ kind: selectedKind, item })}
-          canManage={canManagePlatform && selectedKind === 'agents'}
-          unpublishingItemId={deletingItemKey.startsWith('agents:')
-            ? deletingItemKey.slice('agents:'.length)
-            : undefined}
-          onUnpublishItem={(item) => setConfirmTarget({ kind: 'agents', item })}
-          onLogout={onLogout}
-          userName={currentUser?.username}
-        />
-        {renderItemDrawer()}
-        {renderConfirm()}
-      </>
-    );
-  }
+  const config = PLATFORM_BY_KIND.get(activeKind) || PLATFORM_CONFIGS[0];
+  const PlatformIcon = PLATFORM_ICON[activeKind];
 
   return (
-    <div className="flex min-h-full flex-col box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px] xl:h-full xl:min-h-0 xl:overflow-hidden">
+    <div className="min-h-full box-border px-[48px] pt-[20px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader
-        className="mb-[24px]"
+        className="mb-[16px]"
         onLogout={onLogout}
         userName={currentUser?.username}
         title="开放广场平台"
       />
-      <div className="mx-auto grid w-full grid-cols-1 gap-[12px] sm:grid-cols-2 xl:min-h-0 xl:flex-1 xl:grid-cols-5 xl:grid-rows-1">
-        {platformStats.map((platform) => {
-          const items = platformItems[platform.kind];
-          const previews = items;
-          const PlatformIcon = PLATFORM_ICON[platform.kind];
-          return (
-            <PlatformColumn
-              key={platform.kind}
-              icon={<PlatformIcon className="size-[14px]" />}
-              title={platform.title}
-              count={platform.count}
-              countLabel={platformCountLabel(platform.kind)}
-              filters={platform.signals}
-              loading={loading}
-              isEmpty={previews.length === 0}
-              onViewAll={() => navigate(`/enterprise/platform/${platform.kind}`)}
-            >
-              {previews.map((item) => (
-                platform.kind === 'agents' && item.agent ? (
-                  <PlatformEmployeeCard
-                    key={item.id}
-                    avatar={(
-                      <EmployeeAvatar
-                        agent={item.agent}
-                        width={50}
-                        height={59}
-                        fit="contain"
-                        objectPosition="center bottom"
-                        className="overflow-visible! rounded-none! border-0! bg-transparent! bg-none! shadow-none! after:hidden!"
-                      />
+
+      <div className="flex flex-col gap-[20px] rounded-[20px] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+        <div className="flex flex-wrap items-center justify-between gap-[12px]">
+          <div
+            role="tablist"
+            aria-label="广场类型"
+            className="flex flex-wrap gap-[12px] max-[560px]:gap-[8px]"
+          >
+            {tabItems.map((item) => {
+              const active = item.value === activeKind;
+              return (
+                <button
+                  key={item.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => handleKindChange(item.value)}
+                  className={cn(
+                    'flex min-w-[120px] items-center justify-center gap-[8px] whitespace-nowrap rounded-[10px] border-[0.5px] px-[14px] py-[8px] text-[14px] leading-[normal] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#1a71ff] focus-visible:ring-offset-2',
+                    active
+                      ? 'border-[#1a71ff] bg-[#eef0ff] font-medium text-[#1a71ff]'
+                      : 'border-[#e3e7f1] bg-white font-normal text-[#4f5669] hover:border-[#cbd3e6] hover:bg-[#f6f7fa] hover:text-[#18181a]',
+                    'max-[560px]:min-w-[88px] max-[560px]:px-[10px] max-[560px]:py-[6px] max-[560px]:text-[12px]',
+                  )}
+                >
+                  <span>{item.label}</span>
+                  <span
+                    className={cn(
+                      'rounded-[90px] px-[7px] py-[1px] text-[11px] leading-none',
+                      active ? 'bg-white text-[#1a71ff]' : 'bg-[#f2f4f8] text-[#757f9c]',
                     )}
-                    name={item.title}
-                    role={item.meta}
-                    online={item.agent.status === 'active'}
-                    description={item.description}
-                    stats={employeeStats(item.agent)}
-                    onOpen={() => setDetailItem({ kind: platform.kind, item })}
-                    onUnpublish={canManagePlatform
-                      ? () => setConfirmTarget({ kind: platform.kind, item })
-                      : undefined}
-                    unpublishing={deletingItemKey === platformItemDeleteKey(platform.kind, item)}
-                  />
-                ) : (
-                  <PlatformResourceCard
-                    key={item.id}
-                    icon={PLATFORM_RESOURCE_ICON[platform.kind]
-                      ? <img src={PLATFORM_RESOURCE_ICON[platform.kind]} alt="" className="size-[32px] shrink-0 object-contain" />
-                      : undefined}
-                    accent={PLATFORM_ACCENT[platform.kind]}
-                    title={item.title}
-                    meta={item.meta}
-                    description={item.description}
-                    tags={item.tags.slice(0, 2)}
-                    onClick={() => setDetailItem({ kind: platform.kind, item })}
-                  />
-                )
+                  >
+                    {item.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-[8px]">
+            {activeKind === 'general-skills' && (
+              <UIButton onClick={handleCreateGeneralSkill} className="h-8 gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]">
+                <IconAdd className="size-3.5" />
+                创建开放 Skill
+              </UIButton>
+            )}
+            <UIButton
+              variant="outline"
+              onClick={() => void loadPlatformData()}
+              disabled={loading}
+              className="h-8 gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
+            >
+              <IconRefresh className={cn('size-[14px]', loading && 'animate-spin')} />
+              刷新
+            </UIButton>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-[10px] px-[12px]">
+          <div className="flex items-center gap-[8px] text-[#18181a]">
+            <PlatformIcon className="size-[16px] shrink-0" />
+            <span className="text-[18px] font-medium leading-none">{config.title}</span>
+          </div>
+
+          {config.signals.length > 0 && (
+            <div className="flex flex-wrap items-center gap-[8px]">
+              {config.signals.map((signal) => (
+                <span
+                  key={signal}
+                  className="rounded-[20px] border-[0.5px] border-[#e3e7f1] px-[10px] py-[3px] text-[11px] leading-[normal] text-[#757f9c]"
+                >
+                  {signal}
+                </span>
               ))}
-            </PlatformColumn>
-          );
-        })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-[16px]">
+          <label className="flex h-[34px] w-full max-w-[360px] items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a]">
+            <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
+            <input
+              autoComplete="off"
+              data-1p-ignore="true"
+              data-lpignore="true"
+              data-bwignore="true"
+              value={searchText}
+              placeholder={`搜索${platformCountLabel(activeKind)}`}
+              onChange={(event) => setSearchText(event.target.value)}
+              className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-[#18181a] outline-none placeholder:text-[#858b9c]"
+            />
+          </label>
+
+          {loading ? (
+            <DetailSkeleton kind={activeKind} />
+          ) : filteredItems.length === 0 ? (
+            <div className="grid min-h-[180px] w-full place-items-center content-center gap-[10px] rounded-[18px] border border-dashed border-[#dfe4ec] bg-[#fbfcfd] px-[20px] py-[40px] text-center font-bold text-[#8b94aa]">
+              <IconSearch className="size-[20px] shrink-0" />
+              <span>{platformItems[activeKind].length === 0 ? '暂无开放内容' : '没有匹配的广场内容'}</span>
+            </div>
+          ) : activeKind === 'agents' ? (
+            <div className="grid grid-cols-3 gap-[16px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
+              {filteredItems.map((item) => item.agent && (
+                <PlatformEmployeeCard
+                  key={item.id}
+                  avatar={(
+                    <EmployeeAvatar
+                      agent={item.agent}
+                      width={66}
+                      height={78}
+                      fit="contain"
+                      objectPosition="center bottom"
+                      className="overflow-visible! rounded-none! border-0! bg-transparent! bg-none! shadow-none! after:hidden!"
+                    />
+                  )}
+                  name={item.title}
+                  role={item.meta}
+                  online={item.agent.status === 'active'}
+                  description={item.description}
+                  stats={employeeStats(item.agent)}
+                  onOpen={() => setDetailItem({ kind: activeKind, item })}
+                  onUnpublish={canManagePlatform
+                    ? () => setConfirmTarget({ kind: activeKind, item })
+                    : undefined}
+                  unpublishing={deletingItemKey === platformItemDeleteKey(activeKind, item)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-[16px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
+              {filteredItems.map((item) => (
+                <PlatformResourceCard
+                  key={item.id}
+                  icon={PLATFORM_RESOURCE_ICON[activeKind]
+                    ? <img src={PLATFORM_RESOURCE_ICON[activeKind]} alt="" className="size-[32px] shrink-0 object-contain" />
+                    : undefined}
+                  accent={PLATFORM_ACCENT[activeKind]}
+                  title={item.title}
+                  meta={item.meta}
+                  description={item.description}
+                  tags={item.tags.slice(0, 2)}
+                  onClick={() => setDetailItem({ kind: activeKind, item })}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
+
       {renderItemDrawer()}
       {renderConfirm()}
     </div>

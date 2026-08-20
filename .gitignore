@@ -50,3 +50,5 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 packaging/assets/staffdeck.iconset/
+.workbuddy/
+overview.md

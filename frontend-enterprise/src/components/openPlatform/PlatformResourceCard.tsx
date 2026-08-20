@@ -51,35 +51,35 @@ export default function PlatformResourceCard({
       type="button"
       onClick={onClick}
       className={cn(
-        'relative flex h-[112px] w-full shrink-0 flex-col items-center justify-center overflow-hidden rounded-[14px] border-[0.5px] border-[#f6f6f6] bg-white p-[4px] text-left backdrop-blur-[1.835px] transition-shadow hover:shadow-[0_8px_20px_rgba(15,23,42,0.06)]',
+        'relative flex h-[150px] w-full shrink-0 flex-col items-center justify-center overflow-hidden rounded-[14px] border-[0.5px] border-[#dfe4ee] bg-white p-[6px] text-left backdrop-blur-[1.835px] transition-shadow hover:border-[#cbd3e6] hover:shadow-[0_8px_20px_rgba(15,23,42,0.06)]',
         '',
         className,
       )}
     >
-      <div className="flex w-full flex-col items-start gap-[6px] px-[8px]">
-        <div className="flex w-full items-center gap-[4px]">
+      <div className="flex w-full flex-col items-start gap-[8px] px-[12px]">
+        <div className="flex w-full items-center gap-[8px]">
           {icon ?? (
-            <span className="grid size-[32px] shrink-0 place-items-center rounded-[10px] bg-[#f2f4f8] text-[#8a94a6]">
-              <IconFolder className="size-[18px]" />
+            <span className="grid size-[40px] shrink-0 place-items-center rounded-[10px] bg-[#f2f4f8] text-[#8a94a6]">
+              <IconFolder className="size-[22px]" />
             </span>
           )}
           <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
-            <p className="truncate text-[12px] font-medium text-[#464c5e]">{title}</p>
-            <p className={cn('truncate text-[10px]', accentStyles.meta)}>{meta}</p>
+            <p className="truncate text-[14px] font-medium text-[#464c5e]">{title}</p>
+            <p className={cn('truncate text-[12px]', accentStyles.meta)}>{meta}</p>
           </div>
         </div>
 
-        <p className="line-clamp-2 h-[26px] w-full text-[10px] leading-[13px] text-[#757f9c]">
+        <p className="line-clamp-2 h-[36px] w-full text-[12px] leading-[18px] text-[#757f9c]">
           {description}
         </p>
 
         {tags && tags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-[6px]">
+          <div className="flex flex-wrap items-center gap-[8px]">
             {tags.map((tag) => (
               <span
                 key={tag}
                 className={cn(
-                  'inline-flex items-center rounded-[90px] px-[8px] py-[2px] text-[8px] leading-[normal]',
+                  'inline-flex items-center rounded-[90px] px-[10px] py-[3px] text-[10px] leading-[normal]',
                   accentStyles.tag,
                 )}
               >

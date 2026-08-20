@@ -3,6 +3,7 @@ import logoMark from '../assets/LOGO.svg';
 
 export type BrandLogoProps = {
   /** Hide the "OpenBMB / StaffDeck" wordmark and only render the logo mark. */
+
   markOnly?: boolean;
   /** Size of the square logo mark in pixels. */
   markSize?: number;
@@ -22,7 +23,7 @@ export default function BrandLogo({
     <span className={cn('flex items-center gap-[8px] overflow-hidden p-[4px]', className)}>
       <img
         src={logoMark}
-        alt="StaffDeck"
+        alt="Holiday"
         className="shrink-0"
         style={{ width: markSize, height: markSize }}
       />
@@ -32,7 +33,7 @@ export default function BrandLogo({
             OpenBMB
           </span> */}
           <strong className="text-[17px] font-semibold leading-none text-[#18181a]">
-            StaffDeck
+            Holiday
           </strong>
         </span>
       )}
