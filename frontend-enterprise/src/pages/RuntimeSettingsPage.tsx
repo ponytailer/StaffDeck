@@ -110,12 +110,14 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
 
   return (
     <>
-      <div className="page-title">
+      <div className="page-title" style={{ paddingRight: 0 }}>
         <div><h3>运行设置</h3><p className="text-[12px] text-muted-foreground">统一影响当前租户下所有数字员工的执行行为。</p></div>
-        <UIButton disabled={loading || restarting} onClick={() => void save()}>
-          {restarting ? <RotateCcw className="size-[15px] animate-spin" /> : <SaveOutlined />}
-          {restarting ? '等待应用重启' : '保存设置'}
-        </UIButton>
+        <div className="!self-end" style={{ alignSelf: 'flex-end' }}>
+          <UIButton disabled={loading || restarting} onClick={() => void save()}>
+            {restarting ? <RotateCcw className="size-[15px] animate-spin" /> : <SaveOutlined />}
+            {restarting ? '等待应用重启' : '保存设置'}
+          </UIButton>
+        </div>
       </div>
       <Card className="editor-card settings-card">
         <CardHeader><CardTitle>执行记录与 Agent Loop</CardTitle></CardHeader>
