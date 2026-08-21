@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ChevronLeft } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -9,6 +11,7 @@ import {
 import { Badge } from '@/components/ui';
 import { api, TENANT_ID } from '@/api/client';
 import { staffdeckDisplayText } from '@/employee';
+import { EnterpriseRoute } from '@/enums/routes';
 import type { TeamRead } from '@/types';
 import IconEdit from '@/assets/icons/edit.svg?react';
 import IconChevronDown from '@/assets/icons/chevron-down.svg?react';
@@ -24,6 +27,7 @@ import type { UseChatSession } from '../useChatSession';
 
 export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const { auth, currentSession, openRename, logout } = chat;
+  const navigate = useNavigate();
   const teamId = currentSession?.team_id || null;
   const rawName = currentSession?.title
     ? staffdeckDisplayText(currentSession.title)
@@ -54,7 +58,18 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
 
   return (
     <div className={CHAT_HEADER_CLASS}>
-      <div className={CHAT_HEADER_TITLE_STACK_CLASS}>
+      <div className="flex min-w-0 items-center gap-[8px]">
+        {teamId && (
+          <button
+            type="button"
+            aria-label="返回团队"
+            onClick={() => navigate(`${EnterpriseRoute.Teams}/${teamId}`)}
+            className="inline-grid size-[30px] shrink-0 place-items-center rounded-[9px] border border-[#e3e7f1] text-[#464c5e] transition-colors hover:bg-[#f6f6f6]"
+          >
+            <ChevronLeft className="size-[16px]" />
+          </button>
+        )}
+        <div className={CHAT_HEADER_TITLE_STACK_CLASS}>
         <span className="flex min-w-0 items-center gap-[4px]">
           <span className={CHAT_HEADER_TITLE_NAME_CLASS}>{name}</span>
           {teamId && (
@@ -77,6 +92,7 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
           )}
         </span>
       </div>
+    </div>
 
       <div className="flex shrink-0 items-center gap-[8px]">
         <LanguageSwitcher />

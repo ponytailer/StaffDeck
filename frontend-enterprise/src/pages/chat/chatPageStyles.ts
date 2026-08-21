@@ -186,8 +186,10 @@ export const CHAT_ARTIFACT_META_CLASS = 'truncate text-[11px] text-[#858b9c]';
 export const CHAT_FEEDBACK_CLASS = 'mt-[10px] flex items-center gap-[4px]';
 export const CHAT_FEEDBACK_BTN_CLASS =
   'inline-grid size-[28px] place-items-center rounded-[8px] border-0 bg-transparent p-0 text-[#a2a8b8] transition-colors hover:bg-[#f1f2f5] hover:text-[#18181a]';
-export const CHAT_FEEDBACK_BTN_ACTIVE_CLASS = 'bg-[#eef0f4] text-[#18181a]';
-export const CHAT_FEEDBACK_BTN_DISLIKE_ACTIVE_CLASS = 'bg-[#fce7e7] text-[#d20b0b] hover:bg-[#fce7e7] hover:text-[#d20b0b]';
+export const CHAT_FEEDBACK_BTN_ACTIVE_CLASS =
+  'bg-[#ffe1e1] text-[#d11a1a] hover:bg-[#ffe1e1] hover:text-[#d11a1a]';
+export const CHAT_FEEDBACK_BTN_DISLIKE_ACTIVE_CLASS =
+  'bg-[#dbf6e4] text-[#0e9b46] hover:bg-[#dbf6e4] hover:text-[#0e9b46]';
 
 // ---------------------------------------------------------------------------
 // Empty state (Hello {name})
