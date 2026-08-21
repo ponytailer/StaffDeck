@@ -87,6 +87,7 @@ import type {
 type ToolPageProps = {
   currentUser?: EnterpriseAuthUser;
   onLogout?: () => void;
+  embedded?: boolean;
 };
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -120,7 +121,7 @@ const TRANSPORT_OPTIONS: { value: MCPTransport; label: string; hint: string }[] 
   { value: 'builtin', label: '内置 Demo', hint: '使用内置的 builtin.demo MCP，仅用于演示' },
 ];
 
-export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {}) {
+export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageProps = {}) {
   const [rows, setRows] = useState<ToolRead[]>([]);
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [isOverallAgent, setIsOverallAgent] = useState(true);
@@ -692,11 +693,11 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
 
   if (!agentScopeLoaded) return <CapabilityScopeLoading />;
 
-  return (
-    <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
-      <AppHeader onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />
+  const pageBody = (
+    <>
+      {!embedded && <AppHeader onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />}
 
-      <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
+      <div className={cn('mb-[16px] flex items-center justify-end gap-[12px]', embedded ? 'mt-0' : 'mt-[20px]')}>
         <UIButton
           variant="outline"
           onClick={() => void load()}
@@ -960,6 +961,13 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
         confirmText={isOverallAgent ? '删除' : '移除'}
         onConfirm={() => void confirmDeleteServer()}
       />
+    </>
+  );
+
+  if (embedded) return <div className="min-h-0" aria-busy={loading}>{pageBody}</div>;
+  return (
+    <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
+      {pageBody}
     </div>
   );
 }

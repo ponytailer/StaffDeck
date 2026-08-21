@@ -10,6 +10,10 @@ import IconProfileFile from '../../assets/icons/profile-file.svg?react';
 import IconProfileAlarm from '../../assets/icons/profile-alarm.svg?react';
 import IconProfileHistory from '../../assets/icons/profile-history.svg?react';
 import IconProfileCalendar from '../../assets/icons/profile-calendar.svg?react';
+import IconFolder from '../../assets/icons/cap-folder.svg?react';
+import IconCapClipboard from '../../assets/icons/cap-clipboard.svg?react';
+import IconCapMagicWand from '../../assets/icons/cap-magicwand.svg?react';
+import IconCapBriefcase from '../../assets/icons/cap-briefcase.svg?react';
 import { api, TENANT_ID } from '../../api/client';
 import type { EnterpriseAuthUser } from '../../auth';
 import AppHeader from '../../components/AppHeader';
@@ -21,6 +25,10 @@ import ScheduledTasksTab from './ScheduledTasksTab';
 import MemoriesTab from './MemoriesTab';
 import ConversationLogsTab from './ConversationLogsTab';
 import WorkRecordTab from './WorkRecordTab';
+import KnowledgeManagePage from '../KnowledgePage';
+import SkillsPage from '../SkillsPage';
+import GeneralSkillsPage from '../GeneralSkillsPage';
+import ToolsPage from '../ToolsPage';
 import EvolutionPanel from './EvolutionPanel';
 import { employeeDashboardMetrics } from './employeeDashboardMetrics';
 import {
@@ -76,6 +84,8 @@ export default function DashboardPage({
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [activeTab, setActiveTab] = useState<ProfileTabKey>(profileTab);
+  useEffect(() => setActiveTab(profileTab), [profileTab]);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -369,8 +379,8 @@ export default function DashboardPage({
           </div>
         )}
       />
-      <EmployeeProfileTabs activeKey={profileTab} />
-      {profileTab === 'work' && (
+      <EmployeeProfileTabs value={activeTab} onChange={setActiveTab} />
+      {activeTab === 'work' && (
         <>
           <WorkRecordTab
             selectedAgent={selectedAgent}
@@ -389,9 +399,21 @@ export default function DashboardPage({
           {canEditSelectedAgent && <EvolutionPanel agentId={selectedAgent.id} />}
         </>
       )}
-      {profileTab === 'scheduled' && <ScheduledTasksTab />}
-      {profileTab === 'memories' && <MemoriesTab currentUser={currentUser} agent={selectedAgent} />}
-      {profileTab === 'logs' && <ConversationLogsTab />}
+      {activeTab === 'knowledge' && (
+        <KnowledgeManagePage embedded currentUser={currentUser} onLogout={onLogout} />
+      )}
+      {activeTab === 'sop' && (
+        <SkillsPage embedded currentUser={currentUser} onLogout={onLogout} />
+      )}
+      {activeTab === 'skills' && (
+        <GeneralSkillsPage embedded currentUser={currentUser} onLogout={onLogout} />
+      )}
+      {activeTab === 'tools' && (
+        <ToolsPage embedded currentUser={currentUser} onLogout={onLogout} />
+      )}
+      {activeTab === 'scheduled' && <ScheduledTasksTab />}
+      {activeTab === 'memories' && <MemoriesTab currentUser={currentUser} agent={selectedAgent} />}
+      {activeTab === 'logs' && <ConversationLogsTab />}
       <EmployeeAvatarEditor
         agent={selectedAgent}
         open={avatarEditorOpen}
@@ -443,7 +465,7 @@ function MetricTile({ label, value }: { label: string; value: number }) {
   );
 }
 
-type ProfileTabKey = 'work' | 'scheduled' | 'memories' | 'logs';
+type ProfileTabKey = 'work' | 'knowledge' | 'sop' | 'skills' | 'tools' | 'scheduled' | 'memories' | 'logs';
 
 const PROFILE_TABS: {
   key: ProfileTabKey;
@@ -452,31 +474,31 @@ const PROFILE_TABS: {
   route: EnterpriseRoute;
 }[] = [
   { key: 'work', label: '工作记录', Icon: IconProfileFile, route: EnterpriseRoute.Dashboard },
+  { key: 'knowledge', label: '知识库', Icon: IconFolder, route: EnterpriseRoute.Knowledge },
+  { key: 'sop', label: 'SOP', Icon: IconCapClipboard, route: EnterpriseRoute.Skills },
+  { key: 'skills', label: '技能', Icon: IconCapMagicWand, route: EnterpriseRoute.GeneralSkills },
+  { key: 'tools', label: '工具', Icon: IconCapBriefcase, route: EnterpriseRoute.Tools },
   { key: 'scheduled', label: '定时任务', Icon: IconProfileAlarm, route: EnterpriseRoute.ScheduledTasks },
   { key: 'memories', label: '记忆', Icon: IconProfileHistory, route: EnterpriseRoute.Memories },
   { key: 'logs', label: '对话日志', Icon: IconProfileCalendar, route: EnterpriseRoute.Feedback },
 ];
 
-function EmployeeProfileTabs({ activeKey = 'work' }: { activeKey?: ProfileTabKey }) {
-  const navigate = useNavigate();
+function EmployeeProfileTabs({ value, onChange }: { value: ProfileTabKey; onChange: (value: ProfileTabKey) => void }) {
   return (
     <Tabs
-      value={activeKey}
-      onValueChange={(value) => {
-        const tab = PROFILE_TABS.find((item) => item.key === value);
-        if (tab && value !== activeKey) navigate(tab.route);
-      }}
-      className="flex w-full flex-col items-center"
+      value={value}
+      onValueChange={(next) => onChange(next as ProfileTabKey)}
+      className="flex w-full flex-col items-start pl-[176px] max-[900px]:pl-1"
     >
       <TabsList
         aria-label="个人档案分区"
-        className="h-[35px]! w-[504px] max-w-full gap-2 rounded-none bg-transparent p-0"
+        className="h-[35px]! max-w-full gap-1 overflow-x-auto rounded-none bg-transparent p-0 scrollbar-hide"
       >
         {PROFILE_TABS.map(({ key, label, Icon }) => (
           <TabsTrigger
             key={key}
             value={key}
-            className="h-[35px] flex-1 gap-[7px] rounded-t-lg rounded-b-none border-0 text-[14px] font-bold text-[#8b94aa] hover:text-[#202226] data-[state=active]:bg-white data-[state=active]:text-[#202226] data-[state=active]:shadow-[0_-12px_28px_rgba(21,26,38,0.04)] in-data-[theme=dark]:text-[#8f98aa] in-data-[theme=dark]:hover:text-[#f0f2f6] in-data-[theme=dark]:data-[state=active]:bg-[#202126] in-data-[theme=dark]:data-[state=active]:text-[#c5ccd8] in-data-[theme=dark]:data-[state=active]:shadow-none"
+            className="h-[35px] flex-none gap-[6px] rounded-t-lg rounded-b-none border-0 px-[18px] text-[12px] font-bold whitespace-nowrap text-[#8b94aa] hover:text-[#202226] data-[state=active]:bg-white data-[state=active]:text-[#202226] data-[state=active]:shadow-[0_-12px_28px_rgba(21,26,38,0.04)] in-data-[theme=dark]:text-[#8f98aa] in-data-[theme=dark]:hover:text-[#f0f2f6] in-data-[theme=dark]:data-[state=active]:bg-[#202126] in-data-[theme=dark]:data-[state=active]:text-[#c5ccd8] in-data-[theme=dark]:data-[state=active]:shadow-none"
           >
             <Icon />
             {label}

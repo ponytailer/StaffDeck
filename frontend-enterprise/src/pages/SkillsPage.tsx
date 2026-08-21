@@ -95,9 +95,11 @@ type NumericSkillMetric =
 export default function SkillsPage({
   currentUser,
   onLogout,
+  embedded = false,
 }: {
   currentUser?: EnterpriseAuthUser;
   onLogout?: () => void;
+  embedded?: boolean;
 } = {}) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -613,8 +615,10 @@ export default function SkillsPage({
     : '当前员工暂无本地 SOP';
 
   return (
-    <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
+    <div className={cn('min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]', embedded && 'min-h-0 px-0 pt-0 pb-0')} aria-busy={loading}>
+      {!embedded && (
       <AppHeader onLogout={onLogout} userName={currentUser?.username} title="SOP" />
+      )}
 
       <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
         <UIButton

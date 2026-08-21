@@ -150,6 +150,7 @@ const DEFAULT_INGEST_STEPS: IngestStepView[] = [
 type KnowledgePageProps = {
   currentUser?: EnterpriseAuthUser;
   onLogout?: () => void;
+  embedded?: boolean;
 };
 
 function resolveKnowledgeAgentScope(
@@ -170,7 +171,7 @@ function effectiveKnowledgeAgentId(rows: AgentProfileRead[], agentId: string): s
   return agent && !agent.is_overall ? agent.id : '';
 }
 
-export default function KnowledgeManagePage({ currentUser, onLogout }: KnowledgePageProps = {}) {
+export default function KnowledgeManagePage({ currentUser, onLogout, embedded = false }: KnowledgePageProps = {}) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [documents, setDocuments] = useState<KnowledgeDocumentRead[]>([]);
@@ -1097,7 +1098,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   if (!agentScopeLoaded) return <CapabilityScopeLoading />;
 
   return (
-    <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
+    <div className={cn('min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]', embedded && 'min-h-0 px-0 pt-0 pb-0')} aria-busy={loading}>
+      {!embedded && (
       <AppHeader
         onLogout={onLogout}
         userName={currentUser?.username}
@@ -1106,6 +1108,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
           ? '维护知识库广场中的知识库、知识图谱与检索调试。'
           : '维护当前数字员工的知识库、知识图谱与检索调试。'}
       />
+      )}
 
       <div className="mt-[20px] mb-[16px] flex flex-wrap items-center justify-end gap-[12px]">
         <UIButton

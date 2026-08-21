@@ -6,16 +6,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from '../../components/
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover';
 
 import IconGrowthArrow from '../../assets/icons/growth-arrow.svg?react';
-import IconCardArrow from '../../assets/icons/card-arrow.svg?react';
-import IconCapFolder from '../../assets/icons/cap-folder.svg?react';
-import IconCapMagicWand from '../../assets/icons/cap-magicwand.svg?react';
-import IconCapClipboard from '../../assets/icons/cap-clipboard.svg?react';
-import IconCapBriefcase from '../../assets/icons/cap-briefcase.svg?react';
-import IconProfileAlarm from '../../assets/icons/profile-alarm.svg?react';
 import IconProfileCalendar from '../../assets/icons/profile-calendar.svg?react';
-import capabilityLogs from '../../assets/staffdeck/capabilityLogs.png';
-import capabilityTasks from '../../assets/staffdeck/capabilityTasks.png';
-import capabilityTools from '../../assets/staffdeck/capabilityTools.png';
 import StaffdeckIcon from '../../components/StaffdeckIcon';
 import { staffdeckDisplayText } from '../../employee';
 import type {
@@ -68,15 +59,50 @@ export type WorkRecordTabProps = {
   negativeRate: number;
 };
 
-const capabilityCardClass = 'group relative flex h-[230px] w-full min-w-0 appearance-none flex-col items-stretch gap-[6px] overflow-hidden rounded-[20px] border px-[24px] py-[20px] text-left transition-[transform,box-shadow] duration-[180ms] ease-[ease] hover:-translate-y-[2px]';
-const capabilityLightCardClass = 'border-[#f6f6f6] bg-white shadow-[0_4px_10px_rgba(0,0,0,0.05)] hover:shadow-[0_12px_26px_rgba(0,0,0,0.08)]';
-const capabilityDarkCardClass = 'border-[#29282d] bg-[#29282d] text-white shadow-none hover:shadow-[0_12px_26px_rgba(0,0,0,0.28)]';
-const capabilityArrowClass = 'pointer-events-none absolute top-[13px] right-[8px] size-[20px] text-[#858b9c] group-data-[tone=dark]:text-[#c7ccd6]';
-const capabilityGlyphClass = 'size-[14px] shrink-0 text-[#858b9c] group-data-[tone=dark]:text-white';
-const capabilityNameClass = 'min-w-0 truncate text-[14px] font-normal text-[#858b9c] group-data-[tone=dark]:text-white';
-const capabilityBarClass = 'block h-[4px] w-full overflow-hidden rounded-[90px] bg-[#e9e9e9] group-data-[tone=dark]:bg-[#6a6a6a]';
-const capabilityBarFillClass = 'block h-full w-[20px] rounded-[90px] bg-[#282931] group-data-[tone=dark]:bg-[#e9e9e9]';
-const capabilityDescClass = 'line-clamp-5 min-w-0 overflow-hidden text-[10px] leading-[16px] font-normal text-[#757f9c] [overflow-wrap:anywhere] group-data-[tone=dark]:line-clamp-2 group-data-[tone=dark]:text-[#f6f6f6]';
+export function GrowthTimelineSection({
+  skills,
+  generalSkills,
+  tools,
+}: {
+  skills: SkillRead[];
+  generalSkills: GeneralSkillRead[];
+  tools: ToolRead[];
+}) {
+  const growthItems = growthTimeline(skills, generalSkills, tools);
+
+  return (
+    <section className="flex w-full min-w-0 max-w-full flex-col gap-[10px] rounded-[18px] bg-white p-[18px] shadow-[0_20px_42px_rgba(21,26,38,0.045)] in-data-[theme=dark]:border-[#343741] in-data-[theme=dark]:bg-[#202126] in-data-[theme=dark]:text-[#f0f2f6]">
+      <div className="inline-flex items-center gap-[6px] self-start text-[14px] capitalize leading-none text-[#757f9c] in-data-[theme=dark]:text-[#8b93a6]">
+        <IconGrowthArrow className="size-[14px] shrink-0" />
+        成长记录
+      </div>
+      {growthItems.length ? (
+        <div className="relative w-full min-w-0 max-w-full overflow-x-auto">
+          <div className="grid grid-flow-col auto-cols-[minmax(160px,1fr)] gap-[20px] pb-[20px]">
+            {growthItems.map((item) => (
+              <div className="relative flex flex-col items-center gap-[8px]" key={item.id}>
+                <span className="pointer-events-none absolute left-[-10px] right-[-10px] top-[28px] z-0 h-px bg-[#e3e7f1] in-data-[theme=dark]:bg-[#363a45]" />
+                <p className="m-0 text-center text-[12px] font-medium leading-[16px] text-[#18181a] in-data-[theme=dark]:text-[#f0f2f6]">
+                  {formatMonthDay(item.timestamp)}
+                </p>
+                <span className="relative z-10 size-[8px] shrink-0 rounded-full bg-[#18181a] in-data-[theme=dark]:bg-[#f0f2f6]" />
+                <div className="relative flex w-[136px] flex-col gap-[4px] rounded-[14px] bg-[#f6f6f6] px-[16px] py-[10px] in-data-[theme=dark]:bg-[#2b2d33]">
+                  <span className="absolute top-[-8px] left-1/2 size-0 -translate-x-1/2 border-x-6 border-b-8 border-x-transparent border-b-[#f6f6f6] in-data-[theme=dark]:border-b-[#2b2d33]" />
+                  <span className="truncate text-[10px] leading-none text-[#757f9c]">{item.kind}</span>
+                  <span className="truncate text-[12px] leading-none text-[#464c5e] in-data-[theme=dark]:text-[#c9cede]">
+                    {staffdeckDisplayText(item.title)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="employee-memory-empty">暂无成长轨迹</div>
+      )}
+    </section>
+  );
+}
 
 export default function WorkRecordTab({
   selectedAgent,
@@ -95,68 +121,6 @@ export default function WorkRecordTab({
   const navigate = useNavigate();
   const goToLogs = () => navigate(`/enterprise/feedback?agent_id=${encodeURIComponent(selectedAgent.id)}`);
 
-  const capabilityCards = [
-    {
-      route: '/enterprise/knowledge',
-      title: '知识库',
-      tone: 'knowledge',
-      count: activeKnowledge.length,
-      body: activeKnowledge.slice(0, 3).map((item) => staffdeckDisplayText(item.name)).join(' / ') || '暂无知识库',
-      icon: <IconCapFolder className={capabilityGlyphClass} />,
-      dark: false,
-    },
-    {
-      route: '/enterprise/general-skills',
-      title: '技能',
-      tone: 'skill',
-      count: activeGeneralSkills.length,
-      body: activeGeneralSkills.slice(0, 3).map((item) => staffdeckDisplayText(item.name)).join(' / ') || '暂无启用技能',
-      icon: <IconCapMagicWand className={capabilityGlyphClass} />,
-      dark: false,
-    },
-    {
-      route: '/enterprise/skills',
-      title: 'SOP',
-      tone: 'sop',
-      count: activeSkills.length,
-      body: activeSkills.slice(0, 3).map((item) => staffdeckDisplayText(item.name)).join(' / ') || '暂无启用 SOP',
-      icon: <IconCapClipboard className={capabilityGlyphClass} />,
-      dark: false,
-    },
-    {
-      route: '/enterprise/tools',
-      title: '工具',
-      tone: 'tools',
-      count: activeTools.length,
-      body: activeTools.slice(0, 3).map((item) => staffdeckDisplayText(item.display_name || item.name)).join(' / ') || '暂无启用工具',
-      icon: <IconCapBriefcase className={capabilityGlyphClass} />,
-      dark: true,
-      illustration: capabilityTools,
-    },
-    {
-      route: '/enterprise/scheduled-tasks',
-      title: '定时任务',
-      tone: 'tasks',
-      count: activeScheduledTasks.length,
-      body: activeScheduledTasks.slice(0, 2).map((item) => staffdeckDisplayText(item.title)).join(' / ') || '暂无启用定时任务',
-      icon: <IconProfileAlarm className={capabilityGlyphClass} />,
-      dark: true,
-      illustration: capabilityTasks,
-    },
-    {
-      route: `/enterprise/feedback?agent_id=${encodeURIComponent(selectedAgent.id)}`,
-      title: '对话日志',
-      tone: 'logs',
-      count: conversationCount,
-      body: staffdeckDisplayText(employeeSessions[0]?.summary || employeeSessions[0]?.last_agent_question || '暂无对话任务'),
-      icon: <IconProfileCalendar className={capabilityGlyphClass} />,
-      dark: true,
-      illustration: capabilityLogs,
-    },
-  ];
-
-  const growthItems = growthTimeline(activeSkills, activeGeneralSkills, activeTools);
-
   return (
     <section className="relative flex w-full min-w-0 max-w-full mt-[-2px] flex-col gap-[24px] overflow-hidden rounded-[18px] shadow-[0_20px_42px_rgba(21,26,38,0.045)] bg-white p-[14px] *:min-w-0 min-[521px]:p-[18px] in-data-[theme=dark]:border-[#343741] in-data-[theme=dark]:bg-[#202126] in-data-[theme=dark]:text-[#f0f2f6]">
       <div className="flex w-full items-stretch gap-[16px]">
@@ -166,69 +130,7 @@ export default function WorkRecordTab({
         <ClickableMetric label="差评率" value={negativeRate} suffix="%" tone="negative" onClick={goToLogs} />
       </div>
       <ActivityTimeline events={activityEvents} />
-      <div className="flex w-full min-w-0 max-w-full flex-col gap-[10px] mt-[20px]">
-        <div className="inline-flex items-center gap-[6px] self-start text-[14px] capitalize leading-none text-[#757f9c] in-data-[theme=dark]:text-[#8b93a6]">
-          <IconGrowthArrow className="size-[14px] shrink-0" />
-          成长记录
-        </div>
-        {growthItems.length ? (
-          <div className="relative w-full min-w-0 max-w-full overflow-x-auto">
-            <div className="grid grid-flow-col auto-cols-[minmax(160px,1fr)] gap-[20px] pb-[20px]">
-              {growthItems.map((item) => (
-                <div className="relative flex flex-col items-center gap-[8px]" key={item.id}>
-                  <span className="pointer-events-none absolute left-[-10px] right-[-10px] top-[28px] z-0 h-px bg-[#e3e7f1] in-data-[theme=dark]:bg-[#363a45]" />
-                  <p className="m-0 text-center text-[12px] font-medium leading-[16px] text-[#18181a] in-data-[theme=dark]:text-[#f0f2f6]">
-                    {formatMonthDay(item.timestamp)}
-                  </p>
-                  <span className="relative z-10 size-[8px] shrink-0 rounded-full bg-[#18181a] in-data-[theme=dark]:bg-[#f0f2f6]" />
-                  <div className="relative flex w-[136px] flex-col gap-[4px] rounded-[14px] bg-[#f6f6f6] px-[16px] py-[10px] in-data-[theme=dark]:bg-[#2b2d33]">
-                    <span className="absolute top-[-8px] left-1/2 size-0 -translate-x-1/2 border-x-6 border-b-8 border-x-transparent border-b-[#f6f6f6] in-data-[theme=dark]:border-b-[#2b2d33]" />
-                    <span className="truncate text-[10px] leading-none text-[#757f9c]">{item.kind}</span>
-                    <span className="truncate text-[12px] leading-none text-[#464c5e] in-data-[theme=dark]:text-[#c9cede]">
-                      {staffdeckDisplayText(item.title)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="employee-memory-empty">暂无成长轨迹</div>
-        )}
-      </div>
-      <div className="w-full min-w-0 max-w-full overflow-x-auto">
-        <div className="grid grid-flow-col auto-cols-[minmax(160px,1fr)] gap-[clamp(18px,2.22vw,32px)]">
-        {capabilityCards.map((item) => (
-          <button
-            type="button"
-            key={item.title}
-            className={`${capabilityCardClass} ${item.dark ? capabilityDarkCardClass : capabilityLightCardClass}`}
-            data-tone={item.dark ? 'dark' : 'light'}
-            onClick={() => navigate(item.route)}
-          >
-            <IconCardArrow className={capabilityArrowClass} />
-            <span className="flex flex-col gap-[12px]">
-              <span className="flex min-w-0 items-center gap-[6px] pr-[24px]">
-                {item.icon}
-                <span className={capabilityNameClass}>{item.title}</span>
-              </span>
-              <span className="flex flex-col gap-[6px]">
-                <strong className="text-[24px] leading-none font-semibold text-[#18181a] group-data-[tone=dark]:text-white">{item.count}</strong>
-                <span className={capabilityBarClass}><span className={capabilityBarFillClass} /></span>
-              </span>
-            </span>
-            <span className={capabilityDescClass}>{item.body}</span>
-            {item.illustration && (
-              <img
-                className="pointer-events-none absolute bottom-0 left-1/2 h-[84px] w-[120px] -translate-x-1/2 object-contain object-bottom"
-                src={item.illustration}
-                alt=""
-              />
-            )}
-          </button>
-        ))}
-        </div>
-      </div>
+      <GrowthTimelineSection skills={activeSkills} generalSkills={activeGeneralSkills} tools={activeTools} />
     </section>
   );
 }
