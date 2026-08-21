@@ -76,7 +76,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           <h1 className="mt-[6px] text-center text-[54px] font-semibold leading-[80px] tracking-[1.08px] text-[#18181a]">
             复星旅文
             <br />
-            数字员工运营平台
+            AI数字员工平台
           </h1>
 
           {!showForm ? (

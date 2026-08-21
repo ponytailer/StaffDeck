@@ -52,3 +52,4 @@ pnpm-debug.log*
 packaging/assets/staffdeck.iconset/
 .workbuddy/
 overview.md
+*.dmg
