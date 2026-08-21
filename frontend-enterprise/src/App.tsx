@@ -649,8 +649,10 @@ function Shell({
               <Route
                 path="/enterprise/knowledge"
                 element={
-                  <KnowledgeManagePage
+                  <DashboardPage
                     currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    profileTab="knowledge"
                     onLogout={onLogout}
                   />
                 }
@@ -713,14 +715,21 @@ function Shell({
               <Route
                 path="/enterprise/skills"
                 element={
-                  <SkillsPage currentUser={auth.user} onLogout={onLogout} />
+                  <DashboardPage
+                    currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    profileTab="sop"
+                    onLogout={onLogout}
+                  />
                 }
               />
               <Route
                 path="/enterprise/general-skills"
                 element={
-                  <GeneralSkillsPage
+                  <DashboardPage
                     currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    profileTab="skills"
                     onLogout={onLogout}
                   />
                 }
@@ -776,7 +785,12 @@ function Shell({
               <Route
                 path="/enterprise/tools"
                 element={
-                  <ToolsPage currentUser={auth.user} onLogout={onLogout} />
+                  <DashboardPage
+                    currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    profileTab="tools"
+                    onLogout={onLogout}
+                  />
                 }
               />
               <Route

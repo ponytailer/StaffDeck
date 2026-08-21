@@ -488,7 +488,7 @@ function EmployeeProfileTabs({ value, onChange }: { value: ProfileTabKey; onChan
     <Tabs
       value={value}
       onValueChange={(next) => onChange(next as ProfileTabKey)}
-      className="flex w-full flex-col items-start pl-[176px] max-[900px]:pl-1"
+      className="flex w-full flex-col items-start pl-[226px] max-[900px]:pl-1"
     >
       <TabsList
         aria-label="个人档案分区"
