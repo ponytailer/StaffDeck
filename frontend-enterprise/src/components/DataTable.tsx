@@ -57,7 +57,7 @@ const ALIGN_CLASS = {
 } as const;
 
 const HEAD_CELL_CLASS =
-  'h-[36px] bg-[#f2f3f7] px-[16px] py-[12px] align-middle text-[12px] font-normal text-[#464c5e]';
+  'h-[36px] whitespace-nowrap bg-[#f2f3f7] px-[16px] py-[12px] align-middle text-[12px] font-normal text-[#464c5e]';
 const BODY_CELL_CLASS = 'px-[16px] py-[12px] align-middle text-[12px] text-[#858b9c]';
 const BODY_HEIGHT = {
   default: 'min-h-[64px]',
@@ -100,7 +100,7 @@ export function DataTable<T>({
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-[14px] border border-[#f2f3f7]',
+        'overflow-x-auto rounded-[14px] border border-[#f2f3f7]',
         className,
       )}
     >
