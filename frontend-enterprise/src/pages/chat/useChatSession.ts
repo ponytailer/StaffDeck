@@ -112,6 +112,7 @@ import {
   sameRoleTurn,
   scheduledDraftForMessage,
   sessionFilterStorageKey,
+  shouldDeferPersistedEventToLiveStream,
   shouldKeepRealtimeMessage,
   stepResultTraceLine,
   streamErrorTraceLine,
@@ -1761,13 +1762,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   useEffect(() => {
     if (!sessionId || runningTurn?.sessionId !== sessionId) return;
     const timer = window.setInterval(() => {
-      if (getStreamSlot(sessionId).abortController) return;
       void loadMessages(sessionId).finally(() => {
         void loadTraces(sessionId);
       });
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [getStreamSlot, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
+  }, [loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -2695,9 +2695,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           const eventTurnId = eventTraceTurnId(event);
           if (!eventTurnId) return;
           const liveSseOwnsTurn = Boolean(stream.abortController && stream.turnId === eventTurnId);
-          if (liveSseOwnsTurn) return;
-          scheduledEventIdsRef.current.add(event.id);
           const terminalEvent = isTerminalSessionEvent(event, isTerminalEvent);
+          if (shouldDeferPersistedEventToLiveStream(event.event, liveSseOwnsTurn)) return;
+          scheduledEventIdsRef.current.add(event.id);
           const hasFinalAssistant = hasAssistantMessageForTurn(slot, eventTurnId);
           if (event.event === 'assistant_message_created') {
             if (!hasFinalAssistant) {
