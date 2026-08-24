@@ -1135,12 +1135,18 @@ class AgentLoop:
             if not row.enabled:
                 raise AgentLoopPreconditionError("disabled_model_config", "选中的模型配置已停用。")
             return resolve_model_config_for_runtime(self.db, request.tenant_id, row.id)
-        return self._get_default_model(request.tenant_id, agent_id, role)
+        return self._get_default_model(
+            request.tenant_id, agent_id, role, user_id=request.user_id
+        )
 
     def _get_default_model(
-        self, tenant_id: str, agent_id: str | None = None, role: str = "default"
+        self,
+        tenant_id: str,
+        agent_id: str | None = None,
+        role: str = "default",
+        user_id: str | None = None,
     ) -> ModelConfig | None:
-        return model_for_agent(self.db, tenant_id, agent_id, role)
+        return model_for_agent(self.db, tenant_id, agent_id, role, user_id=user_id)
 
     def _get_persona_prompt(self, tenant_id: str, agent_id: str | None = None) -> str | None:
         agent = self._get_agent_profile(tenant_id, agent_id)

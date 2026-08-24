@@ -310,7 +310,12 @@ def _summarize_session_title_once(
                     messages = []
                 else:
                     effective_agent_id = agent_id or session.agent_id
-                    model_config = model_for_agent(db, tenant_id, effective_agent_id)
+                    model_config = model_for_agent(
+                        db,
+                        tenant_id,
+                        effective_agent_id,
+                        user_id=getattr(session, "user_id", None),
+                    )
 
             if not messages:
                 if attempt < 7:

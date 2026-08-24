@@ -37,7 +37,6 @@ from app.llm.schemas import (
 )
 from app.security.auth import get_current_user, require_current_tenant
 from app.security.encryption import decrypt_secret, encrypt_secret, mask_secret
-from app.security.permissions import ensure_tenant_admin, require_tenant_admin
 from app.security.tenant import ensure_tenant
 
 router = APIRouter(
@@ -96,10 +95,17 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
     "", response_model=list[ModelConfigRead], dependencies=[Depends(require_current_tenant)]
 )
 def list_model_configs(
-    tenant_id: str = Query(...), db: Session = Depends(get_session)
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> list[ModelConfigRead]:
     ensure_tenant(db, tenant_id)
-    rows = db.exec(select(ModelConfig).where(ModelConfig.tenant_id == tenant_id)).all()
+    rows = db.exec(
+        select(ModelConfig).where(
+            ModelConfig.tenant_id == tenant_id,
+            ModelConfig.user_id == current_user.id,
+        )
+    ).all()
     return [model_config_read(row) for row in rows]
 
 
@@ -110,7 +116,6 @@ def create_model_config(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ModelConfigRead:
-    ensure_tenant_admin(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     protocol = resolve_api_protocol(request.api_protocol, request.provider)
     if not request.api_key:
@@ -120,6 +125,7 @@ def create_model_config(
     options = _request_protocol_options(request.protocol_options, request.extra_body, protocol)
     row = ModelConfig(
         tenant_id=request.tenant_id,
+        user_id=current_user.id,
         name=request.name,
         provider=LEGACY_OPENAI_PROVIDER,
         api_protocol=protocol.value,
@@ -137,8 +143,11 @@ def create_model_config(
     if verify_before_save and request.enabled:
         _verify_candidate_for_save(row)
         row.enabled = True
-        if request.is_default or not _has_available_model(db, request.tenant_id):
-            _clear_default(db, request.tenant_id)
+        owner_available = _has_available_model(
+            db, request.tenant_id, exclude_config_id=row.id, user_id=current_user.id
+        )
+        if request.is_default or not owner_available:
+            _clear_default(db, request.tenant_id, user_id=current_user.id)
             row.is_default = True
     db.add(row)
     _commit_or_conflict(db)
@@ -154,10 +163,12 @@ def update_model_config(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ModelConfigRead:
-    ensure_tenant_admin(request.tenant_id, current_user)
-    row = _get_model_config(db, request.tenant_id, config_id)
+    row = _get_model_config(db, request.tenant_id, config_id, current_user)
     has_other_available_model = _has_available_model(
-        db, request.tenant_id, exclude_config_id=config_id
+        db,
+        request.tenant_id,
+        exclude_config_id=config_id,
+        user_id=row.user_id,
     )
     protocol = (
         resolve_api_protocol(request.api_protocol, request.provider)
@@ -221,7 +232,7 @@ def update_model_config(
             raise
         row.enabled = True
         if request.is_default is True or not has_other_available_model:
-            _clear_default(db, request.tenant_id)
+            _clear_default(db, request.tenant_id, user_id=row.user_id)
             row.is_default = True
         elif request.is_default is False:
             row.is_default = False
@@ -236,7 +247,7 @@ def update_model_config(
             _require_trusted(row)
             if not row.enabled:
                 raise HTTPException(status_code=409, detail="MODEL_CONFIG_DISABLED")
-            _clear_default(db, request.tenant_id)
+            _clear_default(db, request.tenant_id, user_id=row.user_id)
             row.is_default = True
         elif request.is_default is False:
             row.is_default = False
@@ -254,8 +265,7 @@ def delete_model_config(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
-    ensure_tenant_admin(tenant_id, current_user)
-    row = _get_model_config(db, tenant_id, config_id)
+    row = _get_model_config(db, tenant_id, config_id, current_user)
     bindings = db.exec(
         select(AgentModelBinding).where(
             AgentModelBinding.tenant_id == tenant_id,
@@ -269,19 +279,18 @@ def delete_model_config(
     return {"status": "deleted"}
 
 
-@router.post(
-    "/{config_id}/set-default",
-    response_model=ModelConfigRead,
-    dependencies=[Depends(require_tenant_admin)],
-)
+@router.post("/{config_id}/set-default", response_model=ModelConfigRead)
 def set_default_model_config(
-    config_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)
+    config_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ModelConfigRead:
-    row = _get_model_config(db, tenant_id, config_id)
+    row = _get_model_config(db, tenant_id, config_id, current_user)
     _require_trusted(row)
     if not row.enabled:
         raise HTTPException(status_code=409, detail="MODEL_CONFIG_DISABLED")
-    _clear_default(db, tenant_id)
+    _clear_default(db, tenant_id, user_id=row.user_id)
     row.is_default = True
     row.updated_at = utc_now()
     db.add(row)
@@ -293,19 +302,19 @@ def set_default_model_config(
 @router.post(
     "/{config_id}/test",
     response_model=ModelConfigTestResponse,
-    dependencies=[Depends(require_tenant_admin)],
 )
 def test_model_config(
     config_id: str,
     tenant_id: str = Query(...),
     activate_if_initial: bool = False,
     db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ModelConfigTestResponse:
-    row = _get_model_config(db, tenant_id, config_id)
+    row = _get_model_config(db, tenant_id, config_id, current_user)
     initial_activation_candidate = (
         activate_if_initial
         and row.trust_status == "unverified"
-        and not _has_available_model(db, tenant_id)
+        and not _has_available_model(db, tenant_id, user_id=row.user_id)
     )
     attempt_id = uuid4().hex
     started_security_revision = row.security_revision
@@ -340,7 +349,9 @@ def test_model_config(
         row.verified_at = utc_now()
         row.verified_fingerprint = _fingerprint(row)
         row.verification_attempt_status = "succeeded"
-        if initial_activation_candidate and not _has_available_model(db, tenant_id):
+        if initial_activation_candidate and not _has_available_model(
+            db, tenant_id, user_id=row.user_id
+        ):
             row.enabled = True
             row.is_default = True
             activated = True
@@ -517,19 +528,30 @@ def _mark_verification_failed(
     db.commit()
 
 
-def _get_model_config(db: Session, tenant_id: str, config_id: str) -> ModelConfig:
+def _get_model_config(
+    db: Session, tenant_id: str, config_id: str, current_user: User | None = None
+) -> ModelConfig:
     ensure_tenant(db, tenant_id)
     row = db.get(ModelConfig, config_id)
     if not row or row.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Model config not found")
+    owner_id = getattr(current_user, "id", None)
+    if owner_id is not None and row.user_id != owner_id:
+        # Models are private per user; hide foreign models entirely.
         raise HTTPException(status_code=404, detail="Model config not found")
     return row
 
 
 def _has_available_model(
-    db: Session, tenant_id: str, *, exclude_config_id: str | None = None
+    db: Session,
+    tenant_id: str,
+    *,
+    exclude_config_id: str | None = None,
+    user_id: str | None = None,
 ) -> bool:
     statement = select(ModelConfig).where(
         ModelConfig.tenant_id == tenant_id,
+        ModelConfig.user_id == user_id,
         (ModelConfig.enabled == True) | (ModelConfig.is_default == True),  # noqa: E712
     )
     if exclude_config_id:
@@ -537,11 +559,12 @@ def _has_available_model(
     return db.exec(statement).first() is not None
 
 
-def _clear_default(db: Session, tenant_id: str) -> None:
+def _clear_default(db: Session, tenant_id: str, user_id: str | None = None) -> None:
     db.exec(
         update(ModelConfig)
         .where(
             ModelConfig.tenant_id == tenant_id,
+            ModelConfig.user_id == user_id,
             ModelConfig.is_default == True,  # noqa: E712 - SQLModel expression.
         )
         .values(is_default=False, updated_at=utc_now())

@@ -120,7 +120,8 @@ function findStepTarget(step: QuickStartStep) {
 export default function QuickStartGuide({ isAdmin }: { isAdmin: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const steps = useMemo(() => (isAdmin ? STEPS : STEPS.slice(1)), [isAdmin]);
+  // 模型管理已开放给所有成员，引导步骤对所有人展示。
+  const steps = STEPS;
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [anchorRect, setAnchorRect] = useState({ top: 0, left: 0, width: 1, height: 1 });

@@ -90,6 +90,7 @@ def _migrate_sqlite_skill_schema() -> None:
     with _sqlite_immediate_connection() as conn:
         _migrate_model_api_protocols(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
+        _migrate_model_user_ownership(conn, tables)
         _migrate_channel_binding_agents_backfill(conn, tables)
         _migrate_channel_scope_rebuild(conn, inspector, tables)
         _migrate_channel_bindings_multi(conn, inspector, tables)
@@ -567,6 +568,54 @@ def _migrate_default_model_output_limit(conn, tables: set[str]) -> None:
     conn.execute(
         text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
         {"id": _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID},
+    )
+
+
+_MODEL_USER_OWNERSHIP_MIGRATION_ID = "model_user_ownership_v1"
+
+
+def _migrate_model_user_ownership(conn, tables: set[str]) -> None:
+    """模型归属个人化：补 user_id 列，存量行回填到租户管理员名下。"""
+    if "model_configs" not in tables:
+        return
+
+    columns = {column["name"] for column in inspect(engine).get_columns("model_configs")}
+    if "user_id" not in columns:
+        conn.execute(text("ALTER TABLE model_configs ADD COLUMN user_id VARCHAR"))
+    conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_model_configs_user_id ON model_configs(user_id)")
+    )
+    conn.execute(
+        text(
+            """
+            UPDATE model_configs
+            SET user_id = (
+                SELECT u.id FROM users u
+                WHERE u.tenant_id = model_configs.tenant_id
+                ORDER BY CASE WHEN u.role = 'admin' THEN 0 ELSE 1 END, u.created_at, u.id
+                LIMIT 1
+            )
+            WHERE user_id IS NULL
+              AND EXISTS (SELECT 1 FROM users u WHERE u.tenant_id = model_configs.tenant_id)
+            """
+        )
+    )
+    # Swap the tenant-wide default uniqueness to per-(tenant, user) defaults.
+    legacy_default_index = conn.execute(
+        text(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'uq_model_configs_tenant_default'"
+        )
+    ).scalar_one_or_none()
+    if legacy_default_index:
+        conn.execute(text("DROP INDEX uq_model_configs_tenant_default"))
+    conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_model_configs_tenant_user_default
+            ON model_configs(tenant_id, COALESCE(user_id, '')) WHERE is_default = 1
+            """
+        )
     )
 
 
@@ -1446,44 +1495,78 @@ def _migrate_model_api_protocols(conn, tables: set[str]) -> None:
 
 
 def _normalize_model_default_rows(conn) -> None:
+    model_columns = {
+        str(row[1]) for row in conn.execute(text("PRAGMA table_info(model_configs)")).all()
+    }
+    has_owner_column = "user_id" in model_columns
+    owner_key_sql = "COALESCE(user_id, '')" if has_owner_column else "''"
     duplicate_defaults = conn.execute(
         text(
-            """
-            SELECT tenant_id
+            f"""
+            SELECT tenant_id, {owner_key_sql} AS owner_key
             FROM model_configs
             WHERE is_default = 1 AND enabled = 1
-            GROUP BY tenant_id
+            GROUP BY tenant_id, {owner_key_sql}
             HAVING COUNT(*) > 1
             """
         )
-    ).scalars().all()
-    for tenant_id in duplicate_defaults:
+    ).mappings().all()
+    for row in duplicate_defaults:
         keep_id = conn.execute(
             text(
-                """
+                f"""
                 SELECT id FROM model_configs
-                WHERE tenant_id = :tenant_id AND is_default = 1 AND enabled = 1
+                WHERE tenant_id = :tenant_id
+                  AND {owner_key_sql} = :owner_key
+                  AND is_default = 1 AND enabled = 1
                 ORDER BY updated_at DESC, id ASC
                 LIMIT 1
                 """
             ),
-            {"tenant_id": tenant_id},
+            {"tenant_id": row["tenant_id"], "owner_key": row["owner_key"]},
         ).scalar_one()
         conn.execute(
             text(
-                """
+                f"""
                 UPDATE model_configs SET is_default = 0
-                WHERE tenant_id = :tenant_id AND is_default = 1 AND id != :keep_id
+                WHERE tenant_id = :tenant_id
+                  AND {owner_key_sql} = :owner_key
+                  AND is_default = 1 AND id != :keep_id
                 """
             ),
-            {"tenant_id": tenant_id, "keep_id": keep_id},
+            {"tenant_id": row["tenant_id"], "keep_id": keep_id, "owner_key": row["owner_key"]},
         )
     conn.execute(text("UPDATE model_configs SET is_default = 0 WHERE enabled = 0"))
+    # Per-user default models: one enabled default per (tenant, user).
+    if not has_owner_column:
+        conn.execute(
+            text(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_model_configs_tenant_default
+                ON model_configs(tenant_id) WHERE is_default = 1
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"
+            ),
+            {"id": _MODEL_API_PROTOCOLS_MIGRATION_ID},
+        )
+        return
+    legacy_index = conn.execute(
+        text(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'uq_model_configs_tenant_default'"
+        )
+    ).scalar_one_or_none()
+    if legacy_index and "user_id" not in (legacy_index or ""):
+        conn.execute(text("DROP INDEX IF EXISTS uq_model_configs_tenant_default"))
     conn.execute(
         text(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_model_configs_tenant_default
-            ON model_configs(tenant_id) WHERE is_default = 1
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_model_configs_tenant_user_default
+            ON model_configs(tenant_id, COALESCE(user_id, '')) WHERE is_default = 1
             """
         )
     )
@@ -1498,13 +1581,14 @@ def _normalize_model_default_rows(conn) -> None:
 def _model_api_protocol_schema_complete(conn, columns: set[str]) -> bool:
     if not _MODEL_API_PROTOCOL_COLUMNS.issubset(columns):
         return False
-    index = conn.execute(
+    index_sql = conn.execute(
         text(
             "SELECT sql FROM sqlite_master "
-            "WHERE type = 'index' AND name = 'uq_model_configs_tenant_default'"
+            "WHERE type = 'index' AND name IN "
+            "('uq_model_configs_tenant_default', 'uq_model_configs_tenant_user_default')"
         )
-    ).scalar_one_or_none()
-    return bool(index and "WHERE is_default = 1" in index)
+    ).scalars().first()
+    return bool(index_sql and "WHERE is_default = 1" in index_sql)
 
 
 def _valid_chat_thinking_options(value: object) -> bool:

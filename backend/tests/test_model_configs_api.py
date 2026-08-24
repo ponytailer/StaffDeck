@@ -138,6 +138,7 @@ def test_model_test_returns_structured_provider_diagnostics(tmp_path, monkeypatc
     with _db(tmp_path) as db:
         db.add(
             ModelConfig(
+                user_id="user_admin",
                 id="model_a",
                 tenant_id="tenant_a",
                 name="Broken",
@@ -206,6 +207,7 @@ def test_model_config_delete_removes_agent_bindings(tmp_path) -> None:
     with _db(tmp_path) as db:
         db.add(
             ModelConfig(
+                user_id="user_admin",
                 id="model_a",
                 tenant_id="tenant_a",
                 name="Chat",
@@ -248,6 +250,7 @@ def test_gemini_verification_reserves_tokens_for_visible_output() -> None:
 def test_security_change_invalidates_and_disables_legacy_config(tmp_path) -> None:
     with _db(tmp_path) as db:
         row = ModelConfig(
+            user_id="user_admin",
             id="model_a",
             tenant_id="tenant_a",
             name="Chat",
@@ -285,6 +288,7 @@ def test_failed_verified_update_preserves_existing_model(tmp_path, monkeypatch) 
     with _db(tmp_path) as db:
         db.add(
             ModelConfig(
+                user_id="user_admin",
                 id="model_a",
                 tenant_id="tenant_a",
                 name="Working",
@@ -327,6 +331,7 @@ def test_disabling_default_clears_default_in_same_update(tmp_path) -> None:
     with _db(tmp_path) as db:
         db.add(
             ModelConfig(
+                user_id="user_admin",
                 id="model_a",
                 tenant_id="tenant_a",
                 name="Chat",
@@ -354,6 +359,7 @@ def test_unverified_config_cannot_become_default(tmp_path) -> None:
     with _db(tmp_path) as db:
         db.add(
             ModelConfig(
+                user_id="user_admin",
                 id="model_a",
                 tenant_id="tenant_a",
                 name="Chat",
@@ -385,6 +391,7 @@ def test_switching_default_clears_existing_row_before_setting_new(tmp_path) -> N
         db.add_all(
             [
                 ModelConfig(
+                    user_id="user_admin",
                     id="z_previous",
                     tenant_id="tenant_a",
                     name="Previous",
@@ -395,6 +402,7 @@ def test_switching_default_clears_existing_row_before_setting_new(tmp_path) -> N
                     is_default=True,
                 ),
                 ModelConfig(
+                    user_id="user_admin",
                     id="a_next",
                     tenant_id="tenant_a",
                     name="Next",
@@ -419,6 +427,7 @@ def test_read_returns_only_current_protocol_options(tmp_path) -> None:
     from app.api.model_configs import model_config_read
 
     row = ModelConfig(
+        user_id="user_admin",
         id="model_a",
         tenant_id="tenant_a",
         name="Chat",
@@ -456,6 +465,7 @@ def test_verification_runs_bounded_text_stream_and_json_probes(tmp_path, monkeyp
     with _db(tmp_path) as db:
         db.add(
             ModelConfig(
+                user_id="user_admin",
                 id="model_a",
                 tenant_id="tenant_a",
                 name="Chat",
@@ -487,6 +497,7 @@ def test_initial_verification_can_atomically_activate_first_model(tmp_path, monk
     with _db(tmp_path) as db:
         db.add(
             ModelConfig(
+                user_id="user_admin",
                 id="model_a",
                 tenant_id="tenant_a",
                 name="Chat",
@@ -524,6 +535,7 @@ def test_retesting_disabled_verified_model_does_not_reenable_it(tmp_path, monkey
     with _db(tmp_path) as db:
         db.add(
             ModelConfig(
+                user_id="user_admin",
                 id="model_a",
                 tenant_id="tenant_a",
                 name="Chat",
@@ -559,6 +571,7 @@ def test_verification_does_not_replace_or_clear_existing_default(tmp_path, monke
         db.add_all(
             [
                 ModelConfig(
+                    user_id="user_admin",
                     id="model_default",
                     tenant_id="tenant_a",
                     name="Default",
@@ -569,6 +582,7 @@ def test_verification_does_not_replace_or_clear_existing_default(tmp_path, monke
                     is_default=True,
                 ),
                 ModelConfig(
+                    user_id="user_admin",
                     id="model_new",
                     tenant_id="tenant_a",
                     name="New",
@@ -626,6 +640,7 @@ def test_concurrent_initial_verification_activates_only_one_default(tmp_path, mo
         for model_id in ("model_a", "model_b"):
             db.add(
                 ModelConfig(
+                    user_id="user_admin",
                     id=model_id,
                     tenant_id="tenant_a",
                     name=model_id,
@@ -645,7 +660,7 @@ def test_concurrent_initial_verification_activates_only_one_default(tmp_path, mo
     second_check_barrier = threading.Barrier(2)
     thread_state = threading.local()
 
-    def synchronized_has_available_model(db, tenant_id):  # noqa: ANN001
+    def synchronized_has_available_model(db, tenant_id, **kwargs):  # noqa: ANN001
         check_count = getattr(thread_state, "check_count", 0) + 1
         thread_state.check_count = check_count
         if check_count == 1:

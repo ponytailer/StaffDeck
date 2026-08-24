@@ -748,8 +748,17 @@ def get_agent_models(
             ModelConfig.tenant_id == tenant_id,
             ModelConfig.is_default == True,  # noqa: E712
             ModelConfig.enabled == True,  # noqa: E712
+            ModelConfig.user_id == current_user.id,
         )
     ).first()
+    if default is None:
+        default = db.exec(
+            select(ModelConfig).where(
+                ModelConfig.tenant_id == tenant_id,
+                ModelConfig.is_default == True,  # noqa: E712
+                ModelConfig.enabled == True,  # noqa: E712
+            )
+        ).first()
     if default is None:
         return []
     return [{"role": "default", "model_config_id": default.id, "effective": False}]

@@ -980,21 +980,32 @@ def rollback_knowledge_branch(
 
 
 def model_for_agent(
-    db: Session, tenant_id: str, agent_id: str | None, role: str = "default"
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None,
+    role: str = "default",
+    user_id: str | None = None,
 ) -> ResolvedModelConfig | None:
-    """Resolve every employee task through the tenant's enabled default model.
+    """Resolve the enabled default model for a task.
 
-    ``agent_id`` and ``role`` remain in the signature for call-site compatibility. Employee-level
-    model bindings are intentionally no longer part of runtime model selection.
+    Models are owned per user: when ``user_id`` is given, prefer that user's own
+    default model; fall back to any enabled default in the tenant (e.g. the admin's)
+    so users who have not configured their own model keep working.
+    ``agent_id`` and ``role`` remain in the signature for call-site compatibility.
     """
     _ = agent_id, role
-    model = db.exec(
-        select(ModelConfig).where(
-            ModelConfig.tenant_id == tenant_id,
-            ModelConfig.is_default == True,  # noqa: E712
-            ModelConfig.enabled == True,  # noqa: E712
-        )
-    ).first()
+    base_filters = (
+        ModelConfig.tenant_id == tenant_id,
+        ModelConfig.is_default == True,  # noqa: E712
+        ModelConfig.enabled == True,  # noqa: E712
+    )
+    if user_id:
+        model = db.exec(
+            select(ModelConfig).where(*base_filters, ModelConfig.user_id == user_id)
+        ).first()
+        if model:
+            return _runtime_model(db, tenant_id, model)
+    model = db.exec(select(ModelConfig).where(*base_filters)).first()
     return _runtime_model(db, tenant_id, model) if model else None
 
 

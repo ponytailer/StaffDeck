@@ -374,7 +374,7 @@ function Shell({
   const showModelSetupNotice = guidesCompleted && modelConfigsLoaded && !hasUsableModelConfig;
   const modelSetupNoticeText = isAdmin
     ? t("还没有可用模型配置，数字员工暂不能调用模型。请先完成模型配置。")
-    : t("系统管理员尚未配置可用模型，数字员工暂不能调用模型。请联系管理员完成模型配置。");
+    : t("当前账号还没有可用模型，数字员工暂不能调用模型。请在「模型配置」中完成配置。");
   const selectedAgent = scopeAgents.find((item) => item.id === selectedAgentId);
   const sidebarAgent = selectedAgent;
   // Routes that operate on a specific employee; show the empty guide when none exist.
@@ -764,13 +764,7 @@ function Shell({
               />
               <Route
                 path="/enterprise/models"
-                element={
-                  isAdmin ? (
-                    <ModelsPage currentUser={auth.user} onLogout={onLogout} />
-                  ) : (
-                    <Navigate to={EnterpriseRoute.Gallery} replace />
-                  )
-                }
+                element={<ModelsPage currentUser={auth.user} onLogout={onLogout} />}
               />
               <Route
                 path="/enterprise/runtime-settings"

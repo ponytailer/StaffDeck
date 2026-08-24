@@ -592,6 +592,7 @@ class ModelConfig(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: new_id("model"), primary_key=True)
     tenant_id: str = Field(index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     name: str
     provider: str = "openai_compatible"
     api_protocol: str = Field(default="openai_chat_completions", index=True)

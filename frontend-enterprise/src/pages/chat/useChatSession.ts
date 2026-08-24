@@ -584,11 +584,10 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     || enabledModelConfigs[0]
     || null
   );
-  const canConfigureModels = auth?.user.role === 'admin';
+  // 模型管理已开放给所有成员：每个人管理自己的模型。
+  const canConfigureModels = Boolean(auth?.user);
   const showModelSetupNotice = !modelConfigsLoading && !modelConfigsLoadError && !selectedModelConfig;
-  const modelSetupNoticeText = canConfigureModels
-    ? t('还没有可用模型配置，发送消息前请先完成模型配置。')
-    : t('系统管理员尚未配置可用模型，暂时无法发送消息。请联系管理员完成模型配置。');
+  const modelSetupNoticeText = t('当前账号还没有可用模型，发送消息前请先完成模型配置。');
 
   useEffect(() => {
     if (!auth || !displayedAgent?.id) {
@@ -648,15 +647,11 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       return false;
     }
     if (!selectedModelConfig) {
-      if (canConfigureModels) {
-        setModelSetupOpen(true);
-      } else {
-        notify.warning(t('系统管理员尚未配置可用模型，请联系管理员完成模型配置'));
-      }
+      setModelSetupOpen(true);
       return false;
     }
     return true;
-  }, [canConfigureModels, modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, t]);
+  }, [modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, t]);
 
   const loadAgents = useCallback(async (preferredAgentId?: string) => {
     setAgentsLoaded(false);
