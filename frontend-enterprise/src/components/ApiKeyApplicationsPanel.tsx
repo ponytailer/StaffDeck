@@ -7,9 +7,7 @@ import { notify } from '@/components/ui/app-toast';
 import { StatusBadge } from '@/pages/scheduled-tasks/StatusBadge';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import { cn } from '@/lib/utils';
-import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
-import { ApiKeyQuotaPanel } from './ApiKeyQuotaPanel';
-import { UnderlineTabs } from '@/components/ui/underline-tabs';
+import { type EnterpriseAuthUser } from '../auth';
 
 const MAX_APPLICATIONS = 2;
 
@@ -29,8 +27,6 @@ type ApiKeyApplication = {
   updated_at: string;
 };
 
-type SubTab = 'mine' | 'quota';
-
 const STATUS_META: Record<ApiKeyApplication['status'], { tone: 'orange' | 'green' | 'red' | 'gray'; label: string }> = {
   pending: { tone: 'orange', label: '待审批' },
   approved: { tone: 'green', label: '已批准' },
@@ -46,12 +42,10 @@ function formatTime(value: string | null): string {
 }
 
 export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: EnterpriseAuthUser }) {
-  const [subTab, setSubTab] = useState<SubTab>('mine');
   const [items, setItems] = useState<ApiKeyApplication[]>([]);
   const [loading, setLoading] = useState(false);
   const [purpose, setPurpose] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const isAdmin = isEnterpriseAdmin(currentUser);
 
   const activeCount = items.filter(
     (item) => item.status === 'pending' || item.status === 'approved',
@@ -233,23 +227,5 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
     </section>
   );
 
-  if (!isAdmin) {
-    return mineTab;
-  }
-
-  return (
-    <div className="flex flex-col gap-[16px]">
-      <UnderlineTabs
-        aria-label="API Key 管理子 Tab"
-        value={subTab}
-        onChange={(value) => setSubTab(value as SubTab)}
-        items={[
-          { value: 'mine', label: '我的 API Key' },
-          { value: 'quota', label: '配额管理' },
-        ]}
-      />
-      {subTab === 'mine' && mineTab}
-      {subTab === 'quota' && <ApiKeyQuotaPanel />}
-    </div>
-  );
+  return mineTab;
 }

@@ -87,7 +87,7 @@ const BLANK_MODEL_FORM: ModelForm = {
   model: '',
   api_key: '',
   temperature: '0.2',
-  max_output_tokens: '8192',
+  max_output_tokens: '131072',
   extra_body: '{}',
   is_default: false,
   enabled: true,
