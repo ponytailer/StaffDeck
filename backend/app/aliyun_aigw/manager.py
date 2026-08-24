@@ -147,6 +147,15 @@ class AliyunApigClient:
             period_type=period_type,
         )
 
+    def update_consumer(
+        self,
+        consumer_id: str,
+        description: str | None = None,
+        enable: bool | None = None,
+    ) -> None:
+        """更新消费者元信息（UpdateConsumer，目前仅支持 description / enable）。"""
+        consumers.update_consumer(consumer_id, description=description, enable=enable)
+
     def delete_consumer(self, consumer_id: str) -> None:
         """删除消费者（DeleteConsumer）。"""
         consumers.delete_consumer(consumer_id)

@@ -15,6 +15,7 @@ from app.api.api_key_applications import (
     ApiKeyApplicationCreate,
     ApiKeyApplicationReview,
     ApiKeyConsumerGroupCreate,
+    ApiKeyConsumerGroupUpdate,
     ApiKeyQuotaRuleCreate,
     ApiKeyQuotaUpdate,
     approve_application,
@@ -26,6 +27,7 @@ from app.api.api_key_applications import (
     list_usage,
     reject_application,
     revoke_application,
+    update_consumer_group,
     update_quota,
 )
 
@@ -607,3 +609,97 @@ def test_create_consumer_group_and_quota_rule():
     assert rule.external_rule_id and rule.external_rule_id.startswith("qr-mock-")
     assert rule.quota_limit == 1000
     assert rule.period_type == "day"
+
+
+def test_create_consumer_group_with_owner():
+    """消费组创建支持业务「归属」字段（非阿里云字段），落库并回读。"""
+    session = _make_session()
+    admin = _admin(session)
+    group = create_consumer_group(
+        ApiKeyConsumerGroupCreate(
+            tenant_id=TENANT,
+            name="owner-demo",
+            description="归属演示",
+            owner="重庆项目",
+            gateway_name="主力网关",
+        ),
+        db=session,
+        current_user=admin,
+    )
+    assert group.owner == "重庆项目"
+
+
+def test_consumer_group_owners_from_config():
+    """归属下拉选项来自 CONSUMER_GROUP_OWNERS 配置（默认内置列表）。"""
+    from app.config import get_settings
+
+    owners = get_settings().consumer_group_owner_list
+    assert "重庆项目" in owners
+    assert "复星总部IT" in owners
+    assert "Club Med" in owners
+
+
+def test_update_consumer_group():
+    """消费组编辑:名称/描述/归属更新落库,描述变化时同步阿里云(mock)。"""
+    session = _make_session()
+    admin = _admin(session)
+    group = create_consumer_group(
+        ApiKeyConsumerGroupCreate(
+            tenant_id=TENANT,
+            name="edit-demo",
+            description="旧描述",
+            owner="重庆项目",
+            gateway_name="主力网关",
+        ),
+        db=session,
+        current_user=admin,
+    )
+    assert group.external_consumer_id  # mock 客户端已创建消费者
+
+    updated = update_consumer_group(
+        group.id,
+        ApiKeyConsumerGroupUpdate(
+            tenant_id=TENANT,
+            name="edit-demo-renamed",
+            description="新描述",
+            owner="Club Med",
+        ),
+        db=session,
+        current_user=admin,
+    )
+    assert updated.name == "edit-demo-renamed"
+    assert updated.description == "新描述"
+    assert updated.owner == "Club Med"
+
+    # 回读确认已落库
+    row = session.get(ApiKeyConsumerGroup, group.id)
+    assert row is not None
+    assert row.name == "edit-demo-renamed"
+    assert row.description == "新描述"
+    assert row.owner == "Club Med"
+
+
+def test_update_consumer_group_empty_name_rejected():
+    """编辑消费组时名称为空 → 400。"""
+    session = _make_session()
+    admin = _admin(session)
+    group = create_consumer_group(
+        ApiKeyConsumerGroupCreate(
+            tenant_id=TENANT,
+            name="blank-name-demo",
+            gateway_name="主力网关",
+        ),
+        db=session,
+        current_user=admin,
+    )
+    bad = False
+    try:
+        update_consumer_group(
+            group.id,
+            ApiKeyConsumerGroupUpdate(tenant_id=TENANT, name="   "),
+            db=session,
+            current_user=admin,
+        )
+    except HTTPException as exc:
+        bad = exc.status_code == 400
+    assert bad

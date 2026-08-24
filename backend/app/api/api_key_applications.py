@@ -12,6 +12,7 @@ from app.aliyun_aigw import (
     get_gateway_config,
     get_gateway_configs,
 )
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import ApiKeyApplication, ApiKeyConsumerGroup, ApiKeyQuotaRule, User, utc_now
 from app.security.auth import get_current_user
@@ -64,7 +65,15 @@ class ApiKeyConsumerGroupCreate(BaseModel):
     tenant_id: str
     name: str
     description: str | None = None
+    owner: str | None = None  # 业务归属（非阿里云字段），取 CONSUMER_GROUP_OWNERS 配置值
     gateway_name: str  # 需在网关列表中存在
+
+
+class ApiKeyConsumerGroupUpdate(BaseModel):
+    tenant_id: str
+    name: str | None = None  # 名称必填，端点内校验
+    description: str | None = None
+    owner: str | None = None  # 业务归属（非阿里云字段）
 
 
 class ApiKeyConsumerGroupRead(BaseModel):
@@ -72,6 +81,7 @@ class ApiKeyConsumerGroupRead(BaseModel):
     tenant_id: str
     name: str
     description: str | None
+    owner: str | None
     gateway_id: str | None
     gateway_name: str | None
     external_consumer_id: str | None
@@ -259,6 +269,16 @@ def approval_stats(
     return ApiKeyApprovalStats(pending=pending, allocated=allocated, history=history)
 
 
+@router.get("/consumer-group-owners", response_model=dict[str, list[str]])
+def list_consumer_group_owners(
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, list[str]]:
+    """返回消费组「归属」业务字段的可选值（来自 CONSUMER_GROUP_OWNERS 配置）。"""
+    ensure_tenant_admin(tenant_id, current_user)
+    return {"owners": get_settings().consumer_group_owner_list}
+
+
 @router.get("/consumer-groups", response_model=list[ApiKeyConsumerGroupRead])
 def list_consumer_groups(
     tenant_id: str = Query(...),
@@ -308,11 +328,47 @@ def create_consumer_group(
         tenant_id=request.tenant_id,
         name=request.name,
         description=(request.description or "").strip() or None,
+        owner=(request.owner or "").strip() or None,
         gateway_id=gateway.gateway_id,
         gateway_name=gateway.name,
         external_consumer_id=consumer_id,
         created_by_user_id=current_user.id,
     )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _cg_read(row)
+
+
+@router.put("/consumer-groups/{group_id}", response_model=ApiKeyConsumerGroupRead)
+def update_consumer_group(
+    group_id: str,
+    request: ApiKeyConsumerGroupUpdate,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiKeyConsumerGroupRead:
+    """编辑消费组:更新名称/描述/归属;描述变化时同步阿里云消费者(名称创建后不可改)。"""
+    ensure_tenant_admin(request.tenant_id, current_user)
+    row = db.get(ApiKeyConsumerGroup, group_id)
+    if not row or row.tenant_id != request.tenant_id:
+        raise HTTPException(status_code=404, detail="消费组不存在")
+    name = (request.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="消费组名称不能为空")
+
+    new_desc = (request.description or "").strip() or None
+    old_desc = (row.description or "").strip() or None
+    client = get_apig_client()
+    if client is not None and row.external_consumer_id and new_desc != old_desc:
+        try:
+            client.update_consumer(row.external_consumer_id, description=new_desc or "")
+        except AliyunApigError as exc:
+            raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+
+    row.name = name
+    row.description = new_desc
+    row.owner = (request.owner or "").strip() or None
+    row.updated_at = utc_now()
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -527,6 +583,7 @@ def _cg_read(row: ApiKeyConsumerGroup) -> ApiKeyConsumerGroupRead:
         tenant_id=row.tenant_id,
         name=row.name,
         description=row.description,
+        owner=row.owner,
         gateway_id=row.gateway_id,
         gateway_name=row.gateway_name,
         external_consumer_id=row.external_consumer_id,

@@ -678,6 +678,7 @@ class ApiKeyConsumerGroup(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     name: str
     description: Optional[str] = None
+    owner: Optional[str] = None  # 业务归属（非阿里云字段），取值见 CONSUMER_GROUP_OWNERS 配置
     gateway_id: str
     gateway_name: str
     external_consumer_id: Optional[str] = None  # 阿里云消费者 ID,如 cs-mock-001

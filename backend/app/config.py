@@ -16,7 +16,11 @@ class Settings(BaseSettings):
     # 新建/编辑模型时可选用的固定模型列表（JSON 数组字符串）。
     # 例如：MODEL_PRESETS='["gpt-4o","gpt-4o-mini","qwen-max","qwen-plus","deepseek-v3","claude-sonnet-4-5","gemini-2.5-pro"]'
     # 未配置时使用下方默认内置列表，保证前端下拉始终有可选值。
-    model_presets: str = '["qwen3.7-plus", "deepseek-v4-flash-0731", "qwen3.8-27b"]' 
+    model_presets: str = '["qwen3.7-plus", "deepseek-v4-flash-0731", "qwen3.8-27b"]'
+    # 消费组「归属」业务字段的可选值（JSON 数组字符串），与阿里云接口无关。
+    # 例如：CONSUMER_GROUP_OWNERS='["重庆项目","复星总部IT","Club Med"]'
+    # 未配置时使用下方默认内置列表，保证前端下拉始终有可选值。
+    consumer_group_owners: str = '["重庆项目", "总部IT", "Club Med"]'
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
     tool_timeout_seconds: float = 8.0
@@ -83,6 +87,15 @@ class Settings(BaseSettings):
         """解析 MODEL_PRESETS 为模型名列表，忽略空项与非法 JSON。"""
         try:
             items = json.loads(self.model_presets or "[]")
+        except (ValueError, TypeError):
+            return []
+        return [str(item).strip() for item in items if str(item).strip()]
+
+    @property
+    def consumer_group_owner_list(self) -> list[str]:
+        """解析 CONSUMER_GROUP_OWNERS 为归属列表，忽略空项与非法 JSON。"""
+        try:
+            items = json.loads(self.consumer_group_owners or "[]")
         except (ValueError, TypeError):
             return []
         return [str(item).strip() for item in items if str(item).strip()]

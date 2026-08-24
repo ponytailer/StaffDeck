@@ -6,6 +6,7 @@ import {
   ChevronRight,
   KeyRound,
   LoaderCircle,
+  Pencil,
   Plus,
   Search,
   SlidersHorizontal,
@@ -78,6 +79,7 @@ type ConsumerGroup = {
   tenant_id: string;
   name: string;
   description: string | null;
+  owner: string | null;
   gateway_id: string | null;
   gateway_name: string | null;
   external_consumer_id: string | null;
@@ -264,8 +266,17 @@ export default function ApiKeyApprovalsPage({
   const [cgOpen, setCgOpen] = useState(false);
   const [cgName, setCgName] = useState('');
   const [cgDesc, setCgDesc] = useState('');
+  const [cgOwner, setCgOwner] = useState('');
+  const [cgOwners, setCgOwners] = useState<string[]>([]);
   const [cgGateway, setCgGateway] = useState('');
   const [cgSubmitting, setCgSubmitting] = useState(false);
+
+  // Consumer group edit dialog
+  const [editCg, setEditCg] = useState<ConsumerGroup | null>(null);
+  const [editCgName, setEditCgName] = useState('');
+  const [editCgDesc, setEditCgDesc] = useState('');
+  const [editCgOwner, setEditCgOwner] = useState('');
+  const [editCgSubmitting, setEditCgSubmitting] = useState(false);
 
   // Quota rule create dialog
   const [qrOpen, setQrOpen] = useState(false);
@@ -329,6 +340,13 @@ export default function ApiKeyApprovalsPage({
       .finally(() => setGroupsLoading(false));
   }, []);
 
+  const loadCgOwners = useCallback(() => {
+    api
+      .get<{ owners: string[] }>(`/api/enterprise/api-key-applications/consumer-group-owners?tenant_id=${TENANT_ID}`)
+      .then((result) => setCgOwners(result.owners ?? []))
+      .catch(() => setCgOwners([]));
+  }, []);
+
   const loadRules = useCallback(() => {
     setRulesLoading(true);
     return api
@@ -354,7 +372,8 @@ export default function ApiKeyApprovalsPage({
     void loadGateways();
     void loadGroups();
     void loadRules();
-  }, [loadApplications, loadStats, loadGateways, loadGroups, loadRules]);
+    void loadCgOwners();
+  }, [loadApplications, loadStats, loadGateways, loadGroups, loadRules, loadCgOwners]);
 
   useEffect(() => {
     if (tab === 'groups') void loadGroups();
@@ -455,18 +474,47 @@ export default function ApiKeyApprovalsPage({
         tenant_id: TENANT_ID,
         name: cgName.trim(),
         description: cgDesc.trim() || undefined,
+        owner: cgOwner || undefined,
         gateway_name: cgGateway,
       });
       notify.success('消费组创建成功');
       setCgOpen(false);
       setCgName('');
       setCgDesc('');
+      setCgOwner('');
       setCgGateway('');
       await loadGroups();
     } catch (error) {
       notify.error(error instanceof ApiError ? error.message : '创建失败');
     } finally {
       setCgSubmitting(false);
+    }
+  }
+
+  async function submitEditConsumerGroup() {
+    if (!editCg) return;
+    if (!editCgName.trim()) {
+      notify.error('请填写消费组名称');
+      return;
+    }
+    setEditCgSubmitting(true);
+    try {
+      await api.put<ConsumerGroup>(
+        `/api/enterprise/api-key-applications/consumer-groups/${editCg.id}`,
+        {
+          tenant_id: TENANT_ID,
+          name: editCgName.trim(),
+          description: editCgDesc.trim() || undefined,
+          owner: editCgOwner || undefined,
+        },
+      );
+      notify.success('消费组已更新');
+      setEditCg(null);
+      await loadGroups();
+    } catch (error) {
+      notify.error(error instanceof ApiError ? error.message : '更新失败');
+    } finally {
+      setEditCgSubmitting(false);
     }
   }
 
@@ -872,6 +920,17 @@ export default function ApiKeyApprovalsPage({
       ),
     },
     {
+      key: 'owner',
+      title: '归属',
+      width: 130,
+      render: (row) =>
+        row.owner ? (
+          <span className="block truncate text-[12px] text-[#464c5e]">{row.owner}</span>
+        ) : (
+          <span className="text-[12px] text-[#c0c6d4]">—</span>
+        ),
+    },
+    {
       key: 'gateway',
       title: '网关',
       width: 120,
@@ -907,12 +966,25 @@ export default function ApiKeyApprovalsPage({
     {
       key: 'actions',
       title: '操作',
-      width: 180,
+      width: 250,
       align: 'right',
       render: (row) => {
         const busy = actingId === row.id;
         return (
           <div className="flex items-center justify-end gap-[8px]">
+            <UIButton
+              disabled={busy}
+              onClick={() => {
+                setEditCg(row);
+                setEditCgName(row.name);
+                setEditCgDesc(row.description ?? '');
+                setEditCgOwner(row.owner ?? '');
+              }}
+              className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
+            >
+              <Pencil className="size-[13px]" />
+              编辑
+            </UIButton>
             <UIButton
               disabled={busy}
               onClick={() => {
@@ -1580,6 +1652,27 @@ export default function ApiKeyApprovalsPage({
             />
           </label>
           <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">归属（可选）</span>
+            <Select value={cgOwner} onValueChange={setCgOwner}>
+              <SelectTrigger className="h-[34px]">
+                <SelectValue placeholder="选择归属" />
+              </SelectTrigger>
+              <SelectContent>
+                {cgOwners.length === 0 ? (
+                  <SelectItem value="__none__" disabled>
+                    未配置归属（检查 CONSUMER_GROUP_OWNERS）
+                  </SelectItem>
+                ) : (
+                  cgOwners.map((owner) => (
+                    <SelectItem key={owner} value={owner}>
+                      {owner}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </label>
+          <label className="flex flex-col gap-[6px]">
             <span className="text-[12px] font-medium text-[#464c5e]">网关</span>
             <Select value={cgGateway} onValueChange={setCgGateway}>
               <SelectTrigger className="h-[34px]">
@@ -1619,6 +1712,82 @@ export default function ApiKeyApprovalsPage({
             >
               {cgSubmitting && <LoaderCircle className="size-[14px] animate-spin" />}
               创建
+            </UIButton>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Consumer group edit dialog */}
+      <Dialog open={Boolean(editCg)} onOpenChange={(open) => !open && setEditCg(null)}>
+        <DialogContent
+          aria-describedby={undefined}
+          className="flex w-[calc(100%-2rem)] flex-col gap-[14px] rounded-[14px] px-[20px] py-[16px] sm:max-w-[440px]"
+        >
+          <DialogTitle className="text-[15px] font-medium text-[#18181a]">编辑消费组</DialogTitle>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">名称</span>
+            <Input
+              value={editCgName}
+              onChange={(e) => setEditCgName(e.target.value)}
+              disabled={editCgSubmitting}
+              placeholder="例如：研发一组"
+              className="h-[34px] text-[12px]"
+            />
+          </label>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">描述（可选）</span>
+            <Input
+              value={editCgDesc}
+              onChange={(e) => setEditCgDesc(e.target.value)}
+              disabled={editCgSubmitting}
+              placeholder="例如：主力研发团队"
+              className="h-[34px] text-[12px]"
+            />
+          </label>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">归属（可选）</span>
+            <Select value={editCgOwner} onValueChange={setEditCgOwner} disabled={editCgSubmitting}>
+              <SelectTrigger className="h-[34px]">
+                <SelectValue placeholder="选择归属" />
+              </SelectTrigger>
+              <SelectContent>
+                {cgOwners.length === 0 ? (
+                  <SelectItem value="__none__" disabled>
+                    未配置归属（检查 CONSUMER_GROUP_OWNERS）
+                  </SelectItem>
+                ) : (
+                  cgOwners.map((owner) => (
+                    <SelectItem key={owner} value={owner}>
+                      {owner}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </label>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">网关</span>
+            <div className="flex h-[34px] items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-[#f6f7fa] px-[12px] text-[12px] text-[#858b9c]">
+              {editCg?.gateway_name || '—'}
+            </div>
+          </label>
+          <p className="text-[12px] leading-[18px] text-[#858b9c]">网关创建后不可修改；名称与描述将同步更新到阿里云消费者。</p>
+          <div className="flex items-center justify-end gap-[8px]">
+            <UIButton
+              variant="outline"
+              disabled={editCgSubmitting}
+              onClick={() => setEditCg(null)}
+              className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:bg-[#f6f6f6]"
+            >
+              取消
+            </UIButton>
+            <UIButton
+              disabled={editCgSubmitting}
+              onClick={() => void submitEditConsumerGroup()}
+              className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
+            >
+              {editCgSubmitting && <LoaderCircle className="size-[14px] animate-spin" />}
+              保存
             </UIButton>
           </div>
         </DialogContent>

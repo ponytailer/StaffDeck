@@ -2911,12 +2911,15 @@ def _migrate_api_key_application_gateway(conn, tables: set[str]) -> None:
 
 
 def _migrate_api_key_consumer_group(conn, tables: set[str]) -> None:
-    """新增消费组表(api_key_consumer_groups)。"""
+    """新增消费组表(api_key_consumer_groups)；已存在时补充新增列。"""
     if "api_key_consumer_groups" not in tables:
         from app.db.models import ApiKeyConsumerGroup
 
         ApiKeyConsumerGroup.metadata.create_all(bind=engine)
         return
+    columns = {column["name"] for column in inspect(engine).get_columns("api_key_consumer_groups")}
+    if "owner" not in columns:
+        conn.execute(text("ALTER TABLE api_key_consumer_groups ADD COLUMN owner VARCHAR"))
 
 
 def _migrate_api_key_quota_rule(conn, tables: set[str]) -> None:
