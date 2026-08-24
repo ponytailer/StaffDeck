@@ -49,6 +49,11 @@ class UserUpdateRequest(BaseModel):
     role: Optional[Literal["admin", "member"]] = None
 
 
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str = Field(..., min_length=6)
+
+
 class UserChannelIdentity(BaseModel):
     channel: str
     display_name: Optional[str] = None
@@ -415,6 +420,21 @@ def revoke_account_api_credential(
     db.commit()
     db.refresh(row)
     return _account_api_credential_read(row, current_user.id)
+
+
+@router.post("/me/change-password")
+def change_my_password(
+    request: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> Response:
+    if not verify_password(request.old_password, current_user.password_hash):
+        raise HTTPException(status_code=401, detail="旧密码不正确")
+    current_user.password_hash = hash_password(request.new_password)
+    current_user.updated_at = utc_now()
+    db.add(current_user)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.put("/users/{user_id}", response_model=UserRead)

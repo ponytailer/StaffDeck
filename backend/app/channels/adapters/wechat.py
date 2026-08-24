@@ -336,12 +336,16 @@ class WeChatClient:
         return cls(base_url, token)
 
     def _business_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Content-Type": "application/json",
             "AuthorizationType": "ilink_bot_token",
-            "Authorization": f"Bearer {self.bot_token}",
             "X-WECHAT-UIN": random_wechat_uin(),
         }
+        # 空 token 不能拼成 "Bearer "(非法请求头,httpx 会抛 Illegal header value);
+        # 仅在有凭证时附带 Authorization,否则让微信接口返回明确的鉴权错误
+        if self.bot_token:
+            headers["Authorization"] = f"Bearer {self.bot_token}"
+        return headers
 
     @staticmethod
     def _base_info() -> dict[str, Any]:
@@ -946,7 +950,7 @@ class WeChatPollManager:
                     ChannelBinding.status == "active",
                 )
             ).all()
-        active_ids = {row.id for row in rows}
+        active_ids = {row.id for row in rows if row.credentials_enc}
         with self._lock:
             active_ids -= self._paused
         for binding_id in active_ids - self.running_binding_ids():
@@ -979,6 +983,12 @@ class WeChatPollManager:
             try:
                 binding = self._load_binding(binding_id)
                 if not binding:
+                    return
+                if not binding.credentials_enc:
+                    logger.warning(
+                        "微信绑定缺少 bot_token 凭证,不启动 getupdates 轮询 binding=%s(请重新扫码绑定)",
+                        binding_id,
+                    )
                     return
                 config = dict(binding.config_json or {})
                 cursor = str(config.get("get_updates_buf") or "")

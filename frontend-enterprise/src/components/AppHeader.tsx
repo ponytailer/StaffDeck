@@ -9,7 +9,7 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
-import { KeyRound } from 'lucide-react';
+import { KeyRound, Lock } from 'lucide-react';
 
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconEdit from '../assets/icons/edit.svg?react';
@@ -22,6 +22,7 @@ import {
 } from '../auth';
 import LanguageSwitcher from './LanguageSwitcher';
 import AccountApiKeyDialog from './AccountApiKeyDialog';
+import ChangePasswordDialog from './ChangePasswordDialog';
 
 /** 只允许 http/https/data:image/blob 协议的图片地址,其余一律视为无效。 */
 function safeImageUrl(value: string): string {
@@ -84,6 +85,7 @@ export default function AppHeader({
   const avatarBlobUrlRef = useRef('');
   const [avatarSaving, setAvatarSaving] = useState(false);
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const displayName = user?.display_name || user?.username || '';
@@ -342,6 +344,15 @@ export default function AppHeader({
                   API 全量密钥
                 </DropdownMenuItem>
               )}
+              {user && (
+                <DropdownMenuItem
+                  onSelect={() => setChangePasswordOpen(true)}
+                  className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
+                >
+                  <Lock className="size-[16px]" />
+                  修改密码
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 onSelect={() => onLogout?.()}
                 className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
@@ -366,6 +377,10 @@ export default function AppHeader({
         account={user ?? null}
         open={apiKeyOpen}
         onClose={() => setApiKeyOpen(false)}
+      />
+      <ChangePasswordDialog
+        open={changePasswordOpen}
+        onClose={() => setChangePasswordOpen(false)}
       />
     </header>
   );

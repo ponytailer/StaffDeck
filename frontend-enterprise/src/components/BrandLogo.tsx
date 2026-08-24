@@ -23,17 +23,19 @@ export default function BrandLogo({
     <span className={cn('flex items-center gap-[8px] overflow-hidden p-[4px]', className)}>
       <img
         src={logoMark}
-        alt="Holiday"
+        alt="Fosun"
         className="shrink-0"
         style={{ width: markSize, height: markSize }}
       />
       {!markOnly && (
-        <span className={cn('flex flex-col items-center gap-[2px] leading-none', wordmarkClassName)}>
+        <span
+          className={cn('flex flex-col items-center gap-[2px] leading-none', wordmarkClassName)}
+        >
           {/* <span className="text-[12px] font-semibold leading-none text-[#0f136c]">
             OpenBMB
           </span> */}
           <strong className="text-[17px] font-semibold leading-none text-[#18181a]">
-            Holiday
+            Fosun
           </strong>
         </span>
       )}

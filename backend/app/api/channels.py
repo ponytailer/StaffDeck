@@ -936,6 +936,11 @@ def toggle_channel_binding_status(
         db, tenant_id, binding, current_user, action=_MANAGER_ACTION_TOGGLE_STATUS
     )
     target_status = "disabled" if binding.status == "active" else "active"
+    if target_status == "active" and binding.channel == "wechat" and not binding.credentials_enc:
+        raise HTTPException(
+            status_code=400,
+            detail="微信渠道需先完成扫码绑定（获取 bot_token 凭证）后才能启用，请先扫码",
+        )
     expected_revision = binding.config_revision
     channel = binding.channel
     should_run = bool(binding.status == "active" and binding.credentials_enc)
