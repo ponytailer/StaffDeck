@@ -1,6 +1,6 @@
 import { useState, type KeyboardEvent } from 'react';
 
-import { api, TENANT_ID } from '../api/client';
+import { api, TENANT_ID, ApiError } from '../api/client';
 import { setEnterpriseAuthSession, type EnterpriseAuthSession } from '../auth';
 import AppHeader from '../components/AppHeader';
 import BrandLogo from '../components/BrandLogo';
@@ -45,9 +45,15 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       setEnterpriseAuthSession(session);
       onLogin(session);
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : '登录失败';
-      setUsernameError('账号输入错误');
-      setPasswordError(messageText || '密码输入错误');
+      const messageText = error instanceof Error ? error.message : '';
+      const fallback = '登录失败，请稍后重试';
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        setUsernameError('账号或密码不正确');
+        setPasswordError('请检查后重新输入');
+      } else {
+        setUsernameError('账号输入错误');
+        setPasswordError(messageText || fallback);
+      }
     } finally {
       setLoading(false);
     }
@@ -70,9 +76,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
       <main className="flex flex-1 flex-col items-center px-[32px]">
         <div className="flex flex-col items-center pt-[60px]">
-          <span className="flex items-center justify-center rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-[#f6f6f6] px-[20px] py-[6px] text-[14px] text-[#464c5e]">
-            我们来做什么？
-          </span>
           <h1 className="mt-[6px] text-center text-[54px] font-semibold leading-[80px] tracking-[1.08px] text-[#18181a]">
             复星旅文
             <br />
@@ -124,6 +127,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                   </button>
                 )}
               </div>
+              {usernameError && (
+                <p className="mt-[6px] text-[12px] leading-none text-[#f54a45]" role="alert">
+                  {usernameError}
+                </p>
+              )}
 
               <div
                 className={`mt-[24px] ${inputBaseClass} ${passwordError ? 'border-[#f54a45]' : password ? 'border-[#18181a]' : 'border-[#e3e7f1]'}`}
@@ -154,6 +162,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                   )}
                 </button>
               </div>
+              {passwordError && (
+                <p className="mt-[6px] text-[12px] leading-none text-[#f54a45]" role="alert">
+                  {passwordError}
+                </p>
+              )}
 
               <button
                 type="submit"
