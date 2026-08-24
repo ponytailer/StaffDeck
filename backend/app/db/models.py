@@ -645,6 +645,72 @@ class ApiKeyApplication(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
+    # 对接阿里云 AI Gateway 后回填的字段
+    gateway_name: Optional[str] = None
+    gateway_id: Optional[str] = None
+    gateway_url: Optional[str] = None
+    quota_limit: Optional[int] = None
+    quota_period: Optional[str] = None  # day / week / month
+    quota_rule_id: Optional[str] = None
+    consumer_id: Optional[str] = None
+    consumer_name: Optional[str] = None
+    # 审批分配时选定的消费组与配额规则（逻辑关联，便于列表展示与批量改配额）
+    consumer_group_id: Optional[str] = None
+    consumer_group_name: Optional[str] = None
+    quota_rule_name: Optional[str] = None
+
+    # 用量分析缓存（按自然月汇总，降低重复查询阿里云频次）
+    used_amount: Optional[int] = None
+    usage_month: Optional[str] = None  # YYYY-MM
+
+
+class ApiKeyConsumerGroup(SQLModel, table=True):
+    """消费组(阿里云 AI Gateway 消费者)管理。
+
+    创建消费组即在阿里云对应网关下创建一个 Consumer(external_consumer_id);
+    审批分配 API Key 时,系统会把申请的自定义 API Key 作为凭证追加到该 Consumer,
+    使组内成员共享同一消费者(同一配额规则),实现「批量改配额」。
+    """
+
+    __tablename__ = "api_key_consumer_groups"
+
+    id: str = Field(default_factory=lambda: new_id("cg"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    description: Optional[str] = None
+    gateway_id: str
+    gateway_name: str
+    external_consumer_id: Optional[str] = None  # 阿里云消费者 ID,如 cs-mock-001
+    consumer_type: str = "AI"
+    status: str = Field(default="enabled", index=True)
+    created_by_user_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ApiKeyQuotaRule(SQLModel, table=True):
+    """配额规则(阿里云 AI Gateway QuotaRule)管理。
+
+    创建配额规则即在阿里云对应网关下创建一个 QuotaRule(external_rule_id);
+    可绑定到一个或多个消费者(消费组),审批时选定规则即把该消费组纳入规则限流。
+    """
+
+    __tablename__ = "api_key_quota_rules"
+
+    id: str = Field(default_factory=lambda: new_id("qr"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    gateway_id: str
+    gateway_name: str
+    quota_dimension: str = "token"  # token / credit
+    quota_limit: int
+    period_type: str = "day"  # day / week / month
+    external_rule_id: Optional[str] = None  # 阿里云配额规则 ID,如 qr-mock-001
+    status: str = Field(default="enabled", index=True)
+    created_by_user_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
 
 class PersonaConfig(SQLModel, table=True):
     __tablename__ = "persona_configs"

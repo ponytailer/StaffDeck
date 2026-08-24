@@ -156,6 +156,7 @@ export default function ModelsPage({
   const [testingModelIds, setTestingModelIds] = useState<Set<string>>(new Set());
   const [form, setForm] = useState<ModelForm>(BLANK_MODEL_FORM);
   const [availableProtocols, setAvailableProtocols] = useState<ModelForm['api_protocol'][]>(['openai_chat_completions']);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
 
   const updateForm = <K extends keyof ModelForm>(key: K, value: ModelForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -179,6 +180,10 @@ export default function ModelsPage({
     void api
       .get<{ protocols: ModelForm['api_protocol'][] }>(`/api/enterprise/model-configs/protocols?tenant_id=${TENANT_ID}`)
       .then((result) => setAvailableProtocols(result.protocols));
+    void api
+      .get<{ models: string[] }>(`/api/enterprise/model-configs/presets?tenant_id=${TENANT_ID}`)
+      .then((result) => setAvailableModels(result.models))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -198,6 +203,14 @@ export default function ModelsPage({
   }, [rows, searchText]);
 
   const pagination = useClientPagination(filteredRows, MODEL_PAGE_SIZE, searchText);
+
+  // 下拉候选：环境变量配置的固定模型；编辑旧数据时若当前值不在列表内，则并入展示以保留原值
+  const modelOptions = useMemo(() => {
+    const options = [...availableModels];
+    const current = form.model.trim();
+    if (current && !options.includes(current)) options.unshift(current);
+    return options;
+  }, [availableModels, form.model]);
 
   function edit(row: ModelConfigRead) {
     setSelected(row);
@@ -232,7 +245,7 @@ export default function ModelsPage({
     const name = form.name.trim();
     const model = form.model.trim();
     if (!name || !model) {
-      notify.error('请填写名称和 Model');
+      notify.error('请填写名称并选择 Model');
       return;
     }
     const temperature = Number(form.temperature);
@@ -426,7 +439,12 @@ export default function ModelsPage({
       key: 'api_key',
       title: 'API Key',
       width: 180,
-      render: (row) => <span className="block truncate font-mono text-[#858b9c]">{row.api_key_masked || '-'}</span>,
+      render: (row) =>
+        row.api_key_masked ? (
+          <span className="block truncate font-mono text-[#858b9c]">{row.api_key_masked}</span>
+        ) : (
+          <span className="block truncate text-[12px] font-medium text-[#e5484d]">密钥失效，请更新</span>
+        ),
     },
     {
       key: 'actions',
@@ -456,7 +474,9 @@ export default function ModelsPage({
       </div>
       <p className="mt-[8px] line-clamp-1 wrap-break-word text-[12px] text-[#858b9c]">{row.model}</p>
       <p className="mt-[4px] line-clamp-1 wrap-break-word font-mono text-[12px] text-[#858b9c]">
-        {row.api_key_masked || '-'}
+        {row.api_key_masked || (
+          <span className="font-medium text-[#e5484d]">密钥失效，请更新</span>
+        )}
       </p>
     </article>
   );
@@ -564,7 +584,7 @@ export default function ModelsPage({
 
       {tab === 'apikeys' && (
         <div className="mt-[16px]">
-          <ApiKeyApplicationsPanel />
+          <ApiKeyApplicationsPanel currentUser={currentUser} />
         </div>
       )}
 
@@ -617,13 +637,30 @@ export default function ModelsPage({
                 />
               </LabeledField>
               <LabeledField label="Model">
-                <Input value={form.model} placeholder="例如 gpt-4o" onChange={(event) => updateForm('model', event.target.value)} />
+                <Select value={form.model} onValueChange={(value) => updateForm('model', value)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={modelOptions.length ? '请选择模型' : '暂无可用模型，请在环境变量 MODEL_PRESETS 中配置'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {modelOptions.map((model) => (
+                      <SelectItem key={model} value={model}>
+                        {model}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </LabeledField>
               <LabeledField label="API Key">
                 <Input
                   type="password"
                   value={form.api_key}
-                  placeholder={selected ? '不修改请留空' : 'sk-...'}
+                  placeholder={
+                    selected && !selected.api_key_masked
+                      ? '密钥已失效，必须重新填写'
+                      : selected
+                        ? '不修改请留空'
+                        : 'sk-...'
+                  }
                   onChange={(event) => updateForm('api_key', event.target.value)}
                 />
               </LabeledField>

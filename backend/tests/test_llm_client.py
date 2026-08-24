@@ -64,7 +64,7 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
             },
         },
     )()
-    monkeypatch.setattr("app.llm.client.decrypt_secret", fake_decrypt_secret)
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", fake_decrypt_secret)
     monkeypatch.setattr("app.llm.client.OpenAI", fake_openai)
     monkeypatch.setattr("app.llm.client.get_settings", lambda: settings)
 
@@ -82,7 +82,7 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
 
 def test_llm_client_preserves_custom_openai_base_url(monkeypatch) -> None:
     captured = {}
-    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "api-key")
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", lambda _value: "api-key")
     monkeypatch.setattr(
         "app.llm.client.OpenAI",
         lambda **kwargs: captured.update(kwargs) or _FakeOpenAIClient(),

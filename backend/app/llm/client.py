@@ -36,7 +36,7 @@ from app.llm.stage_protocol import (
     render_stage_user_message,
 )
 from app.observability.spans import current_llm_operation, llm_span_attributes, start_llm_call
-from app.security.encryption import decrypt_secret
+from app.security.encryption import try_decrypt_secret
 
 
 class LLMError(Exception):
@@ -116,9 +116,11 @@ class LLMClient:
             )
         except ValueError as exc:
             raise LLMError("MODEL_PROTOCOL_UNSUPPORTED") from exc
-        api_key = decrypt_secret(model_config.api_key_encrypted)
+        api_key = try_decrypt_secret(model_config.api_key_encrypted)
         if not api_key:
-            raise LLMError("Model API key is not configured")
+            raise LLMError(
+                "Model API key is invalid or cannot be decrypted (APP_SECRET changed?)"
+            )
         self.timeout_seconds = (
             getattr(model_config, "timeout_seconds", None)
             or get_settings().model_api_timeout_seconds

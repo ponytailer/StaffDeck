@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.db.models import AgentModelBinding, ModelConfig, User, utc_now
+from app.config import get_settings
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import (
     ResolvedModelConfig,
@@ -36,7 +37,12 @@ from app.llm.schemas import (
     ModelProviderErrorDetail,
 )
 from app.security.auth import get_current_user, require_current_tenant
-from app.security.encryption import decrypt_secret, encrypt_secret, mask_secret
+from app.security.encryption import (
+    decrypt_secret,
+    encrypt_secret,
+    mask_secret,
+    try_decrypt_secret,
+)
 from app.security.tenant import ensure_tenant
 
 router = APIRouter(
@@ -61,8 +67,18 @@ def list_model_protocols(tenant_id: str = Query(...)) -> dict[str, list[str]]:
     return {"protocols": available_model_protocols()}
 
 
+@router.get(
+    "/presets",
+    dependencies=[Depends(require_current_tenant)],
+)
+def list_model_presets(tenant_id: str = Query(...)) -> dict[str, list[str]]:
+    """返回环境变量 MODEL_PRESETS 配置的固定可选模型列表。"""
+    return {"models": get_settings().model_preset_list}
+
+
 def model_config_read(row: ModelConfig) -> ModelConfigRead:
-    api_key = decrypt_secret(row.api_key_encrypted)
+    # 历史数据可能用旧 APP_SECRET 加密，解密失败时不抛异常，返回空掩码让前端提示重新配置
+    api_key = try_decrypt_secret(row.api_key_encrypted)
     extra_body = row.extra_body_json if isinstance(row.extra_body_json, dict) else {}
     return ModelConfigRead(
         id=row.id,
@@ -71,7 +87,7 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
         provider=row.provider,
         api_protocol=row.api_protocol,
         base_url=row.base_url,
-        api_key_masked=mask_secret(api_key),
+        api_key_masked=mask_secret(api_key) if api_key else "",
         model=row.model,
         temperature=row.temperature,
         max_output_tokens=row.max_output_tokens,

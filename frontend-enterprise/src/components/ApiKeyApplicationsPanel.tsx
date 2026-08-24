@@ -7,6 +7,9 @@ import { notify } from '@/components/ui/app-toast';
 import { StatusBadge } from '@/pages/scheduled-tasks/StatusBadge';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import { cn } from '@/lib/utils';
+import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
+import { ApiKeyQuotaPanel } from './ApiKeyQuotaPanel';
+import { UnderlineTabs } from '@/components/ui/underline-tabs';
 
 const MAX_APPLICATIONS = 2;
 
@@ -26,6 +29,8 @@ type ApiKeyApplication = {
   updated_at: string;
 };
 
+type SubTab = 'mine' | 'quota';
+
 const STATUS_META: Record<ApiKeyApplication['status'], { tone: 'orange' | 'green' | 'red' | 'gray'; label: string }> = {
   pending: { tone: 'orange', label: '待审批' },
   approved: { tone: 'green', label: '已批准' },
@@ -40,11 +45,13 @@ function formatTime(value: string | null): string {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
-export function ApiKeyApplicationsPanel() {
+export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: EnterpriseAuthUser }) {
+  const [subTab, setSubTab] = useState<SubTab>('mine');
   const [items, setItems] = useState<ApiKeyApplication[]>([]);
   const [loading, setLoading] = useState(false);
   const [purpose, setPurpose] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const isAdmin = isEnterpriseAdmin(currentUser);
 
   const activeCount = items.filter(
     (item) => item.status === 'pending' || item.status === 'approved',
@@ -95,16 +102,16 @@ export function ApiKeyApplicationsPanel() {
       .catch(() => notify.error('复制失败，请手动选择复制'));
   }
 
-  return (
+  const mineTab = (
     <section className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
       <div className="flex flex-col gap-[14px]">
         <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
           <KeyRound className="size-[14px] shrink-0" />
-          <span className="text-[14px] font-normal leading-none">API Key 管理</span>
+          <span className="text-[14px] font-normal leading-none">我的 API Key</span>
         </div>
 
         <p className="px-[12px] text-[12px] leading-[18px] text-[#757f9c]">
-          每位用户最多申请 2 个 API Key。提交后由管理员审批，通过后自动分配 API Key 与网关地址（当前为本地 Mock，后续对接阿里云）。
+          每位用户最多申请 2 个 API Key。提交后由管理员审批，通过后自动分配 API Key 与网关地址。
         </p>
 
         <div className="px-[12px]">
@@ -224,5 +231,25 @@ export function ApiKeyApplicationsPanel() {
         </div>
       </div>
     </section>
+  );
+
+  if (!isAdmin) {
+    return mineTab;
+  }
+
+  return (
+    <div className="flex flex-col gap-[16px]">
+      <UnderlineTabs
+        aria-label="API Key 管理子 Tab"
+        value={subTab}
+        onChange={(value) => setSubTab(value as SubTab)}
+        items={[
+          { value: 'mine', label: '我的 API Key' },
+          { value: 'quota', label: '配额管理' },
+        ]}
+      />
+      {subTab === 'mine' && mineTab}
+      {subTab === 'quota' && <ApiKeyQuotaPanel />}
+    </div>
   );
 }

@@ -100,6 +100,9 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_channel_bind_code_constraints(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
+        _migrate_api_key_application_gateway(conn, tables)
+        _migrate_api_key_consumer_group(conn, tables)
+        _migrate_api_key_quota_rule(conn, tables)
 
         if "api_jobs" in tables:
             job_columns = {column["name"] for column in inspector.get_columns("api_jobs")}
@@ -2880,6 +2883,49 @@ def _agent_knowledge_branch_id(agent_id: str, knowledge_base_id: str) -> str:
 def _agent_resource_binding_id(tenant_id: str, agent_id: str, resource_type: str, resource_id: str) -> str:
     key = f"{tenant_id}:{agent_id}:{resource_type}:{resource_id}"
     return f"agentres_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _migrate_api_key_application_gateway(conn, tables: set[str]) -> None:
+    """API Key 申请单对接阿里云: 补网关/配额/消费者相关字段。"""
+    if "api_key_applications" not in tables:
+        return
+    columns = {column["name"] for column in inspect(engine).get_columns("api_key_applications")}
+    for column in (
+        "gateway_name",
+        "gateway_id",
+        "gateway_url",
+        "quota_limit",
+        "quota_period",
+        "quota_rule_id",
+        "consumer_id",
+        "consumer_name",
+        "consumer_group_id",
+        "consumer_group_name",
+        "quota_rule_name",
+        "used_amount",
+        "usage_month",
+    ):
+        if column not in columns:
+            conn_type = "INTEGER" if column == "used_amount" else "VARCHAR"
+            conn.execute(text(f"ALTER TABLE api_key_applications ADD COLUMN {column} {conn_type}"))
+
+
+def _migrate_api_key_consumer_group(conn, tables: set[str]) -> None:
+    """新增消费组表(api_key_consumer_groups)。"""
+    if "api_key_consumer_groups" not in tables:
+        from app.db.models import ApiKeyConsumerGroup
+
+        ApiKeyConsumerGroup.metadata.create_all(bind=engine)
+        return
+
+
+def _migrate_api_key_quota_rule(conn, tables: set[str]) -> None:
+    """新增配额规则表(api_key_quota_rules)。"""
+    if "api_key_quota_rules" not in tables:
+        from app.db.models import ApiKeyQuotaRule
+
+        ApiKeyQuotaRule.metadata.create_all(bind=engine)
+        return
 
 
 def get_session() -> Generator[Session, None, None]:

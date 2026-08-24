@@ -1,3 +1,4 @@
+import json
 import os as _os
 from functools import lru_cache
 
@@ -12,6 +13,10 @@ class Settings(BaseSettings):
     demo_model_name: str = "qwen3.6-27b"
     demo_model_api_key: str = ""
     model_api_timeout_seconds: float = 600.0
+    # 新建/编辑模型时可选用的固定模型列表（JSON 数组字符串）。
+    # 例如：MODEL_PRESETS='["gpt-4o","gpt-4o-mini","qwen-max","qwen-plus","deepseek-v3","claude-sonnet-4-5","gemini-2.5-pro"]'
+    # 未配置时使用下方默认内置列表，保证前端下拉始终有可选值。
+    model_presets: str = '["gpt-4o","gpt-4o-mini","qwen-max","qwen-plus","deepseek-v3","claude-sonnet-4-5","gemini-2.5-pro"]'
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
     tool_timeout_seconds: float = 8.0
@@ -72,6 +77,15 @@ class Settings(BaseSettings):
     @property
     def general_skill_runtime_package_list(self) -> list[str]:
         return [item.strip() for item in self.general_skill_runtime_packages.split(",") if item.strip()]
+
+    @property
+    def model_preset_list(self) -> list[str]:
+        """解析 MODEL_PRESETS 为模型名列表，忽略空项与非法 JSON。"""
+        try:
+            items = json.loads(self.model_presets or "[]")
+        except (ValueError, TypeError):
+            return []
+        return [str(item).strip() for item in items if str(item).strip()]
 
 
 @lru_cache

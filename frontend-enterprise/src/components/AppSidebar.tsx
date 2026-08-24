@@ -181,7 +181,7 @@ function PrimaryNavButton({
         isActive={selected === item.route}
         onClick={() => onNavigate(item.route)}
         className={cn(
-          'h-[40px] gap-[10px] rounded-[14px] px-[20px] py-[10px] text-[14px] text-sidebar-foreground',
+          'h-[34px] gap-[10px] rounded-[12px] px-[20px] py-[6px] text-[13px] text-sidebar-foreground',
           'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
           'data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground data-active:font-normal',
           attention && selected !== item.route && 'bg-[#fff7e8] text-[#8a4b00] ring-1 ring-[#ffd58a]',
@@ -189,7 +189,7 @@ function PrimaryNavButton({
         )}
       >
         <item.Icon className="size-[16px]!" />
-        <span className="text-[14px]">{item.label}</span>
+        <span className="text-[13px]">{item.label}</span>
         {attention && (
           <span className="ml-auto size-[6px] rounded-full bg-[#f59e0b] group-data-[collapsible=icon]:hidden" />
         )}
@@ -215,7 +215,7 @@ function CardNavButton({
         isActive={selected === item.route}
         onClick={() => onNavigate(item.route)}
         className={cn(
-          'h-[36px] gap-[8px] rounded-[12px] px-[12px] py-[4px] text-[12px] text-sidebar-foreground',
+          'h-[32px] gap-[8px] rounded-[10px] px-[12px] py-[4px] text-[11px] text-sidebar-foreground',
           'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
           'data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground data-active:font-normal',
           'group-data-[collapsible=icon]:px-0!',
@@ -230,7 +230,7 @@ function CardNavButton({
 
 function GroupLabel({ children }: { children: string }) {
   return (
-    <span className="px-[8px] pt-[6px] pb-[2px] text-[10px] leading-none text-[#464c5e] group-data-[collapsible=icon]:hidden">
+    <span className="px-[8px] pt-[4px] pb-[2px] text-[10px] leading-none text-[#464c5e] group-data-[collapsible=icon]:hidden">
       {children}
     </span>
   );
@@ -674,7 +674,7 @@ function ManagementSidebar({
   return (
     <Sidebar collapsible="icon" className={SIDEBAR_SHELL_CLASS}>
       <div className="flex h-full w-(--sidebar-width) shrink-0 flex-col">
-      <SidebarHeader className="gap-[24px] px-[20px] pt-[42px] group-data-[collapsible=icon]:px-[20px]">
+      <SidebarHeader className="gap-[16px] px-[20px] pt-[32px] group-data-[collapsible=icon]:px-[20px]">
         <div className="flex items-center justify-between">
           <button type="button" title="开放广场">
             <BrandLogo wordmarkClassName="group-data-[collapsible=icon]:hidden" />
@@ -692,8 +692,8 @@ function ManagementSidebar({
           )}
         </div>
 
-        <div className="flex flex-col gap-[18px]">
-          <SidebarMenu className="gap-[10px]">
+        <div className="flex flex-col gap-[12px]">
+          <SidebarMenu className="gap-[6px]">
             {primaryItems.map((item) => (
               <PrimaryNavButton
                 key={item.route}
@@ -711,7 +711,7 @@ function ManagementSidebar({
       <SidebarContent className="px-[20px] group-data-[collapsible=icon]:px-[20px]">
         <div
           className={cn(
-            'mt-[36px] mb-[24px] flex flex-col gap-[8px] rounded-[20px] border-[0.5px] border-[#e3e7f1] bg-sidebar px-[4px] pt-[6px] pb-[8px]',
+            'mt-[20px] mb-[16px] flex flex-col gap-[6px] rounded-[20px] border-[0.5px] border-[#e3e7f1] bg-sidebar px-[4px] pt-[6px] pb-[8px]',
             'group-data-[collapsible=icon]:mt-[24px] group-data-[collapsible=icon]:border-transparent group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0 group-data-[collapsible=icon]:shadow-none',
           )}
         >
@@ -936,7 +936,7 @@ function ChatHandoffButton({
     <button
       type="button"
       onClick={onOpen}
-      className="flex items-center justify-between gap-[12px] rounded-[8px] px-[20px] py-[10px] text-left text-[14px] text-[#858b9c] transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+      className="flex items-center justify-between gap-[12px] rounded-[8px] px-[20px] py-[8px] text-left text-[13px] text-[#858b9c] transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
     >
       <span className="flex min-w-0 items-center gap-[12px]">
         <IconChatBubble className="size-[16px]! shrink-0" />
@@ -1340,7 +1340,7 @@ function ChatSidebarVariant({
   return (
     <Sidebar collapsible="icon" className={SIDEBAR_SHELL_CLASS}>
       <div className="flex h-full w-(--sidebar-width) shrink-0 flex-col">
-        <SidebarHeader className="gap-[24px] px-[20px] pt-[42px]">
+        <SidebarHeader className="gap-[16px] px-[20px] pt-[32px]">
           <div className="flex items-center justify-between">
             <button type="button" title="数字员工广场" onClick={onOpenGallery}>
               <BrandLogo />
@@ -1356,20 +1356,20 @@ function ChatSidebarVariant({
             </button>
           </div>
 
-          <div className="flex flex-col gap-[16px]">
+          <div className="flex flex-col gap-[12px]">
             <button
               type="button"
               onClick={onOpenGallery}
               aria-current={galleryActive ? 'page' : undefined}
               className={cn(
-                'flex items-center gap-[12px] rounded-[8px] px-[20px] py-[10px] text-left text-[14px] transition-colors',
+                'flex items-center gap-[12px] rounded-[8px] px-[20px] py-[8px] text-left text-[13px] transition-colors',
                 galleryActive
                   ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                   : 'text-[#858b9c] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
               )}
             >
               <IconGlobe className="size-[16px]! shrink-0" />
-              <span className="truncate">数字员工广场</span>
+              <span className="truncate text-[13px]">数字员工广场</span>
             </button>
             <ChatHandoffButton count={handoffCount} onOpen={onOpenHandoffs} />
             <div className="h-px w-full bg-sidebar-border" />

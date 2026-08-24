@@ -710,3 +710,19 @@ def _install_passing_verification_client(monkeypatch) -> None:
             return {"ok": True}
 
     monkeypatch.setattr("app.api.model_configs.LLMClient", PassingClient)
+
+
+def test_model_presets_parses_from_env() -> None:
+    """MODEL_PRESETS 环境变量按 JSON 数组解析，忽略空项。"""
+    from app.config import Settings
+
+    settings = Settings(model_presets='["gpt-4o", "qwen-max", "", "  deepseek-v3  "]')
+    assert settings.model_preset_list == ["gpt-4o", "qwen-max", "deepseek-v3"]
+
+
+def test_model_presets_invalid_json_falls_back_to_empty() -> None:
+    """非法 JSON 时返回空列表，不抛异常。"""
+    from app.config import Settings
+
+    settings = Settings(model_presets="not-json{{")
+    assert settings.model_preset_list == []

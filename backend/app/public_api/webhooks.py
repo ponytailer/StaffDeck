@@ -24,7 +24,7 @@ from app.db.models import (
 from app.public_api.auth import PublicPrincipal, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.schemas import WebhookCreate, WebhookRead
-from app.security.encryption import decrypt_secret, encrypt_secret
+from app.security.encryption import encrypt_secret, try_decrypt_secret
 
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -322,8 +322,22 @@ def deliver_webhook(delivery_id: str) -> None:
             return
         body = json.dumps(delivery.payload_json, ensure_ascii=False, separators=(",", ":"))
         timestamp = str(int(datetime_now_timestamp()))
+        # 历史数据可能用旧 APP_SECRET 加密：解密失败标记投递失败，不阻塞队列
+        endpoint_secret = try_decrypt_secret(endpoint.secret_encrypted)
+        if not endpoint_secret:
+            _finish_webhook_delivery(
+                db,
+                delivery,
+                owner,
+                {
+                    "status": "failed",
+                    "last_error": "Webhook secret cannot be decrypted (APP_SECRET changed)",
+                    "next_attempt_at": None,
+                },
+            )
+            return
         signature = hmac.new(
-            decrypt_secret(endpoint.secret_encrypted).encode("utf-8"),
+            endpoint_secret.encode("utf-8"),
             f"{timestamp}.{body}".encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
