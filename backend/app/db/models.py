@@ -622,6 +622,30 @@ class ModelConfig(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class ApiKeyApplication(SQLModel, table=True):
+    """用户申请 API Key 的审批单:pending -> approved / rejected (管理员操作)。
+
+    api_key 以加密形式存储(api_key_encrypted),仅在申请人自己的视图中明文返回一次;
+    api_url 为网关地址(当前为本地 mock,后续对接阿里云 DashScope 时由云侧下发)。
+    """
+
+    __tablename__ = "api_key_applications"
+
+    id: str = Field(default_factory=lambda: new_id("apk"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    username: Optional[str] = None
+    purpose: Optional[str] = None
+    status: str = Field(default="pending", index=True)
+    api_key_encrypted: Optional[str] = None
+    api_url: Optional[str] = None
+    reviewer_user_id: Optional[str] = Field(default=None, index=True)
+    reviewer_note: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class PersonaConfig(SQLModel, table=True):
     __tablename__ = "persona_configs"
 

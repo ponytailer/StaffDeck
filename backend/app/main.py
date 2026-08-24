@@ -15,6 +15,7 @@ from app.api import (
     general_skills,
     knowledge,
     knowledge_bases,
+    api_key_applications,
     memories,
     mock,
     model_configs,
@@ -117,6 +118,7 @@ app.include_router(knowledge_bases.router)
 app.include_router(knowledge.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)
+app.include_router(api_key_applications.router)
 app.include_router(memories.router)
 app.include_router(evolution.router)
 app.include_router(feedback.router)

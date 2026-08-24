@@ -6,7 +6,6 @@ import type { EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { Paginator } from '@/components/Paginator';
-import { StatCard } from '@/components/StatCard';
 import {
   Dialog,
   DialogContent,
@@ -27,6 +26,7 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { UnderlineTabs } from '@/components/ui/underline-tabs';
 import { cn } from '@/lib/utils';
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_ITEM_DANGER_CLASS } from '@/lib/enterprise-ui';
 import IconAdd from '../assets/icons/add.svg?react';
@@ -36,6 +36,7 @@ import IconModels from '../assets/icons/sys-models.svg?react';
 import IconMore from '../assets/icons/more.svg?react';
 import IconRefresh from '../assets/icons/refresh.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
+import { ApiKeyApplicationsPanel } from '@/components/ApiKeyApplicationsPanel';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { useClientPagination } from '../hooks/useClientPagination';
 import type { ModelConfigRead } from '../types';
@@ -141,6 +142,7 @@ export default function ModelsPage({
   currentUser?: EnterpriseAuthUser;
   onLogout?: () => void;
 } = {}) {
+  const [tab, setTab] = useState<'models' | 'apikeys'>('models');
   const [rows, setRows] = useState<ModelConfigRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -196,10 +198,6 @@ export default function ModelsPage({
   }, [rows, searchText]);
 
   const pagination = useClientPagination(filteredRows, MODEL_PAGE_SIZE, searchText);
-
-  const enabledCount = rows.filter((item) => item.enabled).length;
-  const defaultRow = rows.find((item) => item.is_default);
-  const providerCount = new Set(rows.map((item) => item.api_protocol).filter(Boolean)).size;
 
   function edit(row: ModelConfigRead) {
     setSelected(row);
@@ -465,9 +463,21 @@ export default function ModelsPage({
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
-      <AppHeader className="items-center" onLogout={onLogout} userName={currentUser?.username} title="模型" />
+      <AppHeader className="items-center" onLogout={onLogout} userName={currentUser?.username} title="模型配置" />
 
-      <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
+      <UnderlineTabs
+        className="mt-[20px]"
+        aria-label="模型与 API Key 管理"
+        value={tab}
+        onChange={setTab}
+        items={[
+          { value: 'models', label: '模型管理' },
+          { value: 'apikeys', label: 'API Key 管理' },
+        ]}
+      />
+
+      {tab === 'models' && (
+      <div className="mt-[16px] mb-[16px] flex items-center justify-end gap-[12px]">
         <UIButton
           variant="outline"
           onClick={() => void load()}
@@ -486,15 +496,10 @@ export default function ModelsPage({
           新建模型
         </UIButton>
       </div>
+      )}
 
+      {tab === 'models' && (
       <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
-        <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="模型统计">
-          <StatCard label="模型" value={rows.length} />
-          <StatCard label="已启用" value={enabledCount} tone="green" />
-          <StatCard label="默认模型" value={defaultRow?.name || '-'} valueClassName="text-[18px] leading-[26px]" />
-          <StatCard label="API 协议" value={providerCount} />
-        </div>
-
         <div className="flex flex-col gap-[18px]">
           <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
             <IconModels className="size-[14px] shrink-0" />
@@ -555,6 +560,13 @@ export default function ModelsPage({
           )}
         </div>
       </div>
+      )}
+
+      {tab === 'apikeys' && (
+        <div className="mt-[16px]">
+          <ApiKeyApplicationsPanel />
+        </div>
+      )}
 
       <Dialog open={editorOpen} onOpenChange={(next) => !next && closeEditor()}>
         <DialogContent
@@ -692,6 +704,7 @@ export default function ModelsPage({
         confirmText="删除"
         onConfirm={() => void confirmDelete()}
       />
+
     </div>
   );
 }

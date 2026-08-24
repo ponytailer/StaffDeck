@@ -85,8 +85,29 @@ const CAPABILITY_NAV: NavItem[] = [
 
 const SYSTEM_NAV: NavItem[] = [
   { route: EnterpriseRoute.Accounts, label: '账号管理', Icon: IconAccounts },
+  { route: EnterpriseRoute.ApiKeyApprovals, label: 'API Key 审批', Icon: IconApiKey },
   { route: EnterpriseRoute.RuntimeSettings, label: '运行设置', Icon: IconSettings },
 ];
+
+function IconApiKey({ className, ...props }: { className?: string } & SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      {...props}
+    >
+      <circle cx="7.5" cy="15.5" r="4.5" />
+      <path d="M10.7 12.3 21 2" />
+      <path d="M15.5 6.5 18.5 9.5" />
+      <path d="M18 4 20.5 6.5" />
+    </svg>
+  );
+}
 
 function primaryNavItems(isAdmin: boolean): NavItem[] {
   return isAdmin ? [...PRIMARY_NAV, ...SYSTEM_NAV] : PRIMARY_NAV;

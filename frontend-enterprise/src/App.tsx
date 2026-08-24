@@ -53,6 +53,7 @@ import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
+import ApiKeyApprovalsPage from "./pages/ApiKeyApprovalsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -771,6 +772,16 @@ function Shell({
                 element={
                   isAdmin ? (
                     <RuntimeSettingsPage currentUser={auth.user} />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                  )
+                }
+              />
+              <Route
+                path="/enterprise/api-key-approvals"
+                element={
+                  isAdmin ? (
+                    <ApiKeyApprovalsPage currentUser={auth.user} onLogout={onLogout} />
                   ) : (
                     <Navigate to={EnterpriseRoute.Gallery} replace />
                   )
