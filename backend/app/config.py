@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # 新建/编辑模型时可选用的固定模型列表（JSON 数组字符串）。
     # 例如：MODEL_PRESETS='["gpt-4o","gpt-4o-mini","qwen-max","qwen-plus","deepseek-v3","claude-sonnet-4-5","gemini-2.5-pro"]'
     # 未配置时使用下方默认内置列表，保证前端下拉始终有可选值。
-    model_presets: str = '["gpt-4o","gpt-4o-mini","qwen-max","qwen-plus","deepseek-v3","claude-sonnet-4-5","gemini-2.5-pro"]'
+    model_presets: str = '["qwen3.7-plus", "deepseek-v4-flash-0731", "qwen3.8-27b"]' 
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
     tool_timeout_seconds: float = 8.0

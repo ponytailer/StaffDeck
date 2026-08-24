@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, FlaskConical, LoaderCircle, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, FlaskConical, LoaderCircle, Plus, Trash2 } from 'lucide-react';
 
 import { api, ApiError, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
@@ -15,6 +15,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   Input,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   Select,
   SelectContent,
   SelectItem,
@@ -89,6 +92,119 @@ const BLANK_MODEL_FORM: ModelForm = {
   is_default: false,
   enabled: true,
 };
+
+/**
+ * 可搜索 + 可手动输入的下拉：预设模型可直接点选，
+ * 输入框里输入任意名称后回车（或点击「使用自定义名称」）即可手动录入。
+ */
+function ModelCombobox({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const trimmed = query.trim();
+  const filtered = useMemo(() => {
+    const q = trimmed.toLowerCase();
+    return q ? options.filter((model) => model.toLowerCase().includes(q)) : options;
+  }, [options, trimmed]);
+
+  // 输入内容不在预设列表内 -> 允许作为自定义名称录入
+  const canCustom = trimmed !== '' && !options.includes(trimmed);
+
+  function pick(next: string) {
+    onChange(next);
+    setOpen(false);
+    setQuery('');
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setQuery(value);
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'flex h-8 w-full items-center justify-between gap-1.5 rounded-lg border border-input bg-transparent px-2.5 text-sm transition-colors outline-none select-none',
+            'hover:bg-accent/40 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
+            value ? 'text-foreground' : 'text-muted-foreground',
+          )}
+        >
+          <span className="truncate">
+            {value || (options.length ? '请选择模型，或输入自定义名称' : '暂无可用模型，请在环境变量 MODEL_PRESETS 中配置')}
+          </span>
+          <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={4}
+        className="w-(--radix-popover-trigger-width) min-w-[240px] p-1.5"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          searchRef.current?.focus();
+        }}
+      >
+        <input
+          ref={searchRef}
+          value={query}
+          placeholder="搜索或输入模型名称，回车确认"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && canCustom) pick(trimmed);
+            if (event.key === 'Escape') setOpen(false);
+          }}
+          className="mb-1.5 h-7 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring"
+        />
+        <div className="max-h-[224px] overflow-y-auto">
+          {filtered.map((model) => (
+            <button
+              key={model}
+              type="button"
+              onClick={() => pick(model)}
+              className={cn(
+                'flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground',
+                model === value && 'bg-accent/70 text-accent-foreground',
+              )}
+            >
+              <span className="truncate font-mono text-[13px]">{model}</span>
+              {model === value && <Check className="size-3.5 shrink-0" />}
+            </button>
+          ))}
+          {canCustom && (
+            <>
+              {filtered.length > 0 && <div className="my-1 h-px bg-border" />}
+              <button
+                type="button"
+                onClick={() => pick(trimmed)}
+                className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm text-primary transition-colors hover:bg-accent"
+              >
+                <Plus className="size-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">使用自定义名称“{trimmed}”</span>
+                <kbd className="rounded border border-border bg-muted px-1 font-mono text-[10px] leading-4 text-muted-foreground">↵</kbd>
+              </button>
+            </>
+          )}
+          {!filtered.length && !canCustom && (
+            <div className="px-2 py-4 text-center text-xs text-muted-foreground">无匹配选项</div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export function modelProviderErrorMessage(
   error: ModelProviderErrorDetail | null | undefined,
@@ -637,18 +753,11 @@ export default function ModelsPage({
                 />
               </LabeledField>
               <LabeledField label="Model">
-                <Select value={form.model} onValueChange={(value) => updateForm('model', value)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={modelOptions.length ? '请选择模型' : '暂无可用模型，请在环境变量 MODEL_PRESETS 中配置'} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {modelOptions.map((model) => (
-                      <SelectItem key={model} value={model}>
-                        {model}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <ModelCombobox
+                  value={form.model}
+                  options={modelOptions}
+                  onChange={(value) => updateForm('model', value)}
+                />
               </LabeledField>
               <LabeledField label="API Key">
                 <Input
