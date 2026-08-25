@@ -69,6 +69,7 @@ class TaskRequirement(BaseModel):
     memory_projection: list[dict[str, str]] = Field(default_factory=list)
     prior_task_results: list[dict[str, Any]] = Field(default_factory=list)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    published_deliverables: list[dict[str, Any]] = Field(default_factory=list)
     capability_manifest: CapabilityManifest = Field(default_factory=CapabilityManifest)
 
 
@@ -108,6 +109,7 @@ class TaskRequestCompiler:
         memory_context: list[dict[str, object]] | None = None,
         prior_task_results: list[dict[str, Any]] | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        published_deliverables: list[dict[str, Any]] | None = None,
         source_user_message: str | None = None,
         out_of_scope_task_intents: list[str] | None = None,
     ) -> TaskRequirement:
@@ -182,6 +184,7 @@ class TaskRequestCompiler:
             memory_projection=_memory_projection(memory_context),
             prior_task_results=list(prior_task_results or []),
             attachments=list(attachments or []),
+            published_deliverables=list(published_deliverables or []),
             capability_manifest=manifest,
         )
 
