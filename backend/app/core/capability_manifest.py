@@ -38,6 +38,8 @@ from app.harness.sandbox import available_backend
 RESERVED_HARNESS_CAPABILITY_NAMES = {
     "capability_search",
     "capability_describe",
+    "list_published_deliverables",
+    "read_published_deliverable",
     "exec_command",
     "run_skill_script",
     "knowledge_search",
@@ -353,6 +355,51 @@ class CapabilityManifestBuilder:
 
 def _internal_capability_descriptors() -> list[CapabilityDescriptor]:
     return [
+        CapabilityDescriptor(
+            capability_id="builtin.deliverables.list",
+            name="list_published_deliverables",
+            kind="internal",
+            description=(
+                "List recent files published by earlier TaskFrames in this same conversation. "
+                "Use this before continuing work from a document delivered in a previous turn."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 20,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            metadata={"provider": "harness", "side_effect": "read"},
+        ),
+        CapabilityDescriptor(
+            capability_id="builtin.deliverables.read",
+            name="read_published_deliverable",
+            kind="internal",
+            description=(
+                "Read UTF-8 content from one file returned by list_published_deliverables. "
+                "Pass its task_frame_id and path exactly; use the continuation token when truncated."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_frame_id": {"type": "string", "minLength": 1},
+                    "path": {"type": "string", "minLength": 1},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "max_bytes": {"type": "integer", "minimum": 1},
+                    "continuation_token": {"type": "string", "minLength": 1},
+                },
+                "required": ["task_frame_id", "path"],
+                "additionalProperties": False,
+            },
+            metadata={"provider": "harness", "side_effect": "read"},
+        ),
         CapabilityDescriptor(
             capability_id="builtin.discovery.search",
             name="capability_search",

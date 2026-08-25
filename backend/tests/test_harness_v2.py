@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from copy import deepcopy
@@ -61,6 +62,7 @@ from app.core.task_request_compiler import (
 )
 from app.core.turn_planner import TurnPlanner
 from app.db.models import (
+    AgentEvent,
     AgentProfile,
     ChatSession,
     GeneralSkill,
@@ -81,6 +83,7 @@ from app.db.models import (
 from app.general_skills.schema import GeneralSkillRunResponse
 from app.harness.errors import HarnessExecutionError
 from app.knowledge.schema import KnowledgeSearchResponse
+from app.observability.event_log import EventLog
 from app.scheduled_tasks.service import (
     _finish_task_schedule,
     _prepare_scheduled_task_run,
@@ -978,6 +981,13 @@ def test_task_request_compiler_builds_a_composite_requirement_without_outer_cont
                 "materialized": True,
             }
         ],
+        published_deliverables=[
+            {
+                "task_frame_id": "task-prior",
+                "path": "results/开发排期文档.md",
+                "display_name": "开发排期文档.md",
+            }
+        ],
         out_of_scope_task_intents=["查询北京天气", "查询北京天气"],
     )
 
@@ -1003,6 +1013,13 @@ def test_task_request_compiler_builds_a_composite_requirement_without_outer_cont
             "filename": "evidence.txt",
             "workspace_path": "attachments/attachment-1-evidence.txt",
             "materialized": True,
+        }
+    ]
+    assert requirement.published_deliverables == [
+        {
+            "task_frame_id": "task-prior",
+            "path": "results/开发排期文档.md",
+            "display_name": "开发排期文档.md",
         }
     ]
     assert requirement.out_of_scope_task_intents == ["查询北京天气"]
@@ -1824,6 +1841,117 @@ def test_file_mutation_is_private_until_publish_artifact_succeeds(
             "source": "harness",
         }
     ]
+
+
+def test_harness_reads_published_deliverable_from_an_earlier_task_frame(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    content = "# 开发排期\n\n第一阶段完成接口设计。\n"
+    encoded = content.encode("utf-8")
+    with Session(engine) as db:
+        session = _chat_session()
+        db.add(session)
+        db.add(
+            HarnessTaskFrameRecord(
+                tenant_id="tenant-demo",
+                session_id=session.id,
+                source_turn_id="turn-previous",
+                task_id="task-previous",
+            )
+        )
+        db.add(
+            HarnessTaskFrameRecord(
+                tenant_id="tenant-demo",
+                session_id="session-other",
+                source_turn_id="turn-other",
+                task_id="task-other",
+            )
+        )
+        workspace = harness_task_workspace_path(
+            tenant_id="tenant-demo",
+            session_id=session.id,
+            task_frame_id="task-previous",
+            db=db,
+        )
+        (workspace / "results").mkdir(parents=True)
+        (workspace / "results" / "schedule.md").write_text(content, encoding="utf-8")
+        db.add(
+            Message(
+                tenant_id="tenant-demo",
+                session_id=session.id,
+                role="assistant",
+                content="已生成开发排期文档。",
+                metadata_json={
+                    "harness_artifacts": [
+                        {
+                            "type": "workspace_file",
+                            "task_frame_id": "task-previous",
+                            "path": "results/schedule.md",
+                            "display_name": "开发排期文档.md",
+                            "description": "项目排期",
+                            "size": len(encoded),
+                            "sha256": hashlib.sha256(encoded).hexdigest(),
+                        }
+                    ]
+                },
+            )
+        )
+        db.commit()
+
+        manifest = CapabilityManifestBuilder(db).build("tenant-demo", None, None, None)
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=session,
+            task_frame_id="task-current",
+            model_config=_model_config(),
+            manifest=manifest,
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        listed = invoker.invoke(
+            "list_published_deliverables",
+            {"query": "开发排期"},
+        )
+        read = invoker.invoke(
+            "read_published_deliverable",
+            {
+                "task_frame_id": "task-previous",
+                "path": "results/schedule.md",
+            },
+        )
+
+        assert listed["success"] is True
+        assert listed["data"]["deliverables"][0]["display_name"] == "开发排期文档.md"
+        assert read["success"] is True
+        assert read["data"]["content"] == content
+        assert read["data"]["task_frame_id"] == "task-previous"
+
+        denied = invoker.invoke(
+            "read_published_deliverable",
+            {
+                "task_frame_id": "task-other",
+                "path": "results/schedule.md",
+            },
+        )
+        assert denied["success"] is False
+        assert denied["error"]["code"] == "PUBLISHED_DELIVERABLE_NOT_FOUND"
+
+        (workspace / "results" / "schedule.md").write_text("tampered", encoding="utf-8")
+        changed = invoker.invoke(
+            "read_published_deliverable",
+            {
+                "task_frame_id": "task-previous",
+                "path": "results/schedule.md",
+            },
+        )
+
+    assert changed["success"] is False
+    assert changed["error"]["code"] == "PUBLISHED_DELIVERABLE_CHANGED"
 
 
 def test_workspace_discovery_returns_source_and_generated_image(
@@ -4802,6 +4930,80 @@ def _test_engine():
     )
     SQLModel.metadata.create_all(engine)
     return engine
+
+
+def test_activate_frame_records_skill_call_events_for_stats() -> None:
+    """新发起/恢复的 SOP TaskFrame 要落 skill_started/skill_resumed 事件。
+
+    SOP 调用次数统计只认这两个事件(legacy 运行时移除后一度不再产生,
+    管理端调用次数永远是 0)。continue_active 继续执行不计新调用。
+    """
+
+    class _StubRuntime:
+        def __init__(self) -> None:
+            self.restored: list[dict[str, object]] = []
+
+        def restore_task_frame(self, session: ChatSession, frame: dict[str, object]) -> None:
+            self.restored.append(frame)
+
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant-demo", name="Demo"))
+        db.add(_chat_session())
+        db.commit()
+
+        stub_runtime = _StubRuntime()
+        harness_engine = HarnessV2Engine.__new__(HarnessV2Engine)
+        harness_engine.events = EventLog(db)
+        harness_engine.owner = SimpleNamespace(runtime=stub_runtime)
+
+        skill = _refund_skill()
+        db.add(skill)
+        db.commit()
+
+        def _frame_record(decision: str) -> HarnessTaskFrameRecord:
+            return HarnessTaskFrameRecord(
+                tenant_id="tenant-demo",
+                session_id="session-1",
+                source_turn_id="turn-1",
+                task_id=f"task-{decision}",
+                kind="sop",
+                decision=decision,
+                status="queued",
+                skill_id="refund",
+                step_id="collect",
+                sequence=1,
+            )
+
+        session = db.get(ChatSession, "session-1")
+
+        # 新任务 → skill_started
+        assert harness_engine._activate_frame(session, _frame_record("start_new_task"), [skill])
+        # 恢复挂起任务 → skill_resumed
+        assert harness_engine._activate_frame(session, _frame_record("switch_to_pending"), [skill])
+        # 继续当前任务 → 不落事件
+        assert harness_engine._activate_frame(session, _frame_record("continue_active"), [skill])
+        # 非 SOP 帧 → 不落事件
+        conversation = _frame_record("answer_only")
+        conversation.kind = "conversation"
+        assert harness_engine._activate_frame(session, conversation, [skill]) is None
+        db.commit()
+
+        events = db.exec(
+            select(AgentEvent).where(
+                AgentEvent.event_type.in_(["skill_started", "skill_resumed"])  # type: ignore[attr-defined]
+            )
+        ).all()
+        by_task = {str(event.payload_json.get("task_frame_id")): event for event in events}
+        assert set(by_task) == {"task-start_new_task", "task-switch_to_pending"}
+        assert [(by_task[task].event_type, by_task[task].payload_json["to_skill_id"], by_task[task].payload_json["to_skill_version"]) for task in ("task-start_new_task", "task-switch_to_pending")] == [
+            ("skill_started", "refund", "1.0.0"),
+            ("skill_resumed", "refund", "1.0.0"),
+        ]
+        # 事件 payload 保持旧结构,统计读取方按 to_skill_id 计数
+        assert by_task["task-start_new_task"].payload_json["from_skill_id"] is None
+        # 每次激活都恢复了任务帧
+        assert len(stub_runtime.restored) == 3
 
 
 def _chat_session(**updates: object) -> ChatSession:
