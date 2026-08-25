@@ -39,14 +39,26 @@ class UserCreateRequest(BaseModel):
     username: str
     password: str
     display_name: Optional[str] = None
+    department: Optional[str] = None
     role: Literal["admin", "member"] = MEMBER_ROLE
 
 
 class UserUpdateRequest(BaseModel):
     tenant_id: str
     display_name: Optional[str] = None
+    department: Optional[str] = None
     password: Optional[str] = None
     role: Optional[Literal["admin", "member"]] = None
+
+
+class RegisterRequest(BaseModel):
+    """开放注册:账号用于登录,名字用于显示,默认普通成员。"""
+
+    tenant_id: str
+    username: str = Field(..., min_length=1, max_length=64)
+    display_name: str = Field(..., min_length=1, max_length=80)
+    department: Optional[str] = None
+    password: str = Field(..., min_length=6, max_length=128)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -66,6 +78,7 @@ class UserRead(BaseModel):
     tenant_id: str
     username: str
     display_name: Optional[str] = None
+    department: Optional[str] = None
     role: Literal["admin", "member"]
     source: str = "web"
     # 仅 /me 与 /login 带出:头像资源指针(存在性标识),不内联二进制——
@@ -122,14 +135,6 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
     user = db.exec(
         select(User).where(User.tenant_id == request.tenant_id, User.username == username)
     ).first()
-    if not user:
-        display_name_matches = db.exec(
-            select(User)
-            .where(User.tenant_id == request.tenant_id, User.display_name == username)
-            .limit(2)
-        ).all()
-        if len(display_name_matches) == 1:
-            user = display_name_matches[0]
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
@@ -137,6 +142,36 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
         token=create_access_token(user),
         user=_user_read(user, _avatar_pointer_for(db, user.id)),
     )
+
+
+@router.post("/register", response_model=UserRead, status_code=201)
+def register(request: RegisterRequest, db: Session = Depends(get_session)) -> UserRead:
+    """开放注册:账号用于登录,名字用于显示,默认普通成员,无需管理员审批。"""
+    ensure_tenant(db, request.tenant_id)
+    username = request.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="账号不能为空")
+    display_name = request.display_name.strip()
+    if not display_name:
+        display_name = username
+    existing = db.exec(
+        select(User).where(User.tenant_id == request.tenant_id, User.username == username)
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="该账号已被注册，请更换")
+    department = (request.department or "").strip()[:80] or None
+    user = User(
+        tenant_id=request.tenant_id,
+        username=username[:64],
+        display_name=display_name[:80],
+        department=department,
+        role=MEMBER_ROLE,
+        password_hash=hash_password(request.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return _user_read(user)
 
 
 @router.get("/me", response_model=UserRead)
@@ -257,6 +292,7 @@ def create_user(
         tenant_id=request.tenant_id,
         username=username,
         display_name=(request.display_name or username).strip()[:80],
+        department=(request.department or "").strip()[:80] or None,
         role=request.role,
         password_hash=hash_password(request.password),
     )
@@ -451,6 +487,8 @@ def update_user(
     if request.display_name is not None:
         display_name = request.display_name.strip()[:80]
         user.display_name = display_name or user.username
+    if request.department is not None:
+        user.department = request.department.strip()[:80] or None
     if request.password is not None:
         password = request.password.strip()
         if password:
@@ -498,6 +536,7 @@ def _user_read(
         tenant_id=user.tenant_id,
         username=user.username,
         display_name=user.display_name,
+        department=user.department,
         role=user.role,
         source=user.source,
         avatar_url=avatar_url,

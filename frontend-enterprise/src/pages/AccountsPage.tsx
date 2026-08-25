@@ -45,6 +45,7 @@ type EmployeeAccount = {
   tenant_id: string;
   username: string;
   display_name?: string;
+  department?: string;
   role: 'admin' | 'member';
   created_at?: string;
   updated_at?: string;
@@ -52,6 +53,7 @@ type EmployeeAccount = {
 
 type AccountDraft = {
   displayName: string;
+  department: string;
   password: string;
   role: 'admin' | 'member';
 };
@@ -59,6 +61,7 @@ type AccountDraft = {
 type AccountCreateDraft = {
   username: string;
   displayName: string;
+  department: string;
   password: string;
   role: 'admin' | 'member';
 };
@@ -84,12 +87,13 @@ export default function AccountsPage({
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [editing, setEditing] = useState<EmployeeAccount | null>(null);
-  const [draft, setDraft] = useState<AccountDraft>({ displayName: '', password: '', role: 'member' });
+  const [draft, setDraft] = useState<AccountDraft>({ displayName: '', department: '', password: '', role: 'member' });
   const [saving, setSaving] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createDraft, setCreateDraft] = useState<AccountCreateDraft>({
     username: '',
     displayName: '',
+    department: '',
     password: '',
     role: 'member',
   });
@@ -117,7 +121,7 @@ export default function AccountsPage({
     const keyword = searchText.trim().toLowerCase();
     if (!keyword) return rows;
     return rows.filter((row) =>
-      [row.username, row.display_name || '', row.role === 'admin' ? '管理员' : '普通成员']
+      [row.username, row.display_name || '', row.department || '', row.role === 'admin' ? '管理员' : '普通成员']
         .some((value) => value.toLowerCase().includes(keyword)),
     );
   }, [rows, searchText]);
@@ -126,11 +130,11 @@ export default function AccountsPage({
 
   function openEdit(row: EmployeeAccount) {
     setEditing(row);
-    setDraft({ displayName: row.display_name || row.username, password: '', role: row.role });
+    setDraft({ displayName: row.display_name || row.username, department: row.department || '', password: '', role: row.role });
   }
 
   function openCreate() {
-    setCreateDraft({ username: '', displayName: '', password: '', role: 'member' });
+    setCreateDraft({ username: '', displayName: '', department: '', password: '', role: 'member' });
     setCreateOpen(true);
   }
 
@@ -148,6 +152,7 @@ export default function AccountsPage({
         username,
         password,
         display_name: createDraft.displayName.trim() || username,
+        department: createDraft.department.trim() || undefined,
         role: createDraft.role,
       });
       notify.success('账号已创建');
@@ -167,6 +172,7 @@ export default function AccountsPage({
       await api.put(`/api/auth/users/${editing.id}`, {
         tenant_id: TENANT_ID,
         display_name: draft.displayName.trim() || editing.username,
+        department: draft.department.trim() || undefined,
         password: draft.password.trim() || undefined,
         role: draft.role,
       });
@@ -248,6 +254,19 @@ export default function AccountsPage({
       render: (row) => <span className="block truncate">{row.display_name || row.username}</span>,
     },
     {
+      key: 'department',
+      title: '部门',
+      width: 160,
+      render: (row) =>
+        row.department ? (
+          <span className="inline-flex max-w-full items-center rounded-[6px] bg-[#f2f3f7] px-[8px] py-[3px] text-[12px] text-[#464c5e]">
+            <span className="truncate">{row.department}</span>
+          </span>
+        ) : (
+          <span className="text-[#c0c6d4]">-</span>
+        ),
+    },
+    {
       key: 'role',
       title: '角色',
       width: 120,
@@ -273,7 +292,9 @@ export default function AccountsPage({
           </span>
           <span className="min-w-0">
             <strong className="block truncate text-[14px] font-semibold text-[#18181a]">{row.username}</strong>
-            <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">{row.display_name || row.username}</span>
+            <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">
+              {[row.display_name || row.username, row.department].filter(Boolean).join(' · ')}
+            </span>
             <span className="mt-[6px] block">
               <AccountRoleBadge role={row.role} />
             </span>
@@ -381,6 +402,8 @@ export default function AccountsPage({
         username={{ value: createDraft.username, onChange: (value) => setCreateDraft((prev) => ({ ...prev, username: value })) }}
         displayName={createDraft.displayName}
         onDisplayNameChange={(value) => setCreateDraft((prev) => ({ ...prev, displayName: value }))}
+        department={createDraft.department}
+        onDepartmentChange={(value) => setCreateDraft((prev) => ({ ...prev, department: value }))}
         password={createDraft.password}
         onPasswordChange={(value) => setCreateDraft((prev) => ({ ...prev, password: value }))}
         role={createDraft.role}
@@ -398,6 +421,8 @@ export default function AccountsPage({
         username={null}
         displayName={draft.displayName}
         onDisplayNameChange={(value) => setDraft((prev) => ({ ...prev, displayName: value }))}
+        department={draft.department}
+        onDepartmentChange={(value) => setDraft((prev) => ({ ...prev, department: value }))}
         password={draft.password}
         onPasswordChange={(value) => setDraft((prev) => ({ ...prev, password: value }))}
         role={draft.role}
@@ -430,6 +455,8 @@ function AccountDialog({
   username,
   displayName,
   onDisplayNameChange,
+  department,
+  onDepartmentChange,
   password,
   onPasswordChange,
   role,
@@ -447,6 +474,8 @@ function AccountDialog({
   username: { value: string; onChange: (value: string) => void } | null;
   displayName: string;
   onDisplayNameChange: (value: string) => void;
+  department: string;
+  onDepartmentChange: (value: string) => void;
   password: string;
   onPasswordChange: (value: string) => void;
   role: 'admin' | 'member';
@@ -485,6 +514,13 @@ function AccountDialog({
               value={displayName}
               placeholder="例如 张三"
               onChange={(event) => onDisplayNameChange(event.target.value)}
+            />
+          </LabeledField>
+          <LabeledField label="部门">
+            <Input
+              value={department}
+              placeholder="例如 研发一部"
+              onChange={(event) => onDepartmentChange(event.target.value)}
             />
           </LabeledField>
           <LabeledField label={passwordLabel}>

@@ -36,6 +36,8 @@ class User(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     username: str = Field(index=True)
     display_name: Optional[str] = None
+    # 所属部门:注册/账号管理维护,用于组织维度的用户识别
+    department: Optional[str] = None
     role: str = Field(default="member", index=True)
     # 账号来源:web=网页端创建;wechat 等=渠道懒建(用户管理列表默认隐藏)
     source: str = Field(default="web", index=True)

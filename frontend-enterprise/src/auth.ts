@@ -3,6 +3,7 @@ export type EnterpriseAuthUser = {
   tenant_id: string;
   username: string;
   display_name?: string;
+  department?: string;
   role: 'admin' | 'member';
   avatar_url?: string;
 };

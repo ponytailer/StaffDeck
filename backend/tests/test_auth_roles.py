@@ -4,10 +4,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.auth import (
     LoginRequest,
+    RegisterRequest,
     UserCreateRequest,
     UserUpdateRequest,
     create_user,
     login,
+    register,
     update_user,
 )
 from app.db.models import Tenant, User
@@ -83,7 +85,7 @@ def test_database_role_controls_account_management() -> None:
         assert updated.role == "member"
 
 
-def test_admin_password_update_allows_login_with_unique_display_name() -> None:
+def test_admin_password_update_allows_login_with_account() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         admin = User(
@@ -113,15 +115,26 @@ def test_admin_password_update_allows_login_with_unique_display_name() -> None:
         )
 
         session = login(
-            LoginRequest(tenant_id="tenant_demo", username="zongkelong", password="123456"),
+            LoginRequest(tenant_id="tenant_demo", username="user_demo", password="123456"),
             db,
         )
 
         assert session.user.id == member.id
         assert session.user.username == "user_demo"
 
+        # 显示名不参与登录匹配
+        try:
+            login(
+                LoginRequest(tenant_id="tenant_demo", username="zongkelong", password="123456"),
+                db,
+            )
+        except HTTPException as error:
+            assert error.status_code == 401
+        else:
+            raise AssertionError("display name must not be used for login")
 
-def test_duplicate_display_name_cannot_be_used_to_login() -> None:
+
+def test_display_name_cannot_be_used_to_login() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(
@@ -154,6 +167,141 @@ def test_duplicate_display_name_cannot_be_used_to_login() -> None:
             assert error.detail == "Invalid username or password"
         else:
             raise AssertionError("an ambiguous display name must not authenticate any account")
+
+
+def test_register_creates_member_with_account_name_and_department() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+
+        created = register(
+            RegisterRequest(
+                tenant_id="tenant_demo",
+                username="zhangsan",
+                display_name="张三",
+                department="研发一部",
+                password="123456",
+            ),
+            db,
+        )
+        assert created.username == "zhangsan"
+        assert created.display_name == "张三"
+        assert created.department == "研发一部"
+        assert created.role == "member"
+
+        # 注册成功后可用「账号」登录
+        session = login(
+            LoginRequest(tenant_id="tenant_demo", username="zhangsan", password="123456"),
+            db,
+        )
+        assert session.user.id == created.id
+        assert session.user.department == "研发一部"
+
+        # 名字用于显示,不参与登录匹配
+        try:
+            login(
+                LoginRequest(tenant_id="tenant_demo", username="张三", password="123456"),
+                db,
+            )
+        except HTTPException as error:
+            assert error.status_code == 401
+        else:
+            raise AssertionError("display name must not be used for login")
+
+
+def test_register_rejects_duplicate_account() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+        register(
+            RegisterRequest(
+                tenant_id="tenant_demo",
+                username="zhangsan",
+                display_name="张三",
+                password="123456",
+            ),
+            db,
+        )
+        try:
+            register(
+                RegisterRequest(
+                    tenant_id="tenant_demo",
+                    username="zhangsan",
+                    display_name="张三二号",
+                    password="654321",
+                ),
+                db,
+            )
+        except HTTPException as error:
+            assert error.status_code == 409
+            assert "已被注册" in error.detail
+        else:
+            raise AssertionError("duplicate username must be rejected")
+
+
+def test_create_user_persists_department() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        admin = User(
+            id="admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            role="admin",
+            password_hash=hash_password("secret"),
+        )
+        db.add(admin)
+        db.commit()
+
+        created = create_user(
+            UserCreateRequest(
+                tenant_id="tenant_demo",
+                username="li_si",
+                password="secret",
+                display_name="李四",
+                department="市场部",
+            ),
+            admin,
+            db,
+        )
+        assert created.department == "市场部"
+
+
+def test_update_user_changes_department() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        admin = User(
+            id="admin",
+            tenant_id="tenant_demo",
+            username="admin",
+            role="admin",
+            password_hash=hash_password("secret"),
+        )
+        member = User(
+            id="member",
+            tenant_id="tenant_demo",
+            username="member",
+            role="member",
+            password_hash=hash_password("secret"),
+        )
+        db.add(admin)
+        db.add(member)
+        db.commit()
+
+        updated = update_user(
+            member.id,
+            UserUpdateRequest(tenant_id="tenant_demo", department="行政部"),
+            admin,
+            db,
+        )
+        assert updated.department == "行政部"
+        # 清空部门:传空串落库为 None
+        cleared = update_user(
+            member.id,
+            UserUpdateRequest(tenant_id="tenant_demo", department=""),
+            admin,
+            db,
+        )
+        assert cleared.department is None
 
 
 def _test_session() -> Session:

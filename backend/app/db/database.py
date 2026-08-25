@@ -139,6 +139,8 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'member'"))
             if "source" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR NOT NULL DEFAULT 'web'"))
+            if "department" not in user_columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN department VARCHAR"))
             if "display_name" in user_columns:
                 conn.execute(
                     text(
