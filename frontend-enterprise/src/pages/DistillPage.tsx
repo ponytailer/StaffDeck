@@ -5243,6 +5243,7 @@ function skillGraphSteps(skill: SkillCard): Array<Record<string, unknown>> {
         retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
         metadata: isRecord(node.metadata) ? node.metadata : {},
         sub_sop_id: stringValue(node.sub_sop_id, ''),
+        assignee_user_id: stringValue(node.assignee_user_id, ''),
       };
     });
   }
