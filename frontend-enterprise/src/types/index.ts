@@ -635,6 +635,19 @@ export type KnowledgeCitation = {
   chunk_id?: string;
   concept_id?: string;
   concept_type?: string;
+  // When several retrieved chunks resolve to the same source document, the
+  // display layer collapses them into one card. These fields keep the merged
+  // passages so the citation detail dialog can still show each chunk.
+  mergedCount?: number;
+  chunkIds?: string[];
+  mergedChunks?: Array<{
+    label: string;
+    title?: string;
+    section_path?: string;
+    source_path?: string;
+    excerpt?: string;
+    summary?: string;
+  }>;
 };
 
 export type HarnessWorkspaceArtifact = {

@@ -3,6 +3,7 @@ import type { KnowledgeCitation } from '@/types';
 
 import {
   CHAT_CITATION_CHIP_CLASS,
+  CHAT_CITATION_COUNT_CLASS,
   CHAT_CITATION_HEADING_CLASS,
   CHAT_CITATION_INDEX_CLASS,
   CHAT_CITATION_LIST_CLASS,
@@ -42,6 +43,11 @@ export default function KnowledgeCitationList({
             <span className={CHAT_CITATION_TITLE_CLASS} data-i18n-ignore>
               {citationDisplayTitle(citation)}
             </span>
+            {citation.mergedCount && citation.mergedCount > 1 ? (
+              <span className={CHAT_CITATION_COUNT_CLASS} data-i18n-ignore>
+                ×{citation.mergedCount}
+              </span>
+            ) : null}
           </button>
         ))}
       </div>

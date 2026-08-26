@@ -15,7 +15,11 @@ import {
   CHAT_CITATION_DETAIL_CLASS,
   CHAT_CITATION_DETAIL_EYEBROW_CLASS,
   CHAT_CITATION_DETAIL_GRID_CLASS,
+  CHAT_CITATION_DETAIL_INDEX_CLASS,
   CHAT_CITATION_DETAIL_MARKDOWN_CLASS,
+  CHAT_CITATION_DETAIL_MERGE_CLASS,
+  CHAT_CITATION_DETAIL_MERGE_HEAD_CLASS,
+  CHAT_CITATION_DETAIL_MERGE_META_CLASS,
   CHAT_CITATION_DETAIL_NOTE_CLASS,
   CHAT_CITATION_DETAIL_SECTION_CLASS,
   CHAT_CITATION_DETAIL_TITLE_CLASS,
@@ -139,7 +143,7 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
       </Dialog>
 
       <Dialog open={Boolean(activeCitation)} onOpenChange={(open) => !open && setActiveCitation(null)}>
-        <DialogContent className="max-w-[min(1160px,calc(100vw-40px))] sm:max-w-[1160px]">
+        <DialogContent className="max-w-[min(1160px,calc(100vw-40px))] sm:max-w-[1160px] max-h-[calc(100vh-40px)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>引用详情</DialogTitle>
           </DialogHeader>
@@ -147,17 +151,45 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
             <div className={CHAT_CITATION_DETAIL_CLASS}>
               <div className={CHAT_CITATION_DETAIL_EYEBROW_CLASS}>{citationKindLabel(activeCitation)}</div>
               <h3 className={CHAT_CITATION_DETAIL_TITLE_CLASS}>{citationDisplayTitle(activeCitation)}</h3>
-              {citationDetailExcerpt(activeCitation) && (
+              {activeCitation.mergedChunks && activeCitation.mergedChunks.length > 1 ? (
                 <div className={CHAT_CITATION_DETAIL_SECTION_CLASS}>
-                  <span>引用片段</span>
-                  <CitationMarkdown content={citationDetailExcerpt(activeCitation)} />
+                  <span>
+                    引用片段（共 {activeCitation.mergedChunks.length} 段）
+                  </span>
+                  {activeCitation.mergedChunks.map((chunk) => (
+                    <div key={chunk.label} className={CHAT_CITATION_DETAIL_MERGE_CLASS}>
+                      <div className={CHAT_CITATION_DETAIL_MERGE_HEAD_CLASS}>
+                        <span className={CHAT_CITATION_DETAIL_INDEX_CLASS}>{chunk.label}</span>
+                        {chunk.section_path || chunk.source_path ? (
+                          <span className={CHAT_CITATION_DETAIL_MERGE_META_CLASS}>
+                            {chunk.section_path || chunk.source_path}
+                          </span>
+                        ) : null}
+                      </div>
+                      {chunk.excerpt ? (
+                        <CitationMarkdown content={chunk.excerpt} />
+                      ) : null}
+                      {chunk.summary && chunk.summary !== (chunk.excerpt || '') ? (
+                        <CitationMarkdown content={chunk.summary} />
+                      ) : null}
+                    </div>
+                  ))}
                 </div>
-              )}
-              {citationDetailSummary(activeCitation) && (
-                <div className={CHAT_CITATION_DETAIL_SECTION_CLASS}>
-                  <span>片段摘要</span>
-                  <CitationMarkdown content={citationDetailSummary(activeCitation)} />
-                </div>
+              ) : (
+                <>
+                  {citationDetailExcerpt(activeCitation) && (
+                    <div className={CHAT_CITATION_DETAIL_SECTION_CLASS}>
+                      <span>引用片段</span>
+                      <CitationMarkdown content={citationDetailExcerpt(activeCitation)} />
+                    </div>
+                  )}
+                  {citationDetailSummary(activeCitation) && (
+                    <div className={CHAT_CITATION_DETAIL_SECTION_CLASS}>
+                      <span>片段摘要</span>
+                      <CitationMarkdown content={citationDetailSummary(activeCitation)} />
+                    </div>
+                  )}
+                </>
               )}
               {(activeCitation.source_path || activeCitation.section_path || activeCitation.concept_id) && (
                 <div className={CHAT_CITATION_DETAIL_GRID_CLASS}>

@@ -158,6 +158,8 @@ export const CHAT_CITATION_CHIP_CLASS =
   'inline-flex min-w-0 max-w-full items-center gap-[6px] overflow-hidden rounded-[8px] border border-[#e3e7f1] bg-[#fafbfc] px-[9px] py-[5px] text-left text-[12px] text-[#464c5e] transition-colors hover:border-[#c9d2e4] hover:bg-white';
 export const CHAT_CITATION_INDEX_CLASS = 'shrink-0 font-semibold text-[#18181a]';
 export const CHAT_CITATION_TITLE_CLASS = 'min-w-0 truncate';
+export const CHAT_CITATION_COUNT_CLASS =
+  'shrink-0 rounded-full bg-[#eef1f7] px-[6px] py-[1px] text-[10px] font-semibold text-[#6b7280]';
 
 // ---------------------------------------------------------------------------
 // Message attachments (in-bubble)
@@ -331,6 +333,7 @@ export const CHAT_HANDOFF_EMPTY_CLASS = 'py-[36px] text-center text-[13px] text-
 export const CHAT_CITATION_DETAIL_CLASS = 'grid w-full min-w-0 gap-[14px]';
 export const CHAT_CITATION_DETAIL_EYEBROW_CLASS = 'text-[12px] font-medium text-[#858b9c]';
 export const CHAT_CITATION_DETAIL_TITLE_CLASS = 'text-[18px] font-semibold text-[#18181a]';
+export const CHAT_CITATION_DETAIL_INDEX_CLASS = 'shrink-0 rounded-[4px] bg-[#f0f2f7] px-[6px] py-[1px] text-[12px] font-semibold text-[#18181a]';
 export const CHAT_CITATION_DETAIL_SECTION_CLASS =
   'grid w-full min-w-0 gap-[5px] [&>span]:text-[12px] [&>span]:font-medium [&>span]:text-[#757f9c] [&>p]:text-[13px] [&>p]:leading-[1.7] [&>p]:text-[#464c5e]';
 export const CHAT_CITATION_DETAIL_QUOTE_CLASS =
@@ -340,6 +343,12 @@ export const CHAT_CITATION_DETAIL_MARKDOWN_CLASS =
 export const CHAT_CITATION_DETAIL_GRID_CLASS =
   'grid grid-cols-2 gap-[12px] max-[520px]:grid-cols-1 [&>div]:grid [&>div]:gap-[3px] [&_span]:text-[11px] [&_span]:text-[#858b9c] [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:text-[#18181a]';
 export const CHAT_CITATION_DETAIL_NOTE_CLASS = 'text-[12px] leading-[1.6] text-[#858b9c]';
+export const CHAT_CITATION_DETAIL_MERGE_CLASS =
+  'grid min-w-0 gap-[6px] rounded-[10px] border border-[#eef0f4] bg-white p-[10px]';
+export const CHAT_CITATION_DETAIL_MERGE_HEAD_CLASS =
+  'inline-flex min-w-0 items-center gap-[8px] text-[12px] font-semibold text-[#18181a]';
+export const CHAT_CITATION_DETAIL_MERGE_META_CLASS =
+  'min-w-0 truncate text-[12px] font-normal text-[#858b9c]';
 
 export const CHAT_DEBUG_PANEL_CLASS =
   'mx-auto mt-[16px] max-w-[820px] overflow-auto rounded-[10px] bg-[#1e1e1e] p-[12px] text-[12px] text-[#d4d4d4]';

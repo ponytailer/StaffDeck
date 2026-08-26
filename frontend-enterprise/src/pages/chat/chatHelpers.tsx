@@ -1762,31 +1762,70 @@ function citationLabelNumber(citation: KnowledgeCitation, fallback: number): num
   return fallback;
 }
 
+function citationDisplayIdentity(citation: KnowledgeCitation): string {
+  const raw = (
+    citation.title
+    || citation.section_path
+    || citation.source_path
+    || citation.concept_id
+    || citation.summary
+    || citation.excerpt
+    || citation.id
+    || ''
+  );
+  return normalizeMessageText(raw).toLowerCase();
+}
+
 export function knowledgeCitations(item: ChatMessage, content: string): KnowledgeCitation[] {
   const citations = item.metadata?.knowledge_citations;
   if (!Array.isArray(citations)) return [];
   const usedLabels = citationLabelsInContent(content);
-  const seen = new Set<string>();
-  const result: KnowledgeCitation[] = [];
+
+  const candidates: Array<{ citation: KnowledgeCitation; labelNumber: number }> = [];
   citations.forEach((citation, index) => {
     if (!citation || !citation.id) return;
     const labelNumber = citationLabelNumber(citation, index + 1);
     if (usedLabels.size > 0 && !usedLabels.has(labelNumber)) return;
-    // A document can contribute multiple cited chunks with the same display
-    // title. Prefer durable source identifiers so those cards are not merged.
-    // Historical citations without source identifiers retain title-based
-    // deduplication for backwards compatibility.
-    const identity = citation.chunk_id
-      ? `chunk:${citation.chunk_id}`
-      : citation.concept_id
-        ? `concept:${citation.concept_id}`
-        : (citation.title || citation.section_path || citation.summary || citation.excerpt || citation.source_path || citation.id);
-    const key = normalizeMessageText(identity).toLowerCase();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    result.push({ ...citation, label: `[${labelNumber}]` });
+    candidates.push({ citation: { ...citation, label: `[${labelNumber}]` }, labelNumber });
   });
-  return result.sort((a, b) => citationLabelNumber(a, 0) - citationLabelNumber(b, 0));
+
+  // The same source document is often retrieved as several chunks. Collapse
+  // citations that resolve to the same display identity into a single card so
+  // the chip list does not repeat one document for every retrieved chunk. The
+  // individual passages are preserved in `mergedChunks` for the detail dialog.
+  const groups = new Map<string, Array<{ citation: KnowledgeCitation; labelNumber: number }>>();
+  for (const entry of candidates) {
+    const key = citationDisplayIdentity(entry.citation);
+    if (!key) continue;
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
+  }
+
+  const merged: KnowledgeCitation[] = [];
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.labelNumber - b.labelNumber);
+    const representative = group[0].citation;
+    const chunkIds = group
+      .map((entry) => String((entry.citation as KnowledgeCitation).chunk_id || '').trim())
+      .filter(Boolean);
+    const mergedChunks = group.map((entry) => ({
+      label: `[${entry.labelNumber}]`,
+      title: entry.citation.title,
+      section_path: entry.citation.section_path,
+      source_path: entry.citation.source_path,
+      excerpt: entry.citation.content || entry.citation.excerpt,
+      summary: entry.citation.summary,
+    }));
+    merged.push({
+      ...representative,
+      mergedCount: group.length,
+      chunkIds: chunkIds.length ? chunkIds : undefined,
+      mergedChunks: group.length > 1 ? mergedChunks : undefined,
+    });
+  }
+
+  return merged.sort((a, b) => citationLabelNumber(a, 0) - citationLabelNumber(b, 0));
 }
 
 export function scheduledDraftForMessage(item: ChatMessage): ScheduledTaskDraftRead | null {

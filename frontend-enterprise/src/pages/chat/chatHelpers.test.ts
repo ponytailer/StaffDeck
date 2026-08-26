@@ -8,6 +8,7 @@ import {
   STREAM_TERMINAL_EVENTS,
   MarkdownMessage,
   canRateMessage,
+  formatTraceDuration,
   harnessEventTraceLine,
   harnessWorkspaceArtifacts,
   knowledgeCitations,
@@ -28,6 +29,26 @@ function message(patch: Partial<ChatMessage> = {}): ChatMessage {
     ...patch,
   };
 }
+
+describe('formatTraceDuration', () => {
+  it('renders sub-minute durations with one decimal in seconds', () => {
+    expect(formatTraceDuration(0)).toBe('0.0s');
+    expect(formatTraceDuration(420)).toBe('0.4s');
+    expect(formatTraceDuration(3240)).toBe('3.2s');
+    expect(formatTraceDuration(59900)).toBe('59.9s');
+  });
+
+  it('renders minute-scale durations as minutes plus zero-padded seconds', () => {
+    expect(formatTraceDuration(60000)).toBe('1m 00s');
+    expect(formatTraceDuration(83000)).toBe('1m 23s');
+    expect(formatTraceDuration(605_000)).toBe('10m 05s');
+  });
+
+  it('returns empty label for invalid inputs', () => {
+    expect(formatTraceDuration(Number.NaN)).toBe('');
+    expect(formatTraceDuration(-5)).toBe('');
+  });
+});
 
 describe('chat history consumer contract', () => {
   it('keeps inline citations but removes duplicate trailing citation summaries', () => {
@@ -196,19 +217,48 @@ describe('chat history consumer contract', () => {
     ]);
   });
 
-  it('keeps separately cited chunks even when their display titles match', () => {
+  it('merges citations that resolve to the same source title into one card', () => {
+    const item = message({
+      content: 'Answer [1], [2] and [3]',
+      metadata: {
+        knowledge_citations: [
+          { id: 'citation-1', chunk_id: 'chunk-1', label: '[1]', title: '同一制度', content: '片段一' },
+          { id: 'citation-2', chunk_id: 'chunk-2', label: '[2]', title: '同一制度', content: '片段二' },
+          { id: 'citation-3', chunk_id: 'chunk-3', label: '[3]', title: '同一制度', content: '片段三' },
+        ],
+      },
+    });
+
+    const merged = knowledgeCitations(item, item.content);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual(
+      expect.objectContaining({
+        id: 'citation-1',
+        label: '[1]',
+        mergedCount: 3,
+        chunkIds: ['chunk-1', 'chunk-2', 'chunk-3'],
+      }),
+    );
+    expect(merged[0].mergedChunks).toEqual([
+      expect.objectContaining({ label: '[1]', excerpt: '片段一' }),
+      expect.objectContaining({ label: '[2]', excerpt: '片段二' }),
+      expect.objectContaining({ label: '[3]', excerpt: '片段三' }),
+    ]);
+  });
+
+  it('keeps distinct source titles as separate cards', () => {
     const item = message({
       metadata: {
         knowledge_citations: [
-          { id: 'citation-1', chunk_id: 'chunk-1', label: '[1]', title: '同一制度' },
-          { id: 'citation-2', chunk_id: 'chunk-2', label: '[2]', title: '同一制度' },
+          { id: 'citation-1', chunk_id: 'chunk-1', label: '[1]', title: '报销制度' },
+          { id: 'citation-2', chunk_id: 'chunk-2', label: '[2]', title: '差旅制度' },
         ],
       },
     });
 
     expect(knowledgeCitations(item, item.content)).toEqual([
-      expect.objectContaining({ id: 'citation-1', label: '[1]' }),
-      expect.objectContaining({ id: 'citation-2', label: '[2]' }),
+      expect.objectContaining({ id: 'citation-1', label: '[1]', mergedCount: 1 }),
+      expect.objectContaining({ id: 'citation-2', label: '[2]', mergedCount: 1 }),
     ]);
   });
 
