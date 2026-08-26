@@ -1809,17 +1809,30 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
     const chunkIds = group
       .map((entry) => String((entry.citation as KnowledgeCitation).chunk_id || '').trim())
       .filter(Boolean);
-    const mergedChunks = group.map((entry) => ({
-      label: `[${entry.labelNumber}]`,
-      title: entry.citation.title,
-      section_path: entry.citation.section_path,
-      source_path: entry.citation.source_path,
-      excerpt: entry.citation.content || entry.citation.excerpt,
-      summary: entry.citation.summary,
-    }));
+    const mergedChunks = group
+      .map((entry) => ({
+        label: `[${entry.labelNumber}]`,
+        title: entry.citation.title,
+        section_path: entry.citation.section_path,
+        source_path: entry.citation.source_path,
+        excerpt: entry.citation.content || entry.citation.excerpt,
+        summary: entry.citation.summary,
+      }))
+      // Collapse passages that resolve to the same text so a document split
+      // into identical chunks only renders one copy of the content.
+      .filter((chunk, index, arr) => {
+        const text = normalizeMessageText(String(chunk.excerpt || chunk.summary || '')).toLowerCase();
+        if (!text) return true;
+        return arr.findIndex(
+          (other) => normalizeMessageText(String(other.excerpt || other.summary || '')).toLowerCase() === text,
+        ) === index;
+      });
     merged.push({
       ...representative,
-      mergedCount: group.length,
+      // The badge shows the number of *distinct* passages the user will see
+      // after deduplication, not the raw chunk count. This matches the detail
+      // dialog and avoids the confusion of "×4" with only 1 unique passage.
+      mergedCount: mergedChunks.length,
       chunkIds: chunkIds.length ? chunkIds : undefined,
       mergedChunks: group.length > 1 ? mergedChunks : undefined,
     });

@@ -262,6 +262,37 @@ describe('chat history consumer contract', () => {
     ]);
   });
 
+  it('collapses identical chunk passages into a single copy of the content', () => {
+    const item = message({
+      content: 'Answer [1], [2], [3] and [4]',
+      metadata: {
+        knowledge_citations: [
+          { id: 'citation-1', chunk_id: 'chunk-1', label: '[1]', title: '反商业贿赂', content: '严禁商业贿赂' },
+          { id: 'citation-2', chunk_id: 'chunk-2', label: '[2]', title: '反商业贿赂', content: '严禁商业贿赂' },
+          { id: 'citation-3', chunk_id: 'chunk-3', label: '[3]', title: '反商业贿赂', content: '严禁商业贿赂' },
+          { id: 'citation-4', chunk_id: 'chunk-4', label: '[4]', title: '反商业贿赂', content: '严禁商业贿赂' },
+        ],
+      },
+    });
+
+    const merged = knowledgeCitations(item, item.content);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual(
+      expect.objectContaining({
+        id: 'citation-1',
+        label: '[1]',
+        // Badge now reflects distinct passages, not raw chunk count.
+        mergedCount: 1,
+        chunkIds: ['chunk-1', 'chunk-2', 'chunk-3', 'chunk-4'],
+      }),
+    );
+    // The four identical passages collapse to a single rendered copy.
+    expect(merged[0].mergedChunks).toHaveLength(1);
+    expect(merged[0].mergedChunks?.[0]).toEqual(
+      expect.objectContaining({ label: '[1]', excerpt: '严禁商业贿赂' }),
+    );
+  });
+
   it('restores scheduled drafts and attachments from persisted metadata', () => {
     const draft = {
       should_create: true,
