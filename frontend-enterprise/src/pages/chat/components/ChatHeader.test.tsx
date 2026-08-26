@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
@@ -48,9 +49,11 @@ function buildChat(session: Partial<ChatSession>): UseChatSession {
 
 function renderHeader(chat: UseChatSession) {
   return render(
-    <I18nProvider>
-      <ChatHeader chat={chat} />
-    </I18nProvider>,
+    <MemoryRouter>
+      <I18nProvider>
+        <ChatHeader chat={chat} />
+      </I18nProvider>
+    </MemoryRouter>,
   );
 }
 

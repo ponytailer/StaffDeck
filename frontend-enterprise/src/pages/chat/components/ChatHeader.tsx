@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft, KeyRound, Lock } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -12,10 +12,13 @@ import { Badge } from '@/components/ui';
 import { api, TENANT_ID } from '@/api/client';
 import { staffdeckDisplayText } from '@/employee';
 import { EnterpriseRoute } from '@/enums/routes';
+import { cn } from '@/lib/utils';
 import type { TeamRead } from '@/types';
 import IconEdit from '@/assets/icons/edit.svg?react';
 import IconChevronDown from '@/assets/icons/chevron-down.svg?react';
 import IconLogout from '@/assets/icons/logout.svg?react';
+import AccountApiKeyDialog from '@/components/AccountApiKeyDialog';
+import ChangePasswordDialog from '@/components/ChangePasswordDialog';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 import {
@@ -38,9 +41,15 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   // 团队会话徽标：read 带 team_name 直接用；缺省时用团队列表做 id→name 映射。
   const sessionTeamName = currentSession?.team_name || null;
   const [teamName, setTeamName] = useState<string | null>(sessionTeamName);
+  const [apiKeyOpen, setApiKeyOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const name = teamId
     ? teamName || rawName.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
     : rawName;
+
+  const user = auth?.user;
+  const displayName = user?.display_name || user?.username || '';
+  const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
     setTeamName(sessionTeamName);
@@ -110,6 +119,63 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
             align="end"
             className="w-fit min-w-[160px] rounded-[14px] border-0 bg-white p-[6px] shadow-[0px_16px_15px_rgba(0,0,0,0.1)] ring-0 [--accent:#F6F6F6] [--accent-foreground:#18181A]"
           >
+            {user && (
+              <>
+                <div className="flex max-w-[240px] flex-col gap-[10px] px-[12px] pt-[8px] pb-[12px]">
+                  <div className="flex items-center gap-[10px]">
+                    <span className="grid size-[40px] shrink-0 place-items-center overflow-hidden rounded-full bg-[#eef1fb] text-[16px] font-medium text-[#7e96dc]">
+                      {initial}
+                    </span>
+                    <div className="flex min-w-0 flex-col gap-[2px]">
+                      <span className="truncate text-[14px] font-medium text-[#18181a]">
+                        {displayName}
+                      </span>
+                      {user.username && user.username !== displayName && (
+                        <span className="truncate text-[12px] text-[#858b9c]">
+                          @{user.username}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-[10px]">
+                    <span
+                      className={cn(
+                        'inline-flex items-center rounded-full px-[12px] py-[4px] text-[10px] leading-none whitespace-nowrap',
+                        isAdmin
+                          ? 'bg-[#e8f0ff] text-[#1a71ff]'
+                          : 'bg-[#f2f3f7] text-[#858b9c]',
+                      )}
+                    >
+                      {isAdmin ? '管理员' : '成员'}
+                    </span>
+                    {isAdmin && (
+                      <span className="max-w-[150px] truncate text-[11px] text-[#a0a8bd]">
+                        {user.tenant_id}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="mx-[6px] mb-[6px] h-px bg-[#eef0f4]" />
+              </>
+            )}
+            {user && (
+              <DropdownMenuItem
+                onSelect={() => setApiKeyOpen(true)}
+                className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
+              >
+                <KeyRound className="size-[16px]" />
+                API 全量密钥
+              </DropdownMenuItem>
+            )}
+            {user && (
+              <DropdownMenuItem
+                onSelect={() => setChangePasswordOpen(true)}
+                className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
+              >
+                <Lock className="size-[16px]" />
+                修改密码
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onSelect={logout}
               className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
@@ -120,6 +186,15 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      <AccountApiKeyDialog
+        account={user ?? null}
+        open={apiKeyOpen}
+        onClose={() => setApiKeyOpen(false)}
+      />
+      <ChangePasswordDialog
+        open={changePasswordOpen}
+        onClose={() => setChangePasswordOpen(false)}
+      />
     </div>
   );
 }
