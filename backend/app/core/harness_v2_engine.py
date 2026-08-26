@@ -272,6 +272,15 @@ class HarnessV2Engine:
         model_config = self.owner._get_request_model(request, session.agent_id)
         if model_config is None:
             raise RuntimeError("没有默认模型配置。")
+        # 意图识别（Turn Planner）是纯分类/任务拆分任务，允许使用更轻量的
+        # 专用模型。用户在模型配置中勾选「用于意图识别」后，该阶段优先使用
+        # 该模型；未配置或解析失败时回退到本轮请求的模型，行为与历史一致。
+        planner_model_config = self.owner._get_default_model(
+            request.tenant_id,
+            session.agent_id,
+            "intent_recognition",
+            user_id=request.user_id,
+        ) or model_config
         source_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id
         )
@@ -348,7 +357,7 @@ class HarnessV2Engine:
                 _turn_planner_message(request),
                 session,
                 routing_skills,
-                model_config,
+                planner_model_config,
                 deepcopy(conversation_context),
                 memory_context,
                 planner_state,

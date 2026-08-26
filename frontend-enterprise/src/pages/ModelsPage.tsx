@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { InfoCircleOutlined } from '@/icons';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Check, ChevronDown, FlaskConical, LoaderCircle, Plus, Trash2 } from 'lucide-react';
 
 import { api, ApiError, TENANT_ID } from '../api/client';
@@ -59,6 +61,7 @@ type ModelForm = {
   max_output_tokens: string;
   extra_body: string;
   is_default: boolean;
+  is_intent_recognition: boolean;
   enabled: boolean;
 };
 
@@ -91,6 +94,7 @@ const BLANK_MODEL_FORM: ModelForm = {
   max_output_tokens: '131072',
   extra_body: '{}',
   is_default: false,
+  is_intent_recognition: false,
   enabled: true,
 };
 
@@ -264,6 +268,9 @@ export default function ModelsPage({
   const [form, setForm] = useState<ModelForm>(BLANK_MODEL_FORM);
   const [availableProtocols, setAvailableProtocols] = useState<ModelForm['api_protocol'][]>(['openai_chat_completions']);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  // 意图识别模型互斥确认：开启开关时若已存在其他意图识别模型，先提示再放行
+  const [intentSwitchTarget, setIntentSwitchTarget] = useState<ModelConfigRead | null>(null);
+  const [pendingIntentSwitch, setPendingIntentSwitch] = useState(false);
 
   const updateForm = <K extends keyof ModelForm>(key: K, value: ModelForm[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -319,6 +326,33 @@ export default function ModelsPage({
     return options;
   }, [availableModels, form.model]);
 
+  // 已存在的其他意图识别模型（排除当前正在编辑的这条）
+  const existingIntentModel = useMemo(
+    () => rows.find((row) => row.is_intent_recognition && row.id !== selected?.id) || null,
+    [rows, selected],
+  );
+
+  // 打开意图识别开关：若已有其他意图识别模型，弹确认；否则直接开启
+  function handleIntentSwitchToggle(next: boolean) {
+    if (next && existingIntentModel) {
+      setPendingIntentSwitch(true);
+      setIntentSwitchTarget(existingIntentModel);
+      return;
+    }
+    updateForm('is_intent_recognition', next);
+  }
+
+  function confirmIntentSwitch() {
+    updateForm('is_intent_recognition', true);
+    setPendingIntentSwitch(false);
+    setIntentSwitchTarget(null);
+  }
+
+  function cancelIntentSwitch() {
+    setPendingIntentSwitch(false);
+    setIntentSwitchTarget(null);
+  }
+
   function edit(row: ModelConfigRead) {
     setSelected(row);
     setForm({
@@ -331,6 +365,7 @@ export default function ModelsPage({
       max_output_tokens: String(row.max_output_tokens),
       extra_body: JSON.stringify(row.extra_body || {}, null, 2),
       is_default: row.is_default,
+      is_intent_recognition: row.is_intent_recognition,
       enabled: row.enabled,
     });
     setEditorOpen(true);
@@ -382,6 +417,7 @@ export default function ModelsPage({
       max_output_tokens: maxOutputTokens,
       extra_body: extraBody,
       is_default: form.enabled && form.is_default,
+      is_intent_recognition: form.is_intent_recognition,
       enabled: form.enabled,
       api_key: form.api_key || undefined,
     };
@@ -401,6 +437,13 @@ export default function ModelsPage({
         notify.success(form.is_default ? '测试通过，已启用并设为默认模型' : '测试通过，已启用');
       } else {
         notify.success('已保存');
+      }
+      // 保存成功且本条开启意图识别：若此前存在其他意图识别模型，说明已被替换关闭
+      const replacedIntentModel = existingIntentModel && form.is_intent_recognition
+        ? existingIntentModel
+        : null;
+      if (replacedIntentModel) {
+        notify.success(`已将「${replacedIntentModel.name}」的意图识别模型切换至当前模型`);
       }
       setEditorOpen(false);
       setSelected(null);
@@ -528,6 +571,7 @@ export default function ModelsPage({
           <span className="flex min-w-0 items-center gap-[6px]">
             <span className="truncate font-medium leading-[18px] text-[#18181a]">{row.name}</span>
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
+            {row.is_intent_recognition && <StatusBadge tone="blue">意图识别</StatusBadge>}
           </span>
           <span className="truncate text-[#858b9c]">
             {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
@@ -572,6 +616,7 @@ export default function ModelsPage({
           <span className="flex min-w-0 items-center gap-[6px]">
             <strong className="truncate text-[14px] font-semibold text-[#18181a]">{row.name}</strong>
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
+            {row.is_intent_recognition && <StatusBadge tone="blue">意图识别</StatusBadge>}
           </span>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">
             {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
@@ -803,6 +848,28 @@ export default function ModelsPage({
                 <span className="text-[12px] font-medium text-[#464c5e]">设为默认</span>
               </label>
               <label className="flex cursor-pointer items-center gap-[8px]">
+                <Switch
+                  checked={form.is_intent_recognition}
+                  onCheckedChange={handleIntentSwitchToggle}
+                />
+                <span className="text-[12px] font-medium text-[#464c5e]">用于意图识别</span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="查看意图识别模型说明"
+                      onClick={(event) => event.preventDefault()}
+                      className="inline-flex size-[16px] shrink-0 items-center justify-center rounded-full text-[#8b93a7] outline-none transition-colors hover:text-[#18181a] focus-visible:ring-2 focus-visible:ring-[#1a71ff]/40"
+                    >
+                      <InfoCircleOutlined className="size-[13px]" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" align="start" className="max-w-[300px] leading-[1.55]">
+                    建议使用 flash 系列的轻量模型，可大大加快意图识别速度
+                  </TooltipContent>
+                </Tooltip>
+              </label>
+              <label className="flex cursor-pointer items-center gap-[8px]">
                 <Switch checked={form.enabled} onCheckedChange={(next) => updateForm('enabled', next)} />
                 <span className="text-[12px] font-medium text-[#464c5e]">启用</span>
               </label>
@@ -840,6 +907,15 @@ export default function ModelsPage({
           : '删除后，相关数字员工中的模型绑定也会一并移除，操作不可撤销。'}
         confirmText="删除"
         onConfirm={() => void confirmDelete()}
+      />
+
+      <ConfirmDialog
+        open={pendingIntentSwitch && Boolean(intentSwitchTarget)}
+        onOpenChange={(open) => { if (!open) cancelIntentSwitch(); }}
+        title={`已存在意图识别模型「${intentSwitchTarget?.name ?? ''}」`}
+        description="每个租户只能有一个用于意图识别的模型。继续开启后，保存成功时将自动关闭原模型的意图识别开关。"
+        confirmText="仍要开启"
+        onConfirm={confirmIntentSwitch}
       />
 
     </div>

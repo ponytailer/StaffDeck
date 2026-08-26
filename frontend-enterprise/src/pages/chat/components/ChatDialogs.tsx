@@ -102,7 +102,11 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
                       {profile ? <EmployeeAvatar profile={profile} size={36} radius={10} /> : null}
                       <div>
                         <strong>{handoffAgent ? employeeDisplayNameWithCreator(handoffAgent) : '数字员工'}</strong>
-                        <span>需要人工接续</span>
+                        <span>
+                          {handoff.requester_display_name
+                            ? `${handoff.requester_display_name} 发起的对话 · 需要人工接续`
+                            : '需要人工接续'}
+                        </span>
                       </div>
                     </div>
                     <div className={CHAT_HANDOFF_BLOCK_CLASS}>

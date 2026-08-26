@@ -619,6 +619,7 @@ class ModelConfig(SQLModel, table=True):
     security_revision: int = 1
     key_revision: int = 1
     is_default: bool = False
+    is_intent_recognition: bool = Field(default=False)
     enabled: bool = True
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

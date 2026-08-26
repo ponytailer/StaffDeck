@@ -162,6 +162,7 @@ class HumanHandoffRead(BaseModel):
     session_id: str
     agent_id: str | None = None
     requester_user_id: str | None = None
+    requester_display_name: str | None = None
     assignee_user_id: str | None = None
     trigger_skill_id: str | None = None
     trigger_step_id: str | None = None
@@ -186,12 +187,17 @@ class HumanHandoffReplyRequest(BaseModel):
 
 
 def session_read(
-    row: ChatSession, *, is_scheduled: bool = False, team_name: str | None = None
+    row: ChatSession,
+    *,
+    is_scheduled: bool = False,
+    team_name: str | None = None,
+    user_display_name: str | None = None,
 ) -> ChatSessionRead:
     return ChatSessionRead(
         id=row.id,
         tenant_id=row.tenant_id,
         user_id=row.user_id,
+        user_display_name=user_display_name,
         agent_id=row.agent_id,
         title=row.title,
         active_skill_id=row.active_skill_id,
@@ -207,13 +213,18 @@ def session_read(
     )
 
 
-def human_handoff_read(row: HumanHandoffRequest) -> HumanHandoffRead:
+def human_handoff_read(
+    row: HumanHandoffRequest,
+    *,
+    requester_display_name: str | None = None,
+) -> HumanHandoffRead:
     return HumanHandoffRead(
         id=row.id,
         tenant_id=row.tenant_id,
         session_id=row.session_id,
         agent_id=row.agent_id,
         requester_user_id=row.requester_user_id,
+        requester_display_name=requester_display_name,
         assignee_user_id=row.assignee_user_id,
         trigger_skill_id=row.trigger_skill_id,
         trigger_step_id=row.trigger_step_id,
@@ -2053,11 +2064,23 @@ def list_chat_sessions(
         team.id: team.name
         for team in db.exec(select(Team).where(Team.id.in_(team_ids))).all()
     } if team_ids else {}
+    # 批量补会话发起人显示名（待回答等场景需向管理员/处理人展示发起人）
+    session_user_ids = {row.user_id for row in rows if row.user_id}
+    session_users = (
+        {u.id: u for u in db.exec(select(User).where(User.id.in_(session_user_ids))).all()}
+        if session_user_ids
+        else {}
+    )
     return [
         session_read(
             row,
             is_scheduled=row.id in scheduled_session_ids,
             team_name=team_names.get(row.team_id) if row.team_id else None,
+            user_display_name=(
+                (session_users[row.user_id].display_name or session_users[row.user_id].username)
+                if row.user_id and row.user_id in session_users
+                else None
+            ),
         )
         for row in rows
     ]
@@ -2074,7 +2097,12 @@ def get_chat_session(
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_readable_chat_session(db, tenant_id, current_user, session_id)
     team = db.get(Team, row.team_id) if row.team_id else None
-    return session_read(row, team_name=team.name if team else None)
+    owner = db.get(User, row.user_id) if row.user_id else None
+    return session_read(
+        row,
+        team_name=team.name if team else None,
+        user_display_name=(owner.display_name or owner.username) if owner else None,
+    )
 
 
 @router.put("/sessions/{session_id}", response_model=ChatSessionRead)
@@ -2311,7 +2339,29 @@ def list_human_handoffs(
     if hidden_session_ids:
         stmt = stmt.where(HumanHandoffRequest.session_id.notin_(hidden_session_ids))
     rows = db.exec(stmt.order_by(HumanHandoffRequest.updated_at.desc()).limit(200)).all()
-    return [human_handoff_read(row) for row in rows]
+    # 批量补发起人显示名：优先 requester_user_id，快照缺失时回退会话归属人
+    requester_ids = {row.requester_user_id for row in rows if row.requester_user_id}
+    session_ids = {row.session_id for row in rows if not row.requester_user_id}
+    user_ids = set(requester_ids)
+    if session_ids:
+        session_owners = db.exec(
+            select(ChatSession.user_id).where(ChatSession.id.in_(session_ids))
+        ).all()
+        user_ids.update(owner for owner in session_owners if owner)
+    users = (
+        {row.id: row for row in db.exec(select(User).where(User.id.in_(user_ids))).all()}
+        if user_ids
+        else {}
+    )
+    session_owner_ids = (
+        {row.id: row.user_id for row in db.exec(select(ChatSession).where(ChatSession.id.in_(session_ids))).all()}
+        if session_ids
+        else {}
+    )
+    def _requester_name(row: HumanHandoffRequest) -> str | None:
+        user = users.get(row.requester_user_id or session_owner_ids.get(row.session_id))
+        return (user.display_name or user.username) if user else None
+    return [human_handoff_read(row, requester_display_name=_requester_name(row)) for row in rows]
 
 
 @router.post("/handoffs/{handoff_id}/reply", response_model=HumanHandoffRead)
@@ -2339,7 +2389,14 @@ def reply_human_handoff(
     _apply_handoff_reply(
         db, row, reply, answered_by_user_id=current_user.id, source="web"
     )
-    return human_handoff_read(row)
+    requester_user = db.get(User, row.requester_user_id) if row.requester_user_id else None
+    if not requester_user:
+        owner_session = db.get(ChatSession, row.session_id)
+        requester_user = db.get(User, owner_session.user_id) if owner_session and owner_session.user_id else None
+    return human_handoff_read(
+        row,
+        requester_display_name=(requester_user.display_name or requester_user.username) if requester_user else None,
+    )
 
 
 @router.post("/messages/{message_id}/feedback")

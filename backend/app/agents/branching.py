@@ -986,17 +986,28 @@ def model_for_agent(
     role: str = "default",
     user_id: str | None = None,
 ) -> ResolvedModelConfig | None:
-    """Resolve the enabled default model for a task.
+    """Resolve the enabled model for a task.
 
     Models are owned per user: when ``user_id`` is given, prefer that user's own
-    default model; fall back to any enabled default in the tenant (e.g. the admin's)
+    model; fall back to any enabled model in the tenant (e.g. the admin's)
     so users who have not configured their own model keep working.
-    ``agent_id`` and ``role`` remain in the signature for call-site compatibility.
+
+    Args:
+        role: Model role/purpose. "default" looks for is_default=True;
+              "intent_recognition" looks for is_intent_recognition=True.
+              Other roles fall back to is_default=True for compatibility.
     """
-    _ = agent_id, role
+    _ = agent_id
+    # Determine which flag to search based on role
+    if role == "intent_recognition":
+        role_filter = ModelConfig.is_intent_recognition == True  # noqa: E712
+    else:
+        # default and other roles use is_default
+        role_filter = ModelConfig.is_default == True  # noqa: E712
+
     base_filters = (
         ModelConfig.tenant_id == tenant_id,
-        ModelConfig.is_default == True,  # noqa: E712
+        role_filter,
         ModelConfig.enabled == True,  # noqa: E712
     )
     if user_id:

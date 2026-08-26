@@ -342,6 +342,7 @@ export type ModelConfigRead = {
   config_revision: number;
   security_revision: number;
   is_default: boolean;
+  is_intent_recognition: boolean;
   enabled: boolean;
   updated_at: string;
 };
@@ -580,6 +581,8 @@ export type ChatSession = {
   id: string;
   tenant_id: string;
   user_id?: string;
+  /** 会话发起人显示名（管理员查看他人会话/待回答场景展示）。 */
+  user_display_name?: string | null;
   agent_id?: string;
   title?: string;
   active_skill_id?: string;
@@ -707,6 +710,7 @@ export type HumanHandoffRead = {
   session_id: string;
   agent_id?: string | null;
   requester_user_id?: string | null;
+  requester_display_name?: string | null;
   assignee_user_id?: string | null;
   trigger_skill_id?: string | null;
   trigger_step_id?: string | null;
