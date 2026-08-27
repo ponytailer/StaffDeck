@@ -914,6 +914,18 @@ def bucket_read_with_stats(row: KnowledgeBucket, chunk_count: int) -> KnowledgeB
     return item
 
 
+def _is_sqlite_db(db: Session) -> bool:
+    bind = getattr(db, "bind", None)
+    dialect = getattr(bind, "dialect", None)
+    return dialect is not None and dialect.name == "sqlite"
+
+
+def _blob_cast(column: str, db: Session) -> str:
+    """SQLite 用 CAST AS BLOB 取回原始字节(writer 经 ORM 写入, 但可能有非 UTF-8 文本, 需 gb18030 兜底解码);
+    PostgreSQL 无 BLOB 类型(对应 bytea), 直接按 TEXT 读取即可。"""
+    return f"CAST({column} AS BLOB)" if _is_sqlite_db(db) else column
+
+
 def _safe_document_bucket_rows(
     db: Session, tenant_id: str, document_id: str
 ) -> list[Mapping[str, Any]]:
@@ -927,17 +939,22 @@ def _safe_document_bucket_rows(
                     knowledge_base_id,
                     knowledge_base_version_id,
                     document_id,
-                    CAST(bucket_key AS BLOB) AS bucket_key,
-                    CAST(title AS BLOB) AS title,
-                    CAST(summary AS BLOB) AS summary,
+                    {bucket_key} AS bucket_key,
+                    {title} AS title,
+                    {summary} AS summary,
                     token_estimate,
-                    CAST(metadata_json AS BLOB) AS metadata_json,
+                    {metadata_json} AS metadata_json,
                     created_at,
                     updated_at
                 FROM knowledge_buckets
                 WHERE tenant_id = :tenant_id AND document_id = :document_id
                 ORDER BY created_at ASC
-                """
+                """.format(
+                    bucket_key=_blob_cast("bucket_key", db),
+                    title=_blob_cast("title", db),
+                    summary=_blob_cast("summary", db),
+                    metadata_json=_blob_cast("metadata_json", db),
+                )
             ),
             {"tenant_id": tenant_id, "document_id": document_id},
         )
@@ -959,16 +976,21 @@ def _safe_bucket_chunk_rows(db: Session, tenant_id: str, bucket_id: str) -> list
                     document_id,
                     bucket_id,
                     chunk_index,
-                    CAST(content AS BLOB) AS content,
-                    CAST(summary AS BLOB) AS summary,
-                    CAST(source_ref AS BLOB) AS source_ref,
-                    CAST(metadata_json AS BLOB) AS metadata_json,
+                    {content} AS content,
+                    {summary} AS summary,
+                    {source_ref} AS source_ref,
+                    {metadata_json} AS metadata_json,
                     created_at,
                     updated_at
                 FROM knowledge_chunks
                 WHERE tenant_id = :tenant_id AND bucket_id = :bucket_id
                 ORDER BY chunk_index ASC
-                """
+                """.format(
+                    content=_blob_cast("content", db),
+                    summary=_blob_cast("summary", db),
+                    source_ref=_blob_cast("source_ref", db),
+                    metadata_json=_blob_cast("metadata_json", db),
+                )
             ),
             {"tenant_id": tenant_id, "bucket_id": bucket_id},
         )
