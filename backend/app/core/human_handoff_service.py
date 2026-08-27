@@ -180,11 +180,23 @@ class HumanHandoffService:
             .order_by(Message.created_at.desc())
             .limit(2)
         ).all()
+        # user 消息前缀显示会话发起人真实姓名（与待回答卡片「{发起人} 发起的对话」一致）
+        requester_label: str | None = None
+        if chat_session.user_id:
+            owner = self.db.get(User, chat_session.user_id)
+            if owner:
+                requester_label = (owner.display_name or owner.username or "").strip() or None
+
+        def _role_label(role: str) -> str:
+            if role == "user" and requester_label:
+                return requester_label
+            return role
+
         lines: list[str] = []
         for message in reversed(rows):
             content = re.sub(r"\s+", " ", message.content or "").strip()
             if content:
-                lines.append(f"{message.role}: {content[:240]}")
+                lines.append(f"{_role_label(message.role)}: {content[:240]}")
         return "\n".join(lines)
 
     @staticmethod
