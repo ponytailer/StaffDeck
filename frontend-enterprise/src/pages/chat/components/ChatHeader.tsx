@@ -50,6 +50,12 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const user = auth?.user;
   const displayName = user?.display_name || user?.username || '';
   const isAdmin = user?.role === 'admin';
+  // 发起人非当前用户时展示其名字（管理员/处理人查看他人会话的场景）
+  const sessionOwnerName = currentSession?.user_display_name
+    && currentSession.user_id
+    && currentSession.user_id !== user?.id
+    ? currentSession.user_display_name
+    : null;
 
   useEffect(() => {
     setTeamName(sessionTeamName);
@@ -81,6 +87,14 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
         <div className={CHAT_HEADER_TITLE_STACK_CLASS}>
         <span className="flex min-w-0 items-center gap-[4px]">
           <span className={CHAT_HEADER_TITLE_NAME_CLASS}>{name}</span>
+          {sessionOwnerName && (
+            <Badge
+              variant="secondary"
+              className="shrink-0 rounded-full bg-[#f2f3f7] text-[11px] font-normal text-[#757f9c]"
+            >
+              {sessionOwnerName} 发起
+            </Badge>
+          )}
           {teamId && (
             <Badge
               variant="secondary"

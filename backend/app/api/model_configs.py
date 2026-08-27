@@ -101,6 +101,7 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
         config_revision=row.config_revision,
         security_revision=row.security_revision,
         is_default=row.is_default,
+        is_intent_recognition=row.is_intent_recognition,
         enabled=row.enabled,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
@@ -154,6 +155,7 @@ def create_model_config(
         extra_body_json=extra_body,
         protocol_options_json={protocol.value: options},
         is_default=False,
+        is_intent_recognition=request.is_intent_recognition,
         enabled=False,
         trust_status="unverified",
     )
@@ -166,6 +168,13 @@ def create_model_config(
         if request.is_default or not owner_available:
             _clear_default(db, request.tenant_id, user_id=current_user.id)
             row.is_default = True
+        if request.is_intent_recognition:
+            _clear_intent_recognition(db, request.tenant_id, user_id=current_user.id)
+            row.is_intent_recognition = True
+    elif request.is_intent_recognition:
+        # Mark as intent recognition model even without verification
+        _clear_intent_recognition(db, request.tenant_id, user_id=current_user.id)
+        row.is_intent_recognition = True
     db.add(row)
     _commit_or_conflict(db)
     db.refresh(row)
@@ -270,6 +279,17 @@ def update_model_config(
             row.is_default = True
         elif request.is_default is False:
             row.is_default = False
+    # 意图识别开关在验证/非验证两条保存路径下语义一致：
+    # 显式开启时清掉同租户同用户下其他模型的标识（互斥），显式关闭则取消。
+    if request.is_intent_recognition is True:
+        if not verify_before_save:
+            _require_trusted(row)
+        if not row.enabled and request.enabled is not False:
+            raise HTTPException(status_code=409, detail="MODEL_CONFIG_DISABLED")
+        _clear_intent_recognition(db, request.tenant_id, user_id=row.user_id)
+        row.is_intent_recognition = True
+    elif request.is_intent_recognition is False:
+        row.is_intent_recognition = False
     row.updated_at = utc_now()
     db.add(row)
     _commit_or_conflict(db)
@@ -311,6 +331,44 @@ def set_default_model_config(
         raise HTTPException(status_code=409, detail="MODEL_CONFIG_DISABLED")
     _clear_default(db, tenant_id, user_id=row.user_id)
     row.is_default = True
+    row.updated_at = utc_now()
+    db.add(row)
+    _commit_or_conflict(db)
+    db.refresh(row)
+    return model_config_read(row)
+
+
+@router.post("/{config_id}/set-intent-recognition", response_model=ModelConfigRead)
+def set_intent_recognition_model(
+    config_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ModelConfigRead:
+    """将模型设置为意图识别专用模型（每个 tenant 只能有一个）"""
+    row = _get_model_config(db, tenant_id, config_id, current_user)
+    _require_trusted(row)
+    if not row.enabled:
+        raise HTTPException(status_code=409, detail="MODEL_CONFIG_DISABLED")
+    _clear_intent_recognition(db, tenant_id, user_id=row.user_id)
+    row.is_intent_recognition = True
+    row.updated_at = utc_now()
+    db.add(row)
+    _commit_or_conflict(db)
+    db.refresh(row)
+    return model_config_read(row)
+
+
+@router.post("/{config_id}/unset-intent-recognition", response_model=ModelConfigRead)
+def unset_intent_recognition_model(
+    config_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ModelConfigRead:
+    """取消模型的意图识别专用标识"""
+    row = _get_model_config(db, tenant_id, config_id, current_user)
+    row.is_intent_recognition = False
     row.updated_at = utc_now()
     db.add(row)
     _commit_or_conflict(db)
@@ -575,6 +633,20 @@ def _clear_default(db: Session, tenant_id: str, user_id: str | None = None) -> N
             ModelConfig.is_default == True,  # noqa: E712 - SQLModel expression.
         )
         .values(is_default=False, updated_at=utc_now())
+    )
+
+
+def _clear_intent_recognition(
+    db: Session, tenant_id: str, user_id: str | None = None
+) -> None:
+    db.exec(
+        update(ModelConfig)
+        .where(
+            ModelConfig.tenant_id == tenant_id,
+            ModelConfig.user_id == user_id,
+            ModelConfig.is_intent_recognition == True,  # noqa: E712
+        )
+        .values(is_intent_recognition=False, updated_at=utc_now())
     )
 
 

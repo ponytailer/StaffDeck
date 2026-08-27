@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import base64
 import binascii
 import json
+import logging
+import os
 import re
 from types import SimpleNamespace
 from threading import Event
@@ -19,6 +21,50 @@ _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 _MAX_IMAGE_COUNT = 6
 _MAX_TOTAL_IMAGE_BYTES = 18 * 1024 * 1024
 _MAX_REQUEST_BYTES = 25 * 1024 * 1024
+
+# 出站请求诊断日志：设置 STAFFDECK_DEBUG_LLM=1 后，把每个模型调用的
+# 端点 URL 与完整请求体打到日志（用于排查 404/401 等连接类问题）。
+_DIAG_ENABLED = os.environ.get("STAFFDECK_DEBUG_LLM", "").strip().lower() not in {
+    "",
+    "0",
+    "false",
+}
+_DIAG_LOGGER = logging.getLogger("llm.outgoing")
+
+
+def _diag_log_outgoing(kind: str, endpoint: str, payload: dict[str, Any]) -> None:
+    if not _DIAG_ENABLED:
+        return
+    try:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        body = str(payload)
+    _DIAG_LOGGER.warning(
+        "[llm-outgoing] kind=%s endpoint=%s payload=%s",
+        kind,
+        endpoint,
+        _safe_upstream_body(body),
+    )
+
+
+def _diag_log_error(kind: str, exc: ProtocolCallError) -> None:
+    if not _DIAG_ENABLED:
+        return
+    _DIAG_LOGGER.warning(
+        "[llm-incoming-error] kind=%s code=%s status=%s provider_code=%s "
+        "provider_message=%s upstream_body=%s",
+        kind,
+        exc.code,
+        exc.status_code,
+        exc.provider_code,
+        exc.provider_message,
+        exc.upstream_body,
+    )
+
+
+def _sdk_endpoint_label(client: Any, path: str) -> str:
+    base = str(getattr(client, "base_url", "") or "").rstrip("/")
+    return f"{base}{path}"
 
 
 class ProtocolCallError(Exception):
@@ -88,10 +134,27 @@ class ChatCompletionsDriver:
 
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
-        return self.client.chat.completions.create(**_wire_request(request))
+        payload = _wire_request(request)
+        _diag_log_outgoing(
+            "chat.completions",
+            _sdk_endpoint_label(self.client, "/chat/completions"),
+            payload,
+        )
+        try:
+            return self.client.chat.completions.create(**payload)
+        except Exception as exc:
+            error = _protocol_call_error(exc)
+            _diag_log_error("chat.completions", error)
+            raise
 
     def stream(self, request: dict[str, Any]) -> Iterator[Any]:
         _raise_if_cancelled(request)
+        payload = {**_wire_request(request), "stream": True}
+        _diag_log_outgoing(
+            "chat.completions.stream",
+            _sdk_endpoint_label(self.client, "/chat/completions"),
+            payload,
+        )
         stream = self.client.chat.completions.create(**_wire_request(request), stream=True)
 
         def iterate() -> Iterator[Any]:
@@ -125,12 +188,21 @@ class OpenAIResponsesDriver:
 
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
+        payload = _responses_request(request)
+        _diag_log_outgoing(
+            "responses",
+            _sdk_endpoint_label(self.client, "/responses"),
+            payload,
+        )
         try:
             response = self.client.responses.create(**_responses_request(request))
-        except ProtocolCallError:
+        except ProtocolCallError as exc:
+            _diag_log_error("responses", exc)
             raise
         except Exception as exc:
-            raise _protocol_call_error(exc) from exc
+            error = _protocol_call_error(exc)
+            _diag_log_error("responses", error)
+            raise error from exc
         return _responses_completion(response)
 
     def stream(self, request: dict[str, Any]) -> Iterator[Any]:
@@ -209,12 +281,20 @@ class AnthropicMessagesDriver:
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
         payload = _anthropic_request(request)
+        _diag_log_outgoing(
+            "anthropic.messages",
+            _sdk_endpoint_label(self.client, "/v1/messages"),
+            payload,
+        )
         try:
             response = self.client.messages.create(**payload, stream=False)
-        except ProtocolCallError:
+        except ProtocolCallError as exc:
+            _diag_log_error("anthropic.messages", exc)
             raise
         except Exception as exc:
-            raise _protocol_call_error(exc) from exc
+            error = _protocol_call_error(exc)
+            _diag_log_error("anthropic.messages", error)
+            raise error from exc
         text = "".join(
             str(getattr(block, "text", ""))
             for block in (getattr(response, "content", None) or [])
@@ -299,15 +379,23 @@ class GeminiGenerateContentDriver:
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
         payload = _gemini_request(request)
+        endpoint = _gemini_endpoint(self.base_url, self.model, "generateContent")
+        _diag_log_outgoing("gemini.generate_content", endpoint, payload)
         try:
             response = self.client.post(
-                _gemini_endpoint(self.base_url, self.model, "generateContent"),
+                endpoint,
                 headers=_gemini_headers(self.api_key),
                 json=payload,
             )
         except httpx.HTTPError as exc:
-            raise _protocol_call_error(exc) from exc
-        _raise_for_gemini_response(response)
+            error = _protocol_call_error(exc)
+            _diag_log_error("gemini.generate_content", error)
+            raise error from exc
+        try:
+            _raise_for_gemini_response(response)
+        except ProtocolCallError as exc:
+            _diag_log_error("gemini.generate_content", exc)
+            raise
         try:
             data = response.json()
         except ValueError as exc:

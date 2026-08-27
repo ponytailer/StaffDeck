@@ -126,6 +126,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_model_api_protocols(conn, tables)
         _migrate_default_model_output_limit(conn, tables)
         _migrate_model_user_ownership(conn, tables)
+        _migrate_model_intent_recognition(conn, tables)
         _migrate_channel_binding_agents_backfill(conn, tables)
         _migrate_channel_scope_rebuild(conn, inspector, tables)
         _migrate_channel_bindings_multi(conn, inspector, tables)
@@ -672,6 +673,17 @@ def _migrate_model_user_ownership(conn, tables: set[str]) -> None:
             """
         )
     )
+
+
+def _migrate_model_intent_recognition(conn, tables: set[str]) -> None:
+    """模型配置补 is_intent_recognition 列（意图识别专用模型开关）。"""
+    if "model_configs" not in tables:
+        return
+    columns = {column["name"] for column in inspect(engine).get_columns("model_configs")}
+    if "is_intent_recognition" not in columns:
+        conn.execute(
+            text("ALTER TABLE model_configs ADD COLUMN is_intent_recognition BOOLEAN NOT NULL DEFAULT 0")
+        )
 
 
 def _migrate_channel_binding_agents_backfill(conn, tables: set[str]) -> None:

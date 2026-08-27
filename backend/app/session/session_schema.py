@@ -295,6 +295,7 @@ class ChatSessionRead(BaseModel):
     id: str
     tenant_id: str
     user_id: Optional[str]
+    user_display_name: Optional[str] = None
     agent_id: Optional[str] = None
     title: Optional[str]
     active_skill_id: Optional[str]
