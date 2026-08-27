@@ -388,9 +388,16 @@ def _is_windows_restore_command(message: int, wparam: int) -> bool:
     return message == wm_syscommand and (wparam & 0xFFF0) == sc_restore
 
 
+def _resolve_log_config() -> str | None:
+    """优先加载与启动脚本同目录的 log.json(uvicorn 日志配置)。"""
+    log_json = Path(__file__).resolve().parent / "log.json"
+    return str(log_json) if log_json.is_file() else None
+
+
 def _serve(cfg: dict) -> None:
     import uvicorn
 
+    log_config = _resolve_log_config()
     if getattr(sys, "frozen", False):
         logging.getLogger("staffdeck.runtime").info(
             "Server starting host=%s port=%s",
@@ -402,11 +409,17 @@ def _serve(cfg: dict) -> None:
             host=cfg["host"],
             port=cfg["port"],
             log_level="info",
-            log_config=None,
-            access_log=False,
+            log_config=log_config,
+            access_log=log_config is None,
         )
         return
-    uvicorn.run(cfg["app"], host=cfg["host"], port=cfg["port"], log_level="info")
+    uvicorn.run(
+        cfg["app"],
+        host=cfg["host"],
+        port=cfg["port"],
+        log_level="info",
+        log_config=log_config,
+    )
 
 
 def _macos_drag_region_frame(width: float, height: float) -> tuple[float, float, float, float]:
