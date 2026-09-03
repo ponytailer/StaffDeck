@@ -120,6 +120,34 @@ def list_quota_rules(
     return items or []
 
 
+def list_quota_rule_subjects(
+    rule_id: str,
+    *,
+    gateway_id: str | None = None,
+    page_number: int = 1,
+    page_size: int = 100,
+) -> list[dict[str, Any]]:
+    """列出配额规则下绑定的主体（ListGatewayQuotaRuleSubjects）。
+
+    ListGatewayQuotaRules 不返回 consumerIds，需单独查 subjects 才能知道
+    规则当前覆盖了哪些消费者。返回项形如：
+        {"subjectType":"consumer","name":"ailab_xxx","id":"cs-xxx",
+         "usedAmount":157,"quotaLimit":5000,"overLimit":false,"quotaDimension":"credit"}
+    """
+    gid = _resolve_gateway_id(gateway_id)
+    if not USE_MOCK and not gid:
+        raise ValueError("缺少网关配置：ALIYUN_APIG_GATEWAY_ID 或传入 gateway_id")
+    resp = _request(
+        "GET",
+        f"/v1/gateways/{gid}/quota-rules/{rule_id}/subjects",
+        action="ListGatewayQuotaRuleSubjects",
+        query={"pageNumber": page_number, "pageSize": page_size},
+    )
+    data = resp.get("data") or {}
+    items = data.get("items") if isinstance(data, dict) else data
+    return items or []
+
+
 def get_quota_rule(rule_id: str, *, gateway_id: str | None = None) -> dict[str, Any]:
     """获取单条配额规则（GetGatewayQuotaRule）。"""
     gid = _resolve_gateway_id(gateway_id)

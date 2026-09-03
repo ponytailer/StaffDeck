@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Copy, KeyRound, LoaderCircle } from 'lucide-react';
+import { Copy, Eye, EyeOff, KeyRound, LoaderCircle } from 'lucide-react';
 
 import { Textarea } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
@@ -27,11 +27,35 @@ type ApiKeyApplication = {
   updated_at: string;
 };
 
+type MyUsageItem = {
+  id: string;
+  consumer_id: string | null;
+  consumer_name: string | null;
+  gateway_name: string | null;
+  quota_limit: number | null;
+  quota_period: string | null;
+  used_amount: number;
+  usage_rate: number;
+  suggestion: string;
+};
+
 const STATUS_META: Record<ApiKeyApplication['status'], { tone: 'orange' | 'green' | 'red' | 'gray'; label: string }> = {
   pending: { tone: 'orange', label: '待审批' },
   approved: { tone: 'green', label: '已批准' },
   rejected: { tone: 'red', label: '已驳回' },
   revoked: { tone: 'gray', label: '已吊销' },
+};
+
+const PERIOD_LABEL: Record<string, string> = {
+  day: '自然日',
+  week: '自然周',
+  month: '自然月',
+};
+
+const SUGGESTION_META: Record<string, { label: string; tone: 'red' | 'orange' | 'green' }> = {
+  expand: { label: '建议扩容', tone: 'red' },
+  watch: { label: '关注', tone: 'orange' },
+  normal: { label: '正常', tone: 'green' },
 };
 
 function formatTime(value: string | null): string {
@@ -43,9 +67,23 @@ function formatTime(value: string | null): string {
 
 export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: EnterpriseAuthUser }) {
   const [items, setItems] = useState<ApiKeyApplication[]>([]);
+  const [usageItems, setUsageItems] = useState<MyUsageItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [purpose, setPurpose] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
+
+  const toggleRevealed = (id: string) => {
+    setRevealedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
 
   const activeCount = items.filter(
     (item) => item.status === 'pending' || item.status === 'approved',
@@ -61,8 +99,16 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
       .finally(() => setLoading(false));
   };
 
+  const loadUsage = () => {
+    return api
+      .get<MyUsageItem[]>(`/api/enterprise/api-key-applications/mine/usage?tenant_id=${TENANT_ID}`)
+      .then((rows) => setUsageItems(rows))
+      .catch(() => setUsageItems([]));
+  };
+
   useEffect(() => {
     void load();
+    void loadUsage();
   }, []);
 
   async function submit() {
@@ -120,6 +166,15 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
             <div className="flex flex-col gap-[10px]">
               {items.map((item) => {
                 const meta = STATUS_META[item.status];
+                const usage = usageItems.find((u) => u.id === item.id);
+                const periodLabel =
+                  usage?.quota_period === 'month'
+                    ? `${new Date().getFullYear()}年${new Date().getMonth() + 1}月`
+                    : usage?.quota_period === 'week'
+                      ? '本周'
+                      : usage?.quota_period === 'day'
+                        ? '今日'
+                        : '';
                 return (
                   <div key={item.id} className="rounded-[12px] border border-[#eceef1] bg-white p-[14px]">
                     <div className="flex items-start justify-between gap-[10px]">
@@ -140,8 +195,18 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                           <span className="text-[11px] font-medium text-[#464c5e]">API Key</span>
                           <div className="flex items-center gap-[6px]">
                             <code className="min-w-0 flex-1 truncate rounded-[8px] bg-[#f6f6f6] px-[10px] py-[7px] font-mono text-[12px] text-[#18181a]">
-                              {item.api_key || item.api_key_masked}
+                              {revealedIds.has(item.id)
+                                ? item.api_key || item.api_key_masked
+                                : item.api_key_masked || '••••••••••••••••'}
                             </code>
+                            <button
+                              type="button"
+                              aria-label={revealedIds.has(item.id) ? '隐藏 API Key' : '显示 API Key'}
+                              onClick={() => toggleRevealed(item.id)}
+                              className="grid size-[30px] shrink-0 place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-[#757f9c] transition-colors hover:bg-black/5 hover:text-[#18181a]"
+                            >
+                              {revealedIds.has(item.id) ? <EyeOff className="size-[14px]" /> : <Eye className="size-[14px]" />}
+                            </button>
                             <button
                               type="button"
                               aria-label="复制 API Key"
@@ -170,6 +235,48 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                             </div>
                           </label>
                         )}
+
+                        {(() => {
+                          const usage = usageItems.find((u) => u.id === item.id);
+                          if (!usage) return null;
+                          const pct = Math.round(usage.usage_rate * 100);
+                          const barColor =
+                            pct >= 90 ? 'bg-[#ef4444]' : pct >= 70 ? 'bg-[#f59e0b]' : 'bg-[#22c55e]';
+                          const meta = SUGGESTION_META[usage.suggestion] ?? { label: '正常', tone: 'green' as const };
+                          return (
+                            <div className="flex flex-col gap-[6px] rounded-[10px] bg-[#f8f9fb] px-[12px] py-[10px]">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-medium text-[#464c5e]">
+                                  本期配额使用{periodLabel ? `（${periodLabel}）` : ''}
+                                </span>
+                                <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
+                              </div>
+                              <div className="flex items-center gap-[8px]">
+                                <div className="h-[6px] min-w-[100px] flex-1 overflow-hidden rounded-full bg-[#e8eaf0]">
+                                  <div
+                                    className={cn('h-full rounded-full transition-all', barColor)}
+                                    style={{ width: `${Math.min(pct, 100)}%` }}
+                                  />
+                                </div>
+                                <span className="text-[12px] tabular-nums text-[#464c5e]">{pct}%</span>
+                              </div>
+                              <div className="flex items-center justify-between text-[11px] text-[#858b9c]">
+                                <span>
+                                  已用{' '}
+                                  <span className="font-medium tabular-nums text-[#18181a]">
+                                    {usage.used_amount.toLocaleString('zh-CN')}
+                                  </span>
+                                </span>
+                                <span>
+                                  上限{' '}
+                                  <span className="font-medium tabular-nums text-[#18181a]">
+                                    {usage.quota_limit ? usage.quota_limit.toLocaleString('zh-CN') : '—'}
+                                  </span>
+                                  {usage.quota_period ? ` / ${PERIOD_LABEL[usage.quota_period] ?? usage.quota_period}` : ''}
+                                </span>                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
 

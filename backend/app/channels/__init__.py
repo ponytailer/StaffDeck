@@ -5,8 +5,6 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from pathlib import Path
-from typing import IO
 
 from app.config import get_settings
 
@@ -15,78 +13,65 @@ logger = logging.getLogger(__name__)
 # 进程级 ingress 管理器单例(懒创建,测试可替换)
 _wechat_poll_manager = None
 _wecom_stream_manager = None
-_feishu_process_manager = None
 _dingtalk_stream_manager = None
 _binding_lifecycle_locks: dict[str, threading.RLock] = {}
 _binding_lifecycle_locks_guard = threading.Lock()
-_connector_lock_file: IO[bytes] | None = None
+_connector_pg_lock_conn = None  # PostgreSQL advisory lock 持有的连接
 _connector_lock_pid: int | None = None
+# advisory lock key（任选的稳定 int8；同库多个 connector 进程互斥）
+_PG_CONNECTOR_LOCK_KEY = 749_102_331_977_001
 _intake_sweep_thread: threading.Thread | None = None
 
 
 def _acquire_connector_process_lock() -> bool:
-    global _connector_lock_file, _connector_lock_pid
+    global _connector_lock_pid, _connector_pg_lock_conn
     current_pid = os.getpid()
-    if _connector_lock_file is not None and _connector_lock_pid == current_pid:
+    if _connector_pg_lock_conn is not None and _connector_lock_pid == current_pid:
         return True
-    if _connector_lock_file is not None:
-        # preload 后 fork 的子进程不能把继承句柄当作自己已持有锁。
-        _connector_lock_file.close()
-        _connector_lock_file = None
+    # 清理旧状态
+    if _connector_pg_lock_conn is not None:
+        _connector_pg_lock_conn.close()
+        _connector_pg_lock_conn = None
         _connector_lock_pid = None
     from app.db import engine
 
-    database_path = engine.url.database
-    if engine.url.get_backend_name() != "sqlite" or not database_path or database_path == ":memory:":
-        logger.error("渠道服务要求文件 SQLite 进程锁；当前数据库不支持可靠的单实例 Outbox")
+    backend = engine.url.get_backend_name()
+    if backend != "postgresql":
+        logger.error("渠道服务仅支持 PostgreSQL，当前：%s", backend)
         return False
-    lock_path = Path(database_path).resolve().with_name(f"{Path(database_path).name}.connector.lock")
-    handle = lock_path.open("a+b")
+    # PostgreSQL：用 advisory lock 实现跨进程单实例
+    from sqlalchemy import text
+    conn = engine.connect()
     try:
-        if os.name == "nt":
-            import msvcrt
-
-            handle.seek(0)
-            if handle.read(1) == b"":
-                handle.write(b"0")
-                handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (BlockingIOError, OSError):
-        handle.close()
+        got = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": _PG_CONNECTOR_LOCK_KEY}).scalar()
+    except Exception:
+        conn.close()
+        logger.exception("PostgreSQL advisory lock 获取失败")
         return False
-    _connector_lock_file = handle
+    if not got:
+        conn.close()
+        logger.warning("PostgreSQL advisory lock 被占用")
+        return False
+    _connector_pg_lock_conn = conn
     _connector_lock_pid = current_pid
     return True
 
 
 def _release_connector_process_lock() -> None:
-    global _connector_lock_file, _connector_lock_pid
-    handle = _connector_lock_file
-    if handle is None:
-        return
-    if _connector_lock_pid != os.getpid():
-        handle.close()
-        _connector_lock_file = None
-        _connector_lock_pid = None
-        return
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    global _connector_pg_lock_conn, _connector_lock_pid
+    pg_conn = _connector_pg_lock_conn
+    if pg_conn is not None:
+        if _connector_lock_pid == os.getpid():
+            try:
+                from sqlalchemy import text
+                pg_conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _PG_CONNECTOR_LOCK_KEY})
+            except Exception:
+                logger.exception("PostgreSQL advisory lock 释放失败")
+            finally:
+                pg_conn.close()
         else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    finally:
-        handle.close()
-        _connector_lock_file = None
+            pg_conn.close()
+        _connector_pg_lock_conn = None
         _connector_lock_pid = None
 
 
@@ -108,15 +93,6 @@ def get_wecom_stream_manager():
     return _wecom_stream_manager
 
 
-def get_feishu_process_manager():
-    global _feishu_process_manager
-    if _feishu_process_manager is None:
-        from app.channels.feishu_manager import FeishuProcessManager
-
-        _feishu_process_manager = FeishuProcessManager()
-    return _feishu_process_manager
-
-
 def get_dingtalk_stream_manager():
     global _dingtalk_stream_manager
     if _dingtalk_stream_manager is None:
@@ -133,7 +109,6 @@ def channel_services_enabled() -> bool:
 
 def _ensure_adapters_registered() -> None:
     # 各适配器模块导入即自注册(模块级 register_channel_adapter)
-    import app.channels.adapters.feishu  # noqa: F401
     import app.channels.adapters.dingtalk  # noqa: F401
     import app.channels.adapters.wechat  # noqa: F401
     import app.channels.adapters.wecom  # noqa: F401
@@ -163,8 +138,6 @@ def _ingress_manager(channel: str):
         return get_wechat_poll_manager()
     if channel == "wecom":
         return get_wecom_stream_manager()
-    if channel == "feishu":
-        return get_feishu_process_manager()
     if channel == "dingtalk":
         return get_dingtalk_stream_manager()
     return None
@@ -209,8 +182,6 @@ def wait_binding_ingress_stopped(channel: str, binding_id: str, timeout_seconds:
         return get_wechat_poll_manager().wait_binding_stopped(binding_id, timeout_seconds)
     if channel == "wecom":
         return get_wecom_stream_manager().wait_binding_stopped(binding_id, timeout_seconds)
-    if channel == "feishu":
-        return get_feishu_process_manager().wait_binding_stopped(binding_id, timeout_seconds)
     if channel == "dingtalk":
         return get_dingtalk_stream_manager().wait_binding_stopped(binding_id, timeout_seconds)
     return True
@@ -241,7 +212,6 @@ def start_channel_services() -> None:
 
         get_wechat_poll_manager().start()
         get_wecom_stream_manager().start()
-        get_feishu_process_manager().start()
         get_dingtalk_stream_manager().start()
         start_delivery_daemon()
         start_staged_inbound_daemon()
@@ -277,10 +247,6 @@ def stop_channel_services(timeout_seconds: float = 5.0) -> bool:
     wecom_stopped = stream_manager is None or stream_manager.stop(
         timeout_seconds=max(0.0, deadline - time.monotonic())
     )
-    feishu_manager = _feishu_process_manager
-    feishu_stopped = feishu_manager is None or feishu_manager.stop(
-        timeout_seconds=max(0.0, deadline - time.monotonic())
-    )
     dingtalk_manager = _dingtalk_stream_manager
     dingtalk_stopped = dingtalk_manager is None or dingtalk_manager.stop(
         timeout_seconds=max(0.0, deadline - time.monotonic())
@@ -294,7 +260,6 @@ def stop_channel_services(timeout_seconds: float = 5.0) -> bool:
         and outbox_stopped
         and wechat_stopped
         and wecom_stopped
-        and feishu_stopped
         and dingtalk_stopped
         and sweep_stopped
     )

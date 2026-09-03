@@ -1,16 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  AlertTriangle,
   Check,
   ChevronLeft,
   ChevronRight,
   KeyRound,
   LoaderCircle,
-  Pencil,
   Plus,
   Search,
   SlidersHorizontal,
-  Trash2,
   Users,
   X,
 } from 'lucide-react';
@@ -27,6 +24,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Switch,
   Textarea,
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
@@ -64,7 +62,6 @@ type ApiKeyApproval = {
   quota_rule_name: string | null;
   consumer_id: string | null;
   consumer_name: string | null;
-  consumer_group_id: string | null;
   consumer_group_name: string | null;
   used_amount: number | null;
   usage_month: string | null;
@@ -82,8 +79,27 @@ type ConsumerGroup = {
   owner: string | null;
   gateway_id: string | null;
   gateway_name: string | null;
-  external_consumer_id: string | null;
+  external_consumer_group_id: string | null;
   consumer_type: string;
+  consumer_count: number | null;
+  status: string;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type Consumer = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string | null;
+  gateway_id: string | null;
+  gateway_name: string | null;
+  external_consumer_id: string | null;
+  consumer_group_name: string | null;
+  consumer_type: string;
+  deploy_status: string | null;
+  enable: boolean;
   status: string;
   created_by_user_id: string | null;
   created_at: string;
@@ -238,6 +254,10 @@ export default function ApiKeyApprovalsPage({
   const [groups, setGroups] = useState<ConsumerGroup[]>([]);
   const [groupsLoading, setGroupsLoading] = useState(false);
 
+  // Consumers
+  const [consumers, setConsumers] = useState<Consumer[]>([]);
+  const [consumersLoading, setConsumersLoading] = useState(false);
+
   // Quota rules
   const [rules, setRules] = useState<QuotaRule[]>([]);
   const [rulesLoading, setRulesLoading] = useState(false);
@@ -250,11 +270,14 @@ export default function ApiKeyApprovalsPage({
   const [usageMonth, setUsageMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageSearch, setUsageSearch] = useState('');
+  const [consumerSearch, setConsumerSearch] = useState('');
 
   // Approve dialog
   const [approveTarget, setApproveTarget] = useState<ApiKeyApproval | null>(null);
+  const [approveConsumerName, setApproveConsumerName] = useState('');
   const [approveGroupId, setApproveGroupId] = useState('');
   const [approveRuleId, setApproveRuleId] = useState('');
+  const [approveApiUrl, setApproveApiUrl] = useState('');
   const [approving, setApproving] = useState(false);
 
   // Reject dialog
@@ -262,21 +285,11 @@ export default function ApiKeyApprovalsPage({
   const [rejectNote, setRejectNote] = useState('');
   const [rejecting, setRejecting] = useState(false);
 
-  // Consumer group create dialog
-  const [cgOpen, setCgOpen] = useState(false);
-  const [cgName, setCgName] = useState('');
-  const [cgDesc, setCgDesc] = useState('');
-  const [cgOwner, setCgOwner] = useState('');
-  const [cgOwners, setCgOwners] = useState<string[]>([]);
-  const [cgGateway, setCgGateway] = useState('');
-  const [cgSubmitting, setCgSubmitting] = useState(false);
-
-  // Consumer group edit dialog
-  const [editCg, setEditCg] = useState<ConsumerGroup | null>(null);
-  const [editCgName, setEditCgName] = useState('');
-  const [editCgDesc, setEditCgDesc] = useState('');
-  const [editCgOwner, setEditCgOwner] = useState('');
-  const [editCgSubmitting, setEditCgSubmitting] = useState(false);
+  // Revoke confirm dialog
+  const [revokeTarget, setRevokeTarget] = useState<ApiKeyApproval | null>(null);
+  const [revokePreview, setRevokePreview] = useState<{ api_key_count: number; will_disable_consumer: boolean } | null>(null);
+  const [revokePreviewLoading, setRevokePreviewLoading] = useState(false);
+  const [revoking, setRevoking] = useState(false);
 
   // Quota rule create dialog
   const [qrOpen, setQrOpen] = useState(false);
@@ -294,15 +307,16 @@ export default function ApiKeyApprovalsPage({
   const [editRulePeriod, setEditRulePeriod] = useState<'day' | 'week' | 'month'>('month');
   const [editRuleSubmitting, setEditRuleSubmitting] = useState(false);
 
-  // Consumer group quota change dialog
-  const [cgQuotaTarget, setCgQuotaTarget] = useState<ConsumerGroup | null>(null);
-  const [cgQuotaRuleId, setCgQuotaRuleId] = useState('');
-  const [cgQuotaSubmitting, setCgQuotaSubmitting] = useState(false);
-
   // Adjust quota dialog (for usage tab)
   const [adjustTarget, setAdjustTarget] = useState<UsageItem | null>(null);
   const [adjustLimit, setAdjustLimit] = useState('');
   const [adjustSubmitting, setAdjustSubmitting] = useState(false);
+
+  // Consumer quota change dialog
+  const [consumerQuotaTarget, setConsumerQuotaTarget] = useState<Consumer | null>(null);
+  const [consumerQuotaRuleId, setConsumerQuotaRuleId] = useState('');
+  const [consumerQuotaSubmitting, setConsumerQuotaSubmitting] = useState(false);
+  const [togglingConsumerId, setTogglingConsumerId] = useState<string | null>(null);
 
   // ------------------------------------------------------------------------
   // Data loading
@@ -340,11 +354,13 @@ export default function ApiKeyApprovalsPage({
       .finally(() => setGroupsLoading(false));
   }, []);
 
-  const loadCgOwners = useCallback(() => {
-    api
-      .get<{ owners: string[] }>(`/api/enterprise/api-key-applications/consumer-group-owners?tenant_id=${TENANT_ID}`)
-      .then((result) => setCgOwners(result.owners ?? []))
-      .catch(() => setCgOwners([]));
+  const loadConsumers = useCallback(() => {
+    setConsumersLoading(true);
+    return api
+      .get<Consumer[]>(`/api/enterprise/api-key-applications/consumers?tenant_id=${TENANT_ID}`)
+      .then((items) => setConsumers(items))
+      .catch((error) => notify.error(error instanceof Error ? error.message : '加载消费者失败'))
+      .finally(() => setConsumersLoading(false));
   }, []);
 
   const loadRules = useCallback(() => {
@@ -371,20 +387,24 @@ export default function ApiKeyApprovalsPage({
     void loadStats();
     void loadGateways();
     void loadGroups();
+    void loadConsumers();
     void loadRules();
-    void loadCgOwners();
-  }, [loadApplications, loadStats, loadGateways, loadGroups, loadRules, loadCgOwners]);
+  }, [loadApplications, loadStats, loadGateways, loadGroups, loadConsumers, loadRules]);
 
   useEffect(() => {
-    if (tab === 'groups') void loadGroups();
-  }, [tab, loadGroups]);
+    if (tab === 'groups') {
+      void loadGroups();
+      void loadConsumers();
+    }
+  }, [tab, loadGroups, loadConsumers]);
 
   useEffect(() => {
     if (tab === 'quota') {
       void loadRules();
       void loadUsage();
+      void loadConsumers();
     }
-  }, [tab, loadRules, loadUsage]);
+  }, [tab, loadRules, loadUsage, loadConsumers]);
 
   // ------------------------------------------------------------------------
   // Actions
@@ -392,12 +412,18 @@ export default function ApiKeyApprovalsPage({
 
   function openApprove(item: ApiKeyApproval) {
     setApproveTarget(item);
+    setApproveConsumerName(`ailab_${item.username || 'user'}`);
     setApproveGroupId('');
     setApproveRuleId('');
+    setApproveApiUrl('https://ai-gateway.folidaymall.com/v1/chat/completions');
   }
 
   async function confirmApprove() {
     if (!approveTarget) return;
+    if (!approveConsumerName.trim()) {
+      notify.error('请填写消费者名称');
+      return;
+    }
     if (!approveGroupId) {
       notify.error('请选择消费组');
       return;
@@ -410,12 +436,14 @@ export default function ApiKeyApprovalsPage({
     try {
       await api.post<ApiKeyApproval>(`/api/enterprise/api-key-applications/${approveTarget.id}/approve`, {
         tenant_id: TENANT_ID,
+        consumer_name: approveConsumerName.trim(),
         consumer_group_id: approveGroupId,
         quota_rule_id: approveRuleId,
+        api_url: approveApiUrl.trim() || undefined,
       });
-      notify.success('已通过：已在阿里云分配 API Key 并关联消费组与配额规则');
+      notify.success('已通过：已在阿里云创建消费者（系统生成 API Key）并绑定消费组与配额规则');
       setApproveTarget(null);
-      await Promise.all([loadApplications(), loadStats()]);
+      await Promise.all([loadApplications(), loadStats(), loadConsumers(), loadGroups()]);
     } catch (error) {
       notify.error(error instanceof ApiError ? error.message : '操作失败');
     } finally {
@@ -423,18 +451,36 @@ export default function ApiKeyApprovalsPage({
     }
   }
 
+  async function openRevokeConfirm(item: ApiKeyApproval) {
+    setRevokeTarget(item);
+    setRevokePreview(null);
+    setRevokePreviewLoading(true);
+    try {
+      const preview = await api.get<{ api_key_count: number; will_disable_consumer: boolean }>(
+        `/api/enterprise/api-key-applications/${item.id}/revoke-preview?tenant_id=${TENANT_ID}`,
+      );
+      setRevokePreview(preview);
+    } catch {
+      // 预检失败不阻塞，仍允许吊销（按通用文案确认）
+      setRevokePreview(null);
+    } finally {
+      setRevokePreviewLoading(false);
+    }
+  }
+
   async function revoke(item: ApiKeyApproval) {
-    setActingId(item.id);
+    setRevoking(true);
     try {
       await api.post<ApiKeyApproval>(`/api/enterprise/api-key-applications/${item.id}/revoke`, {
         tenant_id: TENANT_ID,
       });
       notify.success('已吊销该 API Key');
-      await Promise.all([loadApplications(), loadStats()]);
+      setRevokeTarget(null);
+      await Promise.all([loadApplications(), loadStats(), loadConsumers()]);
     } catch (error) {
       notify.error(error instanceof ApiError ? error.message : '操作失败');
     } finally {
-      setActingId(null);
+      setRevoking(false);
     }
   }
 
@@ -454,104 +500,6 @@ export default function ApiKeyApprovalsPage({
       notify.error(error instanceof ApiError ? error.message : '操作失败');
     } finally {
       setRejecting(false);
-    }
-  }
-
-  // -- Consumer group actions --
-
-  async function submitConsumerGroup() {
-    if (!cgName.trim()) {
-      notify.error('请填写消费组名称');
-      return;
-    }
-    if (!cgGateway) {
-      notify.error('请选择网关');
-      return;
-    }
-    setCgSubmitting(true);
-    try {
-      await api.post<ConsumerGroup>('/api/enterprise/api-key-applications/consumer-groups', {
-        tenant_id: TENANT_ID,
-        name: cgName.trim(),
-        description: cgDesc.trim() || undefined,
-        owner: cgOwner || undefined,
-        gateway_name: cgGateway,
-      });
-      notify.success('消费组创建成功');
-      setCgOpen(false);
-      setCgName('');
-      setCgDesc('');
-      setCgOwner('');
-      setCgGateway('');
-      await loadGroups();
-    } catch (error) {
-      notify.error(error instanceof ApiError ? error.message : '创建失败');
-    } finally {
-      setCgSubmitting(false);
-    }
-  }
-
-  async function submitEditConsumerGroup() {
-    if (!editCg) return;
-    if (!editCgName.trim()) {
-      notify.error('请填写消费组名称');
-      return;
-    }
-    setEditCgSubmitting(true);
-    try {
-      await api.put<ConsumerGroup>(
-        `/api/enterprise/api-key-applications/consumer-groups/${editCg.id}`,
-        {
-          tenant_id: TENANT_ID,
-          name: editCgName.trim(),
-          description: editCgDesc.trim() || undefined,
-          owner: editCgOwner || undefined,
-        },
-      );
-      notify.success('消费组已更新');
-      setEditCg(null);
-      await loadGroups();
-    } catch (error) {
-      notify.error(error instanceof ApiError ? error.message : '更新失败');
-    } finally {
-      setEditCgSubmitting(false);
-    }
-  }
-
-  async function deleteConsumerGroup(group: ConsumerGroup) {
-    setActingId(group.id);
-    try {
-      await api.delete<ConsumerGroup>(
-        `/api/enterprise/api-key-applications/consumer-groups/${group.id}?tenant_id=${TENANT_ID}`,
-      );
-      notify.success('消费组已删除');
-      await loadGroups();
-    } catch (error) {
-      notify.error(error instanceof ApiError ? error.message : '删除失败');
-    } finally {
-      setActingId(null);
-    }
-  }
-
-  async function submitCgQuotaChange() {
-    if (!cgQuotaTarget || !cgQuotaRuleId) return;
-    setCgQuotaSubmitting(true);
-    try {
-      await api.post<ConsumerGroup>(
-        `/api/enterprise/api-key-applications/consumer-groups/${cgQuotaTarget.id}/quota`,
-        {
-          tenant_id: TENANT_ID,
-          quota_rule_id: cgQuotaRuleId,
-        },
-      );
-      notify.success('配额规则已关联');
-      setCgQuotaTarget(null);
-      setCgQuotaRuleId('');
-      await loadGroups();
-    } catch (error) {
-      notify.error(error instanceof ApiError ? error.message : '操作失败');
-    } finally {
-      setCgQuotaSubmitting(false);
     }
   }
 
@@ -621,18 +569,43 @@ export default function ApiKeyApprovalsPage({
     }
   }
 
-  async function deleteQuotaRule(rule: QuotaRule) {
-    setActingId(rule.id);
+  // -- Consumer actions --
+
+  async function toggleConsumer(consumer: Consumer, enable: boolean) {
+    setTogglingConsumerId(consumer.id);
     try {
-      await api.delete<QuotaRule>(
-        `/api/enterprise/api-key-applications/quota-rules/${rule.id}?tenant_id=${TENANT_ID}`,
-      );
-      notify.success('配额规则已删除');
-      await loadRules();
+      await api.post<Consumer>(`/api/enterprise/api-key-applications/consumers/${consumer.external_consumer_id}/toggle`, {
+        tenant_id: TENANT_ID,
+        enable,
+      });
+      notify.success(enable ? `已启用消费者 ${consumer.name}` : `已停用消费者 ${consumer.name}`);
+      await loadConsumers();
     } catch (error) {
-      notify.error(error instanceof ApiError ? error.message : '删除失败');
+      notify.error(error instanceof ApiError ? error.message : '操作失败');
     } finally {
-      setActingId(null);
+      setTogglingConsumerId(null);
+    }
+  }
+
+  async function confirmConsumerQuotaChange() {
+    if (!consumerQuotaTarget || !consumerQuotaRuleId) return;
+    setConsumerQuotaSubmitting(true);
+    try {
+      await api.post<Consumer>(
+        `/api/enterprise/api-key-applications/consumers/${consumerQuotaTarget.external_consumer_id}/quota`,
+        {
+          tenant_id: TENANT_ID,
+          quota_rule_id: consumerQuotaRuleId,
+        },
+      );
+      notify.success(`已更新 ${consumerQuotaTarget.name} 的配额规则`);
+      setConsumerQuotaTarget(null);
+      setConsumerQuotaRuleId('');
+      await loadConsumers();
+    } catch (error) {
+      notify.error(error instanceof ApiError ? error.message : '操作失败');
+    } finally {
+      setConsumerQuotaSubmitting(false);
     }
   }
 
@@ -676,7 +649,7 @@ export default function ApiKeyApprovalsPage({
   // Rules that match the selected consumer group's gateway (for approve dialog)
   const approveCompatibleRules = approveGroupId
     ? rules.filter((r) => {
-        const g = groups.find((x) => x.id === approveGroupId);
+        const g = groups.find((x) => x.id === approveGroupId || x.external_consumer_group_id === approveGroupId);
         return g && r.gateway_id === g.gateway_id;
       })
     : rules;
@@ -692,6 +665,22 @@ export default function ApiKeyApprovalsPage({
       (item.gateway_name?.toLowerCase().includes(q) ?? false)
     );
   }) ?? [];
+
+  const getConsumerForUsage = (item: UsageItem): Consumer | undefined =>
+    consumers.find((c) => c.external_consumer_id && c.external_consumer_id === item.consumer_id);
+
+  // Filtered consumers (by name / description / group / gateway / consumer id)
+  const filteredConsumers = consumers.filter((c) => {
+    if (!consumerSearch.trim()) return true;
+    const q = consumerSearch.trim().toLowerCase();
+    return (
+      (c.name?.toLowerCase().includes(q) ?? false) ||
+      (c.description?.toLowerCase().includes(q) ?? false) ||
+      (c.consumer_group_name?.toLowerCase().includes(q) ?? false) ||
+      (c.gateway_name?.toLowerCase().includes(q) ?? false) ||
+      (c.external_consumer_id?.toLowerCase().includes(q) ?? false)
+    );
+  });
 
   // ------------------------------------------------------------------------
   // Column definitions
@@ -842,7 +831,7 @@ export default function ApiKeyApprovalsPage({
         return (
           <UIButton
             disabled={busy}
-            onClick={() => void revoke(row)}
+            onClick={() => void openRevokeConfirm(row)}
             className="h-[30px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#757f9c] hover:bg-black/5 hover:text-[#18181a] disabled:opacity-60"
           >
             {busy ? <LoaderCircle className="size-[13px] animate-spin" /> : null}
@@ -920,6 +909,17 @@ export default function ApiKeyApprovalsPage({
       ),
     },
     {
+      key: 'group_id',
+      title: '消费组 ID',
+      width: 200,
+      render: (row) =>
+        row.external_consumer_group_id ? (
+          <code className="block truncate font-mono text-[12px] text-[#858b9c]">{row.external_consumer_group_id}</code>
+        ) : (
+          <span className="text-[12px] text-[#c0c6d4]">—</span>
+        ),
+    },
+    {
       key: 'owner',
       title: '归属',
       width: 130,
@@ -942,6 +942,48 @@ export default function ApiKeyApprovalsPage({
         ),
     },
     {
+      key: 'type',
+      title: '类型',
+      width: 80,
+      render: (row) => <span className="text-[12px] text-[#464c5e]">{row.consumer_type}</span>,
+    },
+  ];
+
+  const consumerColumns: DataTableColumn<Consumer>[] = [
+    {
+      key: 'name',
+      title: '消费者名称',
+      width: 170,
+      render: (row) => (
+        <div className="flex min-w-0 flex-col gap-[2px]">
+          <span className="truncate text-[13px] font-medium text-[#18181a]">{row.name}</span>
+          {row.description && <span className="truncate text-[12px] text-[#858b9c]">{row.description}</span>}
+        </div>
+      ),
+    },
+    {
+      key: 'consumer_group',
+      title: '消费组',
+      width: 120,
+      render: (row) =>
+        row.consumer_group_name ? (
+          <span className="block truncate text-[12px] text-[#464c5e]">{row.consumer_group_name}</span>
+        ) : (
+          <span className="text-[12px] text-[#c0c6d4]">未分组</span>
+        ),
+    },
+    {
+      key: 'gateway',
+      title: '网关',
+      width: 110,
+      render: (row) =>
+        row.gateway_name ? (
+          <span className="text-[13px] text-[#464c5e]">{row.gateway_name}</span>
+        ) : (
+          <span className="text-[12px] text-[#c0c6d4]">—</span>
+        ),
+    },
+    {
       key: 'consumer_id',
       title: '消费者 ID',
       render: (row) =>
@@ -952,61 +994,35 @@ export default function ApiKeyApprovalsPage({
         ),
     },
     {
-      key: 'type',
-      title: '类型',
+      key: 'enable',
+      title: '启用',
       width: 80,
-      render: (row) => <span className="text-[12px] text-[#464c5e]">{row.consumer_type}</span>,
+      render: (row) => (
+        <Switch
+          size="sm"
+          checked={row.enable !== false}
+          disabled={togglingConsumerId === row.id}
+          onCheckedChange={(checked) => void toggleConsumer(row, checked)}
+        />
+      ),
     },
     {
-      key: 'status',
-      title: '状态',
-      width: 80,
-      render: (row) => <span className="text-[12px] text-[#464c5e]">{row.status}</span>,
-    },
-    {
-      key: 'actions',
-      title: '操作',
-      width: 250,
-      align: 'right',
-      render: (row) => {
-        const busy = actingId === row.id;
-        return (
-          <div className="flex items-center justify-end gap-[8px]">
-            <UIButton
-              disabled={busy}
-              onClick={() => {
-                setEditCg(row);
-                setEditCgName(row.name);
-                setEditCgDesc(row.description ?? '');
-                setEditCgOwner(row.owner ?? '');
-              }}
-              className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
-            >
-              <Pencil className="size-[13px]" />
-              编辑
-            </UIButton>
-            <UIButton
-              disabled={busy}
-              onClick={() => {
-                setCgQuotaTarget(row);
-                setCgQuotaRuleId('');
-              }}
-              className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
-            >
-              <SlidersHorizontal className="size-[13px]" />
-              改配额
-            </UIButton>
-            <UIButton
-              disabled={busy}
-              onClick={() => void deleteConsumerGroup(row)}
-              className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#c0392b] hover:bg-[#fdeeee] disabled:opacity-60"
-            >
-              {busy ? <LoaderCircle className="size-[13px] animate-spin" /> : <Trash2 className="size-[13px]" />}
-              删除
-            </UIButton>
-          </div>
-        );
-      },
+      key: 'quota_actions',
+      title: '配额',
+      width: 100,
+      render: (row) => (
+        <UIButton
+          disabled={togglingConsumerId === row.id}
+          onClick={() => {
+            setConsumerQuotaTarget(row);
+            setConsumerQuotaRuleId('');
+          }}
+          className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
+        >
+          <SlidersHorizontal className="size-[13px]" />
+          改配额
+        </UIButton>
+      ),
     },
   ];
 
@@ -1067,7 +1083,7 @@ export default function ApiKeyApprovalsPage({
     {
       key: 'actions',
       title: '操作',
-      width: 150,
+      width: 100,
       align: 'right',
       render: (row) => {
         const busy = actingId === row.id;
@@ -1086,14 +1102,6 @@ export default function ApiKeyApprovalsPage({
               <SlidersHorizontal className="size-[13px]" />
               编辑
             </UIButton>
-            <UIButton
-              disabled={busy}
-              onClick={() => void deleteQuotaRule(row)}
-              className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#c0392b] hover:bg-[#fdeeee] disabled:opacity-60"
-            >
-              {busy ? <LoaderCircle className="size-[13px] animate-spin" /> : <Trash2 className="size-[13px]" />}
-              删除
-            </UIButton>
           </div>
         );
       },
@@ -1103,14 +1111,17 @@ export default function ApiKeyApprovalsPage({
   const usageColumns: DataTableColumn<UsageItem>[] = [
     {
       key: 'user',
-      title: '用户',
-      width: 140,
-      render: (row) => (
-        <div className="flex min-w-0 flex-col gap-[2px]">
-          <span className="truncate text-[13px] font-medium text-[#18181a]">{row.username || '-'}</span>
-          <span className="truncate text-[12px] text-[#858b9c]">{row.user_no || row.user_id}</span>
-        </div>
-      ),
+      title: '消费者',
+      width: 170,
+      render: (row) => {
+        const c = getConsumerForUsage(row);
+        return (
+          <div className="flex min-w-0 flex-col gap-[2px]">
+            <span className="truncate text-[13px] font-medium text-[#18181a]">{c?.name || row.consumer_name || row.username || '-'}</span>
+            <span className="truncate text-[12px] text-[#858b9c]">{c?.consumer_group_name || row.consumer_id || ''}</span>
+          </div>
+        );
+      },
     },
     {
       key: 'gateway',
@@ -1178,22 +1189,44 @@ export default function ApiKeyApprovalsPage({
       },
     },
     {
+      key: 'enable',
+      title: '启用',
+      width: 80,
+      render: (row) => {
+        const c = getConsumerForUsage(row);
+        if (!c) return <span className="text-[12px] text-[#c0c6d4]">—</span>;
+        return (
+          <Switch
+            size="sm"
+            checked={c.enable !== false}
+            disabled={togglingConsumerId === c.id}
+            onCheckedChange={(checked) => void toggleConsumer(c, checked)}
+          />
+        );
+      },
+    },
+    {
       key: 'actions',
       title: '操作',
       width: 100,
       align: 'right',
-      render: (row) => (
-        <UIButton
-          onClick={() => {
-            setAdjustTarget(row);
-            setAdjustLimit(row.quota_limit ? String(row.quota_limit) : '');
-          }}
-          className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6]"
-        >
-          <SlidersHorizontal className="size-[13px]" />
-          调配额
-        </UIButton>
-      ),
+      render: (row) => {
+        const c = getConsumerForUsage(row);
+        if (!c) return <span className="text-[12px] text-[#c0c6d4]">—</span>;
+        return (
+          <UIButton
+            disabled={togglingConsumerId === c.id}
+            onClick={() => {
+              setConsumerQuotaTarget(c);
+              setConsumerQuotaRuleId('');
+            }}
+            className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
+          >
+            <SlidersHorizontal className="size-[13px]" />
+            改配额
+          </UIButton>
+        );
+      },
     },
   ];
 
@@ -1431,7 +1464,7 @@ export default function ApiKeyApprovalsPage({
             />
 
             {/* Quota rules section */}
-            <div className="flex items-center justify-between px-[12px] pt-[8px]">
+            <div className="flex items-center justify-between px-[12px] pt-[12px]">
               <div className="flex items-center gap-[6px] text-[#757f9c]">
                 <SlidersHorizontal className="size-[14px] shrink-0" />
                 <span className="text-[14px] font-normal leading-none">配额规则</span>
@@ -1465,23 +1498,34 @@ export default function ApiKeyApprovalsPage({
         {/* Consumer groups */}
         {tab === 'groups' && (
           <>
-            <div className="flex items-center justify-between px-[12px]">
-              <div className="flex items-center gap-[6px] text-[#757f9c]">
+            <div className="flex items-center justify-between gap-[10px] px-[12px] text-[#757f9c]">
+              <div className="flex items-center gap-[6px]">
                 <Users className="size-[14px] shrink-0" />
-                <span className="text-[14px] font-normal leading-none">消费组管理</span>
+                <span className="text-[14px] font-normal leading-none">消费者列表</span>
+                <span className="text-[12px] text-[#c0c6d4]">随时启用/停用或更换配额规则</span>
               </div>
-              <UIButton
-                onClick={() => {
-                  setCgOpen(true);
-                  setCgName('');
-                  setCgDesc('');
-                  setCgGateway(gateways[0]?.name ?? '');
-                }}
-                className="h-[30px] gap-[4px] rounded-[8px] bg-[#18181a] px-[12px] text-[12px] font-normal text-white hover:bg-[#303030]"
-              >
-                <Plus className="size-[13px]" />
-                新建消费组
-              </UIButton>
+              <div className="relative w-[200px]">
+                <Search className="absolute left-[8px] top-1/2 size-[14px] -translate-y-1/2 text-[#c0c6d4]" />
+                <Input
+                  value={consumerSearch}
+                  onChange={(e) => setConsumerSearch(e.target.value)}
+                  placeholder="搜索消费者名称"
+                  className="h-[30px] pl-[28px] text-[12px]"
+                />
+              </div>
+            </div>
+            <DataTable
+              aria-label="消费者列表"
+              columns={consumerColumns}
+              data={filteredConsumers}
+              rowKey={(row) => row.id}
+              loading={consumersLoading}
+              emptyText={consumerSearch.trim() ? '无匹配的消费者' : '暂无消费者'}
+            />
+
+            <div className="flex items-center gap-[6px] px-[12px] pt-[8px] text-[#757f9c]">
+              <Users className="size-[14px] shrink-0" />
+              <span className="text-[14px] font-normal leading-none">消费组（只读）</span>
             </div>
             <DataTable
               aria-label="消费组列表"
@@ -1489,24 +1533,38 @@ export default function ApiKeyApprovalsPage({
               data={groups}
               rowKey={(row) => row.id}
               loading={groupsLoading}
-              emptyText="暂无消费组，点击右上角新建"
+              emptyText="暂无消费组"
             />
           </>
         )}
       </div>
 
       {/* ----------------------------------------------------------------- */}
-      {/* Approve dialog: select consumer group + quota rule */}
+      {/* Approve dialog: create consumer + bind group + bind quota rule */}
       {/* ----------------------------------------------------------------- */}
       <Dialog open={Boolean(approveTarget)} onOpenChange={(open) => !open && setApproveTarget(null)}>
         <DialogContent
           aria-describedby={undefined}
           className="flex w-[calc(100%-2rem)] flex-col gap-[14px] rounded-[14px] px-[20px] py-[16px] sm:max-w-[480px]"
         >
-          <DialogTitle className="text-[15px] font-medium text-[#18181a]">通过申请并分配 API Key</DialogTitle>
+          <DialogTitle className="text-[15px] font-medium text-[#18181a]">通过申请并创建消费者</DialogTitle>
           <p className="text-[12px] leading-[18px] text-[#757f9c]">
             申请：{approveTarget?.purpose || '（未填写用途）'} · 申请人 {approveTarget?.username || '-'}
           </p>
+
+          {/* Consumer name input */}
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">消费者名称</span>
+            <Input
+              value={approveConsumerName}
+              onChange={(e) => setApproveConsumerName(e.target.value)}
+              placeholder="如 ailab_zhangwei"
+              className="h-[34px] font-mono text-[13px]"
+            />
+            <span className="text-[11px] leading-[16px] text-[#858b9c]">
+              通过后将在阿里云创建同名消费者，API Key 由系统自动生成并回传给申请人。
+            </span>
+          </label>
 
           {/* Consumer group select */}
           <label className="flex flex-col gap-[6px]">
@@ -1524,12 +1582,12 @@ export default function ApiKeyApprovalsPage({
               <SelectContent>
                 {groups.length === 0 ? (
                   <SelectItem value="__none__" disabled>
-                    无可用消费组（请先在「消费组管理」创建）
+                    无可用消费组
                   </SelectItem>
                 ) : (
                   groups.map((g) => (
-                    <SelectItem key={g.id} value={g.id}>
-                      {g.name} ({g.gateway_name || '-'})
+                    <SelectItem key={g.id} value={g.external_consumer_group_id || g.id}>
+                      {g.name}（{g.gateway_name || '-'}）
                     </SelectItem>
                   ))
                 )}
@@ -1537,7 +1595,7 @@ export default function ApiKeyApprovalsPage({
             </Select>
           </label>
 
-          {/* Quota rule select (filtered to same gateway) */}
+          {/* Quota rule select (filtered to same gateway as group) */}
           <label className="flex flex-col gap-[6px]">
             <span className="text-[12px] font-medium text-[#464c5e]">配额规则</span>
             <Select value={approveRuleId} onValueChange={setApproveRuleId}>
@@ -1551,7 +1609,7 @@ export default function ApiKeyApprovalsPage({
                   </SelectItem>
                 ) : (
                   approveCompatibleRules.map((r) => (
-                    <SelectItem key={r.id} value={r.id}>
+                    <SelectItem key={r.id} value={r.external_rule_id || r.id}>
                       {r.name} ({r.quota_limit.toLocaleString('zh-CN')}/{PERIOD_LABEL[r.period_type] ?? r.period_type})
                     </SelectItem>
                   ))
@@ -1560,8 +1618,22 @@ export default function ApiKeyApprovalsPage({
             </Select>
           </label>
 
+          {/* Gateway URL input */}
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">网关地址</span>
+            <Input
+              value={approveApiUrl}
+              onChange={(e) => setApproveApiUrl(e.target.value)}
+              placeholder="https://ai-gateway.folidaymall.com/v1/chat/completions"
+              className="h-[34px] font-mono text-[12px]"
+            />
+            <span className="text-[11px] leading-[16px] text-[#858b9c]">
+              下发给申请人的调用地址，可在审批时手动修改。
+            </span>
+          </label>
+
           <p className="text-[12px] leading-[18px] text-[#858b9c]">
-            通过后将在阿里云该网关下为消费组追加自定义 API Key 凭证，并将消费者纳入选定的配额规则。分配的 API Key 与网关地址仅申请人本人可见。
+            通过后将在阿里云创建消费者并绑定消费组与配额规则，Model API 授权请在阿里云控制台完成。分配的 API Key 与网关地址仅申请人本人可见。
           </p>
 
           <div className="flex items-center justify-end gap-[8px]">
@@ -1574,7 +1646,7 @@ export default function ApiKeyApprovalsPage({
               取消
             </UIButton>
             <UIButton
-              disabled={approving || !approveGroupId || !approveRuleId}
+              disabled={approving || !approveConsumerName.trim() || !approveGroupId || !approveRuleId}
               onClick={() => void confirmApprove()}
               className="h-[32px] w-[96px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
             >
@@ -1624,170 +1696,50 @@ export default function ApiKeyApprovalsPage({
         </DialogContent>
       </Dialog>
 
-      {/* Consumer group create dialog */}
-      <Dialog open={cgOpen} onOpenChange={setCgOpen}>
+      {/* Revoke confirm dialog */}
+      <Dialog open={Boolean(revokeTarget)} onOpenChange={(open) => !open && !revoking && setRevokeTarget(null)}>
         <DialogContent
           aria-describedby={undefined}
           className="flex w-[calc(100%-2rem)] flex-col gap-[14px] rounded-[14px] px-[20px] py-[16px] sm:max-w-[440px]"
         >
-          <DialogTitle className="text-[15px] font-medium text-[#18181a]">新建消费组</DialogTitle>
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[12px] font-medium text-[#464c5e]">名称</span>
-            <Input
-              value={cgName}
-              onChange={(e) => setCgName(e.target.value)}
-              disabled={cgSubmitting}
-              placeholder="例如：研发一组"
-              className="h-[34px] text-[12px]"
-            />
-          </label>
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[12px] font-medium text-[#464c5e]">描述（可选）</span>
-            <Input
-              value={cgDesc}
-              onChange={(e) => setCgDesc(e.target.value)}
-              disabled={cgSubmitting}
-              placeholder="例如：主力研发团队"
-              className="h-[34px] text-[12px]"
-            />
-          </label>
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[12px] font-medium text-[#464c5e]">归属（可选）</span>
-            <Select value={cgOwner} onValueChange={setCgOwner}>
-              <SelectTrigger className="h-[34px]">
-                <SelectValue placeholder="选择归属" />
-              </SelectTrigger>
-              <SelectContent>
-                {cgOwners.length === 0 ? (
-                  <SelectItem value="__none__" disabled>
-                    未配置归属（检查 CONSUMER_GROUP_OWNERS）
-                  </SelectItem>
-                ) : (
-                  cgOwners.map((owner) => (
-                    <SelectItem key={owner} value={owner}>
-                      {owner}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </label>
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[12px] font-medium text-[#464c5e]">网关</span>
-            <Select value={cgGateway} onValueChange={setCgGateway}>
-              <SelectTrigger className="h-[34px]">
-                <SelectValue placeholder="选择网关" />
-              </SelectTrigger>
-              <SelectContent>
-                {gateways.length === 0 ? (
-                  <SelectItem value="__none__" disabled>
-                    未配置网关（检查 ALIYUN_APIG_GATEWAYS）
-                  </SelectItem>
-                ) : (
-                  gateways.map((g) => (
-                    <SelectItem key={g.gateway_id} value={g.name}>
-                      {g.name}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </label>
-          <p className="text-[12px] leading-[18px] text-[#858b9c]">
-            将在选定网关下创建一个阿里云消费者。
+          <DialogTitle className="text-[15px] font-medium text-[#18181a]">确认吊销 API Key</DialogTitle>
+          <p className="text-[12px] leading-[18px] text-[#757f9c]">
+            申请人：{revokeTarget?.username || '-'} · Key {revokeTarget?.api_key_masked || '-'}
           </p>
-          <div className="flex items-center justify-end gap-[8px]">
-            <UIButton
-              variant="outline"
-              disabled={cgSubmitting}
-              onClick={() => setCgOpen(false)}
-              className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:bg-[#f6f6f6]"
-            >
-              取消
-            </UIButton>
-            <UIButton
-              disabled={cgSubmitting}
-              onClick={() => void submitConsumerGroup()}
-              className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
-            >
-              {cgSubmitting && <LoaderCircle className="size-[14px] animate-spin" />}
-              创建
-            </UIButton>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Consumer group edit dialog */}
-      <Dialog open={Boolean(editCg)} onOpenChange={(open) => !open && setEditCg(null)}>
-        <DialogContent
-          aria-describedby={undefined}
-          className="flex w-[calc(100%-2rem)] flex-col gap-[14px] rounded-[14px] px-[20px] py-[16px] sm:max-w-[440px]"
-        >
-          <DialogTitle className="text-[15px] font-medium text-[#18181a]">编辑消费组</DialogTitle>
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[12px] font-medium text-[#464c5e]">名称</span>
-            <Input
-              value={editCgName}
-              onChange={(e) => setEditCgName(e.target.value)}
-              disabled={editCgSubmitting}
-              placeholder="例如：研发一组"
-              className="h-[34px] text-[12px]"
-            />
-          </label>
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[12px] font-medium text-[#464c5e]">描述（可选）</span>
-            <Input
-              value={editCgDesc}
-              onChange={(e) => setEditCgDesc(e.target.value)}
-              disabled={editCgSubmitting}
-              placeholder="例如：主力研发团队"
-              className="h-[34px] text-[12px]"
-            />
-          </label>
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[12px] font-medium text-[#464c5e]">归属（可选）</span>
-            <Select value={editCgOwner} onValueChange={setEditCgOwner} disabled={editCgSubmitting}>
-              <SelectTrigger className="h-[34px]">
-                <SelectValue placeholder="选择归属" />
-              </SelectTrigger>
-              <SelectContent>
-                {cgOwners.length === 0 ? (
-                  <SelectItem value="__none__" disabled>
-                    未配置归属（检查 CONSUMER_GROUP_OWNERS）
-                  </SelectItem>
-                ) : (
-                  cgOwners.map((owner) => (
-                    <SelectItem key={owner} value={owner}>
-                      {owner}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </label>
-          <label className="flex flex-col gap-[6px]">
-            <span className="text-[12px] font-medium text-[#464c5e]">网关</span>
-            <div className="flex h-[34px] items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-[#f6f7fa] px-[12px] text-[12px] text-[#858b9c]">
-              {editCg?.gateway_name || '—'}
+          {revokePreviewLoading ? (
+            <div className="flex items-center gap-[8px] text-[12px] text-[#858b9c]">
+              <LoaderCircle className="size-[13px] animate-spin" />
+              正在检查该消费者名下的 API Key…
             </div>
-          </label>
-          <p className="text-[12px] leading-[18px] text-[#858b9c]">网关创建后不可修改；名称与描述将同步更新到阿里云消费者。</p>
+          ) : revokePreview?.will_disable_consumer ? (
+            <div className="rounded-[10px] border-[0.5px] border-[#f3d5d2] bg-[#fdf3f2] px-[12px] py-[10px] text-[12px] leading-[18px] text-[#c0392b]">
+              当前消费者只有一个 API Key，如果吊销则停用该消费者。
+            </div>
+          ) : revokePreview ? (
+            <div className="rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-[#f8f9fb] px-[12px] py-[10px] text-[12px] leading-[18px] text-[#464c5e]">
+              该消费者名下共有 {revokePreview.api_key_count} 个 API Key，吊销后仅移除当前这一个，消费者继续可用。
+            </div>
+          ) : (
+            <div className="rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-[#f8f9fb] px-[12px] py-[10px] text-[12px] leading-[18px] text-[#464c5e]">
+              吊销后将同步删除阿里云网关侧对应的 API Key 凭证，该操作不可恢复。
+            </div>
+          )}
           <div className="flex items-center justify-end gap-[8px]">
             <UIButton
               variant="outline"
-              disabled={editCgSubmitting}
-              onClick={() => setEditCg(null)}
+              disabled={revoking}
+              onClick={() => setRevokeTarget(null)}
               className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:bg-[#f6f6f6]"
             >
               取消
             </UIButton>
             <UIButton
-              disabled={editCgSubmitting}
-              onClick={() => void submitEditConsumerGroup()}
-              className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
+              disabled={revoking || revokePreviewLoading}
+              onClick={() => revokeTarget && void revoke(revokeTarget)}
+              className="h-[32px] w-[80px] rounded-[10px] bg-[#c0392b] px-[12px] text-[14px] font-normal text-white hover:bg-[#a93226]"
             >
-              {editCgSubmitting && <LoaderCircle className="size-[14px] animate-spin" />}
-              保存
+              {revoking && <LoaderCircle className="size-[14px] animate-spin" />}
+              确认吊销
             </UIButton>
           </div>
         </DialogContent>
@@ -1955,27 +1907,26 @@ export default function ApiKeyApprovalsPage({
         </DialogContent>
       </Dialog>
 
-      {/* Consumer group quota change dialog */}
-      <Dialog open={Boolean(cgQuotaTarget)} onOpenChange={(open) => !open && setCgQuotaTarget(null)}>
+      {/* Consumer quota change dialog */}
+      <Dialog open={Boolean(consumerQuotaTarget)} onOpenChange={(open) => !open && setConsumerQuotaTarget(null)}>
         <DialogContent
           aria-describedby={undefined}
           className="flex w-[calc(100%-2rem)] flex-col gap-[14px] rounded-[14px] px-[20px] py-[16px] sm:max-w-[440px]"
         >
-          <DialogTitle className="text-[15px] font-medium text-[#18181a]">关联配额规则</DialogTitle>
+          <DialogTitle className="text-[15px] font-medium text-[#18181a]">修改消费者配额规则</DialogTitle>
           <p className="text-[12px] leading-[18px] text-[#757f9c]">
-            消费组：{cgQuotaTarget?.name} · 网关 {cgQuotaTarget?.gateway_name || '-'}
+            消费者：{consumerQuotaTarget?.name} · 消费组 {consumerQuotaTarget?.consumer_group_name || '未分组'} · 网关{' '}
+            {consumerQuotaTarget?.gateway_name || '-'}
           </p>
           <label className="flex flex-col gap-[6px]">
             <span className="text-[12px] font-medium text-[#464c5e]">配额规则</span>
-            <Select value={cgQuotaRuleId} onValueChange={setCgQuotaRuleId}>
+            <Select value={consumerQuotaRuleId} onValueChange={setConsumerQuotaRuleId}>
               <SelectTrigger className="h-[34px]">
                 <SelectValue placeholder="选择配额规则" />
               </SelectTrigger>
               <SelectContent>
                 {(() => {
-                  const compatible = rules.filter(
-                    (r) => r.gateway_id === cgQuotaTarget?.gateway_id,
-                  );
+                  const compatible = rules.filter((r) => r.gateway_id === consumerQuotaTarget?.gateway_id);
                   if (compatible.length === 0) {
                     return (
                       <SelectItem value="__none__" disabled>
@@ -1995,18 +1946,18 @@ export default function ApiKeyApprovalsPage({
           <div className="flex items-center justify-end gap-[8px]">
             <UIButton
               variant="outline"
-              disabled={cgQuotaSubmitting}
-              onClick={() => setCgQuotaTarget(null)}
+              disabled={consumerQuotaSubmitting}
+              onClick={() => setConsumerQuotaTarget(null)}
               className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:bg-[#f6f6f6]"
             >
               取消
             </UIButton>
             <UIButton
-              disabled={cgQuotaSubmitting || !cgQuotaRuleId}
-              onClick={() => void submitCgQuotaChange()}
+              disabled={consumerQuotaSubmitting || !consumerQuotaRuleId}
+              onClick={() => void confirmConsumerQuotaChange()}
               className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
             >
-              {cgQuotaSubmitting && <LoaderCircle className="size-[14px] animate-spin" />}
+              {consumerQuotaSubmitting && <LoaderCircle className="size-[14px] animate-spin" />}
               确认
             </UIButton>
           </div>

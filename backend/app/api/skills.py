@@ -82,7 +82,7 @@ from app.skills.nesting import (
     validate_sop_nesting,
 )
 
-_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
+_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "dingtalk": "钉钉"}
 
 router = APIRouter(
     prefix="/api/enterprise/skills",

@@ -34,6 +34,11 @@ from .config import (
     get_gateway_configs,
 )
 from .consumers import create_consumer, delete_consumer, list_consumers
+from .consumer_groups import (
+    get_consumer_group,
+    list_consumer_group_consumers,
+    list_consumer_groups,
+)
 from .manager import AliyunApigClient, AliyunApigError, get_apig_client
 from .quota import (
     create_quota_rule,
@@ -64,6 +69,9 @@ __all__ = [
     "create_consumer",
     "delete_consumer",
     "list_consumers",
+    "get_consumer_group",
+    "list_consumer_groups",
+    "list_consumer_group_consumers",
     "get_quota_usage",
     "create_quota_rule",
     "list_quota_rules",

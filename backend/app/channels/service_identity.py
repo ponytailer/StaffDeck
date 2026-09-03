@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _USERNAME_UNSAFE = re.compile(r"[^a-zA-Z0-9_.@-]")
 
 # 渠道显示名前缀(用户回复与懒建账号 display_name 共用)
-_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
+_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "dingtalk": "钉钉"}
 
 
 class IdentityScopeConflict(RuntimeError):
@@ -64,9 +64,6 @@ def external_account_key(channel: str, config: dict) -> str | None:
     if channel == "wechat":
         bot_id = str(config.get("ilink_bot_id") or "").strip()
         return f"wechat:ilink_bot:{bot_id}" if bot_id else None
-    if channel == "feishu":
-        app_id = str(config.get("app_id") or "").strip()
-        return f"feishu:app:{len(app_id)}:{app_id}" if app_id else None
     if channel == "dingtalk":
         client_id = str(config.get("client_id") or "").strip()
         return f"dingtalk:app:{len(client_id)}:{client_id}" if client_id else None

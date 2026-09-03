@@ -26,10 +26,6 @@ from app.channels.adapters.dingtalk import (
     DingTalkPermanentError,
     validate_dingtalk_credentials,
 )
-from app.channels.adapters.feishu import (
-    FeishuPermanentError,
-    validate_feishu_credentials,
-)
 from app.channels.adapters.wechat import WeChatClient, sanitize_wechat_baseurl, validate_wechat_host
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.channels.schema import (
@@ -52,7 +48,6 @@ from app.channels.schema import (
     ChannelQRCodeRead,
     ChannelQRCodeStatusRead,
     DingTalkCredentialsRequest,
-    FeishuCredentialsRequest,
     MyIdentityBindingRead,
     WeComCredentialsRequest,
     channel_binding_agents_read,
@@ -145,10 +140,10 @@ def _patch_binding_config_key(
     if result.rowcount != 1:
         raise HTTPException(status_code=404, detail="渠道绑定不存在")
 
-SUPPORTED_CHANNELS = {"wechat", "wecom", "feishu", "dingtalk"}
+SUPPORTED_CHANNELS = {"wechat", "wecom", "dingtalk"}
 INGRESS_QUIESCE_TIMEOUT_SECONDS = 5.0
 # 渠道中文名:错误信息与通知文案共用
-_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
+_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "dingtalk": "钉钉"}
 # 接入显示名长度上限(前后端一致)
 BINDING_NAME_MAX_LENGTH = 50
 
@@ -194,16 +189,6 @@ CHANNEL_META = [
                 "secret": False,
                 "optional": False,
             },
-        ],
-        "capabilities": [],
-    },
-    {
-        "channel": "feishu",
-        "name": "飞书",
-        "setup": "credentials",
-        "credential_fields": [
-            {"key": "app_id", "label": "App ID", "placeholder": "cli_xxx", "secret": False},
-            {"key": "app_secret", "label": "App Secret", "placeholder": None, "secret": True},
         ],
         "capabilities": [],
     },
@@ -502,8 +487,6 @@ def create_identity_bind_code(
     _ensure_binding_manager(db, tenant_id, binding, current_user, action=_MANAGER_ACTION_AGENTS)
     target = db.get(User, request.user_id)
     if not target or target.tenant_id != tenant_id or target.source != "web":
-        raise HTTPException(status_code=400, detail="身份绑定对象必须是当前租户的内部成员")
-    if binding.channel == "feishu" and not binding.credentials_enc:
         raise HTTPException(status_code=409, detail="请先完成飞书应用接入，再邀请成员绑定身份")
     if not _check_bind_code_rate(current_user.id):
         raise HTTPException(status_code=429, detail="绑定码生成过于频繁，请稍后再试")
@@ -1344,87 +1327,6 @@ def save_wecom_credentials(
         _resume_binding(channel, binding_id, start=True)
     return channel_binding_read(db, binding, current_user)
 
-
-@router.post("/{binding_id}/feishu/credentials", response_model=ChannelBindingRead)
-def save_feishu_credentials(
-    binding_id: str,
-    request: FeishuCredentialsRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session),
-) -> ChannelBindingRead:
-    """Validate and save Feishu app credentials, then start its long connection."""
-    ensure_current_user_tenant(request.tenant_id, current_user)
-    binding = _get_binding(db, request.tenant_id, binding_id)
-    _ensure_binding_manager(db, request.tenant_id, binding, current_user, action=_MANAGER_ACTION_CREDENTIALS)
-    if binding.channel != "feishu":
-        raise HTTPException(status_code=400, detail="该绑定不是飞书渠道")
-    app_id = request.app_id.strip()
-    app_secret = request.app_secret.strip()
-    if not app_id or not app_secret:
-        raise HTTPException(status_code=400, detail="App ID 与 App Secret 均不能为空")
-    old_app_id = str((binding.config_json or {}).get("app_id") or "").strip()
-    if old_app_id and old_app_id != app_id:
-        raise HTTPException(status_code=400, detail="应用变更不允许直接修改，请删除后重新创建绑定")
-    try:
-        bot_info = validate_feishu_credentials(app_id, app_secret)
-    except FeishuPermanentError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.warning("验证飞书凭证失败 binding=%s", binding_id, exc_info=True)
-        raise HTTPException(status_code=502, detail="飞书凭证验证暂时失败，请稍后重试") from exc
-
-    account_key = external_account_key("feishu", {"app_id": app_id})
-    if not account_key:
-        raise HTTPException(status_code=400, detail="App ID 无效")
-    _ensure_external_account_available(db, account_key, binding_id)
-    db.rollback()
-    with binding_lifecycle_lock(binding_id):
-        binding = _get_binding(db, request.tenant_id, binding_id)
-        expected_revision = binding.config_revision
-        channel = binding.channel
-        should_run = bool(binding.status == "active" and binding.credentials_enc)
-        current_app_id = str((binding.config_json or {}).get("app_id") or "").strip()
-        if current_app_id and current_app_id != app_id:
-            raise HTTPException(status_code=409, detail="渠道配置已被其他请求修改，请重试")
-        db.rollback()
-        _quiesce_binding_or_409(channel, binding_id, should_run=should_run)
-        try:
-            binding = _get_binding(db, request.tenant_id, binding_id)
-            _ensure_revision(binding, expected_revision)
-            latest_app_id = str((binding.config_json or {}).get("app_id") or "").strip()
-            if latest_app_id and latest_app_id != app_id:
-                raise HTTPException(status_code=409, detail="渠道配置已被其他请求修改，请重试")
-            _ensure_external_account_available(db, account_key, binding_id)
-            config = dict(binding.config_json or {})
-            config.update(
-                {
-                    "app_id": app_id,
-                    "bot_open_id": bot_info["bot_open_id"],
-                    "bot_name": bot_info.get("bot_name", ""),
-                    "bound_at": utc_now().isoformat(),
-                }
-            )
-            binding.credentials_enc = encrypt_channel_secret(app_secret)
-            binding.config_json = config
-            binding.external_account_key = account_key
-            binding.config_revision += 1
-            binding.status = "active"
-            binding.connected = False
-            binding.updated_at = utc_now()
-            db.add(binding)
-            adopt_orphan_channel_sessions(db, binding)
-            db.commit()
-            db.refresh(binding)
-        except IntegrityError as exc:
-            db.rollback()
-            _resume_binding(channel, binding_id, start=should_run)
-            raise HTTPException(status_code=409, detail="该飞书应用已被其他渠道绑定使用") from exc
-        except Exception:
-            db.rollback()
-            _resume_binding(channel, binding_id, start=should_run)
-            raise
-        _resume_binding(channel, binding_id, start=True)
-    return channel_binding_read(db, binding, current_user)
 
 
 @router.post("/{binding_id}/dingtalk/credentials", response_model=ChannelBindingRead)

@@ -668,11 +668,10 @@ class ApiKeyApplication(SQLModel, table=True):
 
 
 class ApiKeyConsumerGroup(SQLModel, table=True):
-    """消费组(阿里云 AI Gateway 消费者)管理。
+    """消费者组(阿里云 AI Gateway ConsumerGroup)管理。
 
-    创建消费组即在阿里云对应网关下创建一个 Consumer(external_consumer_id);
-    审批分配 API Key 时,系统会把申请的自定义 API Key 作为凭证追加到该 Consumer,
-    使组内成员共享同一消费者(同一配额规则),实现「批量改配额」。
+    对应阿里云 ListConsumerGroups 返回的 ConsumerGroup（csg- 前缀），
+    消费者组不可增删改，只能看成员列表。
     """
 
     __tablename__ = "api_key_consumer_groups"
@@ -681,11 +680,40 @@ class ApiKeyConsumerGroup(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     name: str
     description: Optional[str] = None
-    owner: Optional[str] = None  # 业务归属（非阿里云字段），取值见 CONSUMER_GROUP_OWNERS 配置
+    owner: Optional[str] = None
     gateway_id: str
     gateway_name: str
-    external_consumer_id: Optional[str] = None  # 阿里云消费者 ID,如 cs-mock-001
+    external_consumer_group_id: Optional[str] = None  # 阿里云消费组 ID,如 csg-dab9hgem1hknuvjcvc0g
+    external_consumer_id: Optional[str] = None  # [废弃] 旧字段,保留兼容
     consumer_type: str = "AI"
+    consumer_count: Optional[int] = None  # 组内消费者数量（云端字段）
+    status: str = Field(default="enabled", index=True)
+    created_by_user_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ApiKeyConsumer(SQLModel, table=True):
+    """消费者(阿里云 AI Gateway Consumer)管理。
+
+    对应阿里云消费者（cs- 前缀），可启用/停用、修改配额规则。
+    创建消费者的流程：CreateConsumer → 分配 API Key → 加入消费组 → 绑定配额规则。
+    """
+
+    __tablename__ = "api_key_consumers"
+
+    id: str = Field(default_factory=lambda: new_id("co"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    description: Optional[str] = None
+    gateway_id: str
+    gateway_name: str
+    external_consumer_id: Optional[str] = None  # 阿里云消费者 ID,如 cs-dabnih6m1hkqvi3fvg70
+    external_consumer_group_id: Optional[str] = None  # 所属消费组 ID,如 csg-dab9hgem1hknuvjcvc0g
+    consumer_group_name: Optional[str] = None  # 所属消费组名称
+    consumer_type: str = "AI"
+    deploy_status: Optional[str] = None  # 部署状态
+    enable: bool = True  # 是否启用
     status: str = Field(default="enabled", index=True)
     created_by_user_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -712,6 +740,41 @@ class ApiKeyQuotaRule(SQLModel, table=True):
     external_rule_id: Optional[str] = None  # 阿里云配额规则 ID,如 qr-mock-001
     status: str = Field(default="enabled", index=True)
     created_by_user_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ApiKeyUsageSnapshot(SQLModel, table=True):
+    """配额用量快照（按 消费者 × 配额规则 × 自然月 落库）。
+
+    当月每次查询用量时把实时值 upsert 进快照（取较大值）；历史月份直接读快照，
+    不再回源阿里云。中途更换配额规则时按规则维度叠加，换规则不丢当月已用量。
+    """
+
+    __tablename__ = "api_key_usage_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "consumer_id",
+            "month",
+            "quota_rule_id",
+            name="uq_api_key_usage_snapshot_consumer_rule_month",
+        ),
+        Index("ix_api_key_usage_snapshot_tenant_month", "tenant_id", "month"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("usnap"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    month: str = Field(index=True)  # YYYY-MM
+    consumer_id: str = Field(index=True)  # 阿里云消费者 ID（cs-）
+    consumer_name: Optional[str] = None
+    gateway_id: Optional[str] = None
+    gateway_name: Optional[str] = None
+    quota_rule_id: str = Field(index=True)  # 阿里云配额规则 ID（qr-）
+    quota_rule_name: Optional[str] = None
+    quota_limit: int = 0
+    quota_period: Optional[str] = None  # day / week / month
+    used_amount: int = 0
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import config
+from . import consumer_groups
 from . import consumers
 from . import quota
 
@@ -40,7 +41,13 @@ class AliyunApigClient:
         description: str | None = None,
         gateway_type: str = "AI",
     ) -> str:
-        """创建消费者并配置自定义 API Key 凭证。返回 consumerId。"""
+        """创建消费者并配置 API Key 凭证。返回 consumerId。
+
+        api_key 非空：Custom 模式写入该 Key（审批流程由本系统生成强随机 Key，
+        明文创建时即持有，无需回读）；为空：System 模式由云端生成。
+        注意：实测（2026-09）新建消费者 GetConsumer 均不回带 credentials 明文，
+        因此需要拿到明文的场景必须用 Custom 模式。
+        """
         resp = consumers.create_consumer(
             name=name,
             api_key=api_key,
@@ -53,6 +60,22 @@ class AliyunApigClient:
             raise AliyunApigError(f"创建消费者未返回 consumerId：{resp}")
         return consumer_id
 
+    def add_consumers_to_group(
+        self,
+        consumer_group_id: str,
+        consumer_ids: list[str],
+    ) -> dict[str, Any]:
+        """批量把消费者加入消费者组（BatchAddConsumerGroupConsumers）。
+
+        返回 {successConsumerIds, skippedConsumerIds, failedConsumerIds}；
+        failedConsumerIds 非空时抛 AliyunApigError。
+        """
+        result = consumer_groups.add_consumers_to_group(consumer_group_id, consumer_ids)
+        failed = result.get("failedConsumerIds") or []
+        if failed:
+            raise AliyunApigError(f"消费者加入消费组失败：{failed}")
+        return result
+
     def add_consumer_quota_rule(
         self,
         gateway_id: str,
@@ -61,11 +84,16 @@ class AliyunApigClient:
         period_type: str,
         rule_name: str | None = None,
         timezone: str = "UTC+8",
+        quota_dimension: str = "credit",
     ) -> str:
-        """为消费者创建 FinOps 配额规则(token 维度)。先 dryRun 预检, 再正式提交。返回 ruleId。"""
+        """为消费者创建 FinOps 配额规则。先 dryRun 预检, 再正式提交。返回 ruleId。
+
+        quota_dimension 必须在 token / credit 之间显式选择并透传到阿里云
+        （AI 网关现网规则使用的维度为 credit，此前硬编码 token 会导致维度不符）。
+        """
         preview = quota.create_quota_rule(
             rule_name or "quota-rule",
-            "token",
+            quota_dimension,
             quota_limit,
             gateway_id=gateway_id,
             period_type=period_type,
@@ -79,7 +107,7 @@ class AliyunApigClient:
             raise AliyunApigError(f"配额规则冲突，无法创建：{conflict}")
         committed = quota.create_quota_rule(
             rule_name or "quota-rule",
-            "token",
+            quota_dimension,
             quota_limit,
             gateway_id=gateway_id,
             period_type=period_type,
@@ -150,11 +178,25 @@ class AliyunApigClient:
     def update_consumer(
         self,
         consumer_id: str,
+        name: str | None = None,
         description: str | None = None,
         enable: bool | None = None,
+        consumer_group_ids: list[str] | None = None,
+        keep_credentials: list[str] | None = None,
     ) -> None:
-        """更新消费者元信息（UpdateConsumer，目前仅支持 description / enable）。"""
-        consumers.update_consumer(consumer_id, description=description, enable=enable)
+        """更新消费者元信息（UpdateConsumer，支持 name / description / enable）。
+
+        consumer_group_ids 非空时把消费者加入指定消费组（云端 csg- 列表，全量覆盖）。
+        keep_credentials 非空时执行凭证裁剪（仅保留给定 Key）。
+        """
+        consumers.update_consumer(
+            consumer_id,
+            name=name,
+            description=description,
+            enable=enable,
+            consumer_group_ids=consumer_group_ids,
+            keep_credentials=keep_credentials,
+        )
 
     def delete_consumer(self, consumer_id: str) -> None:
         """删除消费者（DeleteConsumer）。"""
@@ -176,6 +218,55 @@ class AliyunApigClient:
             gateway_id=gateway_id,
             rule_id=rule_id,
         )
+
+
+    # ---------- 只读查询（实时直读阿里云） ----------
+
+    def list_consumers(self, gateway_type: str = "AI") -> list[dict[str, Any]]:
+        """列出消费者（gatewayType 必传，否则阿里云返回空列表）。"""
+        return consumers.list_consumers(gateway_type=gateway_type)
+
+    def get_consumer(self, consumer_id: str) -> dict[str, Any]:
+        """查询单个消费者详情。云端返回 success=false（如不存在）时抛 AliyunApigError。"""
+        resp = consumers.get_consumer(consumer_id)
+        if isinstance(resp, dict) and resp.get("success") is False:
+            raise AliyunApigError(
+                f"消费者 {consumer_id} 不存在或不可访问：{resp.get('code') or resp.get('message')}"
+            )
+        return resp.get("data") or resp
+
+    def list_consumer_groups(self, gateway_type: str = "AI") -> list[dict[str, Any]]:
+        """列出消费者组。"""
+        return consumer_groups.list_consumer_groups(gateway_type=gateway_type)
+
+    def get_consumer_group(self, consumer_group_id: str) -> dict[str, Any]:
+        """查询单个消费者组详情。"""
+        resp = consumer_groups.get_consumer_group(consumer_group_id)
+        if isinstance(resp, dict) and resp.get("success") is False:
+            raise AliyunApigError(
+                f"消费者组 {consumer_group_id} 不存在或不可访问：{resp.get('code') or resp.get('message')}"
+            )
+        return resp.get("data") or resp
+
+    def list_consumer_group_consumers(
+        self, consumer_group_id: str
+    ) -> list[dict[str, Any]]:
+        """列出消费者组内的消费者成员。"""
+        return consumer_groups.list_consumer_group_consumers(consumer_group_id)
+
+    def list_quota_rules(self, gateway_id: str | None = None) -> list[dict[str, Any]]:
+        """列出网关下的配额规则。"""
+        return quota.list_quota_rules(gateway_id=gateway_id)
+
+    def get_quota_rule(self, rule_id: str, *, gateway_id: str | None = None) -> dict[str, Any]:
+        """查询单条配额规则详情。"""
+        return quota.get_quota_rule(rule_id, gateway_id=gateway_id)
+
+    def list_quota_rule_subjects(
+        self, rule_id: str, *, gateway_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列出配额规则绑定的消费者主体（含用量）。"""
+        return quota.list_quota_rule_subjects(rule_id, gateway_id=gateway_id)
 
 
 def get_apig_client() -> AliyunApigClient | None:

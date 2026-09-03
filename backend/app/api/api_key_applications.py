@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -11,10 +13,20 @@ from app.aliyun_aigw import (
     get_apig_client,
     get_gateway_config,
     get_gateway_configs,
+    list_consumer_group_consumers,
+    list_consumer_groups as aliyun_list_consumer_groups,
 )
 from app.config import get_settings
 from app.db import get_session
-from app.db.models import ApiKeyApplication, ApiKeyConsumerGroup, ApiKeyQuotaRule, User, utc_now
+from app.db.models import (
+    ApiKeyApplication,
+    ApiKeyConsumer,
+    ApiKeyConsumerGroup,
+    ApiKeyQuotaRule,
+    ApiKeyUsageSnapshot,
+    User,
+    utc_now,
+)
 from app.security.auth import get_current_user
 from app.security.encryption import (
     decrypt_secret,
@@ -31,11 +43,261 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
+# ============ 写透模式辅助函数 ============
+
+
+def _sync_consumer_groups_to_local(
+    db: Session,
+    tenant_id: str,
+    gateways: list,
+) -> None:
+    """从阿里云同步消费者组到本地 DB（幂等）。"""
+    if not gateways:
+        return
+    gateway = gateways[0]
+    try:
+        cloud_items = aliyun_list_consumer_groups()
+    except (AliyunApigError, RuntimeError):
+        return
+
+    existing = {
+        row.external_consumer_group_id: row
+        for row in db.exec(
+            select(ApiKeyConsumerGroup).where(
+                ApiKeyConsumerGroup.tenant_id == tenant_id
+            )
+        ).all()
+    }
+
+    now = utc_now()
+    for item in cloud_items:
+        csg_id = item.get("consumerGroupId") or ""
+        if not csg_id:
+            continue
+        if csg_id in existing:
+            row = existing[csg_id]
+            row.name = item.get("name") or row.name
+            row.description = item.get("description")
+            row.consumer_count = item.get("consumerCount")
+            row.updated_at = now
+        else:
+            row = ApiKeyConsumerGroup(
+                tenant_id=tenant_id,
+                name=item.get("name") or "",
+                description=item.get("description"),
+                gateway_id=gateway.gateway_id,
+                gateway_name=gateway.name,
+                external_consumer_group_id=csg_id,
+                consumer_type=item.get("gatewayType") or "AI",
+                consumer_count=item.get("consumerCount"),
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+    db.commit()
+
+
+def _sync_consumers_to_local(
+    db: Session,
+    tenant_id: str,
+    client,
+    gateways: list,
+) -> None:
+    """从阿里云同步消费者到本地 DB（幂等）。"""
+    if not gateways:
+        return
+    gateway = gateways[0]
+    try:
+        cloud_items = client.list_consumers()
+    except (AliyunApigError, RuntimeError):
+        return
+
+    existing = {
+        row.external_consumer_id: row
+        for row in db.exec(
+            select(ApiKeyConsumer).where(
+                ApiKeyConsumer.tenant_id == tenant_id
+            )
+        ).all()
+    }
+
+    now = utc_now()
+    for item in cloud_items:
+        consumer_id = item.get("consumerId") or ""
+        if not consumer_id:
+            continue
+        # 获取消费者详情以提取消费组归属
+        consumer_groups_info = []
+        try:
+            detail = client.get_consumer(consumer_id)
+            consumer_groups_info = detail.get("consumerGroups") or []
+        except (AliyunApigError, RuntimeError):
+            pass
+
+        csg_name = ""
+        csg_id = ""
+        if consumer_groups_info:
+            first_csg = consumer_groups_info[0] if isinstance(consumer_groups_info, list) else consumer_groups_info
+            csg_name = (first_csg.get("name") or "") if isinstance(first_csg, dict) else ""
+            csg_id = (first_csg.get("consumerGroupId") or "") if isinstance(first_csg, dict) else ""
+
+        if consumer_id in existing:
+            row = existing[consumer_id]
+            row.name = item.get("name") or row.name
+            row.description = item.get("description")
+            row.enable = item.get("enable", True)
+            row.deploy_status = item.get("deployStatus")
+            row.external_consumer_group_id = csg_id or row.external_consumer_group_id
+            row.consumer_group_name = csg_name or row.consumer_group_name
+            row.status = "enabled" if item.get("enable", True) else "disabled"
+            row.updated_at = now
+        else:
+            row = ApiKeyConsumer(
+                tenant_id=tenant_id,
+                name=item.get("name") or "",
+                description=item.get("description"),
+                gateway_id=gateway.gateway_id,
+                gateway_name=gateway.name,
+                external_consumer_id=consumer_id,
+                external_consumer_group_id=csg_id,
+                consumer_group_name=csg_name,
+                consumer_type=item.get("gatewayType") or "AI",
+                deploy_status=item.get("deployStatus"),
+                enable=item.get("enable", True),
+                status="enabled" if item.get("enable", True) else "disabled",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+    db.commit()
+
+
+def _sync_quota_rules_to_local(
+    db: Session,
+    tenant_id: str,
+    client,
+    gateways: list,
+) -> None:
+    """从阿里云同步配额规则到本地 DB（幂等操作）。"""
+    if not gateways:
+        return
+    gateway = gateways[0]
+
+    try:
+        cloud_items = client.list_quota_rules(gateway.gateway_id)
+    except (AliyunApigError, RuntimeError):
+        return
+
+    existing = {
+        row.external_rule_id: row
+        for row in db.exec(
+            select(ApiKeyQuotaRule).where(
+                ApiKeyQuotaRule.tenant_id == tenant_id
+            )
+        ).all()
+    }
+
+    now = utc_now()
+    for item in cloud_items:
+        rule_id = item.get("ruleId") or ""
+        if not rule_id:
+            continue
+
+        if rule_id in existing:
+            row = existing[rule_id]
+            row.name = item.get("ruleName") or row.name
+            row.quota_dimension = item.get("quotaDimension") or row.quota_dimension
+            row.quota_limit = int(item.get("quotaLimit") or row.quota_limit)
+            row.period_type = item.get("periodType") or row.period_type
+            row.status = item.get("ruleStatus") or row.status
+            row.updated_at = now
+        else:
+            row = ApiKeyQuotaRule(
+                tenant_id=tenant_id,
+                name=item.get("ruleName") or "",
+                gateway_id=gateway.gateway_id,
+                gateway_name=gateway.name,
+                quota_dimension=item.get("quotaDimension") or "credit",
+                quota_limit=int(item.get("quotaLimit") or 0),
+                period_type=item.get("periodType") or "day",
+                external_rule_id=rule_id,
+                status=item.get("ruleStatus") or "enabled",
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+    db.commit()
+
+
+def _cg_from_local(row: ApiKeyConsumerGroup) -> ApiKeyConsumerGroupRead:
+    """本地消费组记录 -> 读取模型。"""
+    return ApiKeyConsumerGroupRead(
+        id=row.external_consumer_group_id or row.id,
+        tenant_id=row.tenant_id,
+        name=row.name,
+        description=row.description,
+        owner=row.owner,
+        gateway_id=row.gateway_id,
+        gateway_name=row.gateway_name,
+        external_consumer_group_id=row.external_consumer_group_id,
+        consumer_type=row.consumer_type,
+        consumer_count=row.consumer_count,
+        status=row.status,
+        created_by_user_id=row.created_by_user_id,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
+
+
+def _co_from_local(row: ApiKeyConsumer) -> ApiKeyConsumerRead:
+    """本地消费者记录 -> 读取模型。"""
+    return ApiKeyConsumerRead(
+        id=row.external_consumer_id or row.id,
+        tenant_id=row.tenant_id,
+        name=row.name,
+        description=row.description,
+        gateway_id=row.gateway_id,
+        gateway_name=row.gateway_name,
+        external_consumer_id=row.external_consumer_id,
+        external_consumer_group_id=row.external_consumer_group_id,
+        consumer_group_name=row.consumer_group_name,
+        consumer_type=row.consumer_type,
+        deploy_status=row.deploy_status,
+        enable=row.enable,
+        status=row.status,
+        created_by_user_id=row.created_by_user_id,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
+
+
+def _qr_from_local(row: ApiKeyQuotaRule) -> ApiKeyQuotaRuleRead:
+    """本地配额规则记录 -> 读取模型。"""
+    return ApiKeyQuotaRuleRead(
+        id=row.external_rule_id or row.id,
+        tenant_id=row.tenant_id,
+        name=row.name,
+        gateway_id=row.gateway_id,
+        gateway_name=row.gateway_name,
+        quota_dimension=row.quota_dimension,
+        quota_limit=row.quota_limit,
+        period_type=row.period_type,
+        external_rule_id=row.external_rule_id,
+        status=row.status,
+        created_by_user_id=row.created_by_user_id,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+        updated_at=row.updated_at.isoformat() if row.updated_at else None,
+    )
+
+# ============ 路由端点 ============
+
 MAX_APPLICATIONS_PER_USER = 2
 ACTIVE_STATUSES = ("pending", "approved")
 # 审批列表排序:pending 优先,其余按时间倒序
 _STATUS_ORDER = {"pending": 0, "approved": 1, "rejected": 2, "revoked": 3}
 _VALID_PERIODS = {"day", "week", "month"}
+# 阿里云 AI 网关配额维度：token / credit（现网规则 AILAB 使用 credit）
+_VALID_DIMENSIONS = {"token", "credit"}
 
 
 class ApiKeyApplicationCreate(BaseModel):
@@ -50,9 +312,10 @@ class ApiKeyApplicationReview(BaseModel):
 
 class ApiKeyApplicationApprove(BaseModel):
     tenant_id: str
-    consumer_group_id: str  # 审批时选定的消费组(消费者)
+    consumer_name: str  # 审批时新建消费者的名称（如 ailab_zhangwei）
+    consumer_group_id: str  # 审批时选定的消费组（云端 csg-）
     quota_rule_id: str  # 审批时选定的配额规则
-    reviewer_note: str | None = None
+    api_url: str | None = None  # 下发给申请人的网关地址（可选，留空用默认值）
 
 
 class GatewayInfo(BaseModel):
@@ -62,43 +325,77 @@ class GatewayInfo(BaseModel):
 
 
 class ApiKeyConsumerGroupCreate(BaseModel):
+    """消费者组创建（已废弃 — 消费者组不可增删改，仅同步自阿里云）。"""
     tenant_id: str
     name: str
-    description: str | None = None
-    owner: str | None = None  # 业务归属（非阿里云字段），取 CONSUMER_GROUP_OWNERS 配置值
-    gateway_name: str  # 需在网关列表中存在
 
 
 class ApiKeyConsumerGroupUpdate(BaseModel):
+    """消费者组更新（已废弃 — 消费者组不可增删改）。"""
     tenant_id: str
-    name: str | None = None  # 名称必填，端点内校验
-    description: str | None = None
-    owner: str | None = None  # 业务归属（非阿里云字段）
+    name: str | None = None
 
 
 class ApiKeyConsumerGroupRead(BaseModel):
+    """消费者组读取模型。"""
     id: str
     tenant_id: str
     name: str
-    description: str | None
-    owner: str | None
-    gateway_id: str | None
-    gateway_name: str | None
-    external_consumer_id: str | None
-    consumer_type: str
-    status: str
-    created_by_user_id: str | None
-    created_at: str
-    updated_at: str
+    description: str | None = None
+    owner: str | None = None
+    gateway_id: str | None = None
+    gateway_name: str | None = None
+    external_consumer_group_id: str | None = None  # 阿里云消费组 ID
+    external_consumer_id: str | None = None  # [废弃]
+    consumer_type: str = "AI"
+    consumer_count: int | None = None  # 组内消费者数量
+    status: str = "enabled"
+    created_by_user_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ApiKeyConsumerRead(BaseModel):
+    """消费者读取模型。"""
+    id: str
+    tenant_id: str
+    name: str
+    description: str | None = None
+    gateway_id: str | None = None
+    gateway_name: str | None = None
+    external_consumer_id: str | None = None  # 阿里云消费者 ID (cs-)
+    external_consumer_group_id: str | None = None  # 所属消费组 (csg-)
+    consumer_group_name: str | None = None
+    consumer_type: str = "AI"
+    deploy_status: str | None = None
+    enable: bool = True
+    status: str = "enabled"
+    created_by_user_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ApiKeyConsumerToggle(BaseModel):
+    """消费者启用/停用。"""
+    tenant_id: str
+    enable: bool
+
+
+class ApiKeyConsumerQuotaUpdate(BaseModel):
+    """消费者修改配额规则。"""
+    tenant_id: str
+    quota_rule_id: str
 
 
 class ApiKeyQuotaRuleCreate(BaseModel):
     tenant_id: str
     name: str
-    gateway_name: str
-    quota_dimension: str = "token"  # token / credit
-    quota_limit: int
-    period_type: str = "day"  # day / week / month
+    gateway_name: str  # 需在网关列表中存在
+    quota_dimension: str = "credit"  # token / credit
+    quota_limit: int  # 配额上限
+    period_type: str = "month"  # day / week / month
+    description: str | None = None
+    owner: str | None = None  # 业务归属（非阿里云字段）
 
 
 class ApiKeyQuotaRuleUpdate(BaseModel):
@@ -122,12 +419,6 @@ class ApiKeyQuotaRuleRead(BaseModel):
     created_by_user_id: str | None
     created_at: str
     updated_at: str
-
-
-class ConsumerGroupQuotaUpdate(BaseModel):
-    tenant_id: str
-    quota_rule_id: str  # 批量改配额:把该消费组纳入指定配额规则
-    detach: bool = False  # True 表示从规则中移出该消费组
 
 
 class ApiKeyApplicationRead(BaseModel):
@@ -285,155 +576,123 @@ def list_consumer_groups(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[ApiKeyConsumerGroupRead]:
-    """列出消费组(阿里云消费者)。"""
+    """列出消费组:从阿里云同步到本地,再从本地读取。消费组不可增删改。"""
     ensure_tenant_admin(tenant_id, current_user)
+    gateways = get_gateway_configs()
+    if gateways:
+        try:
+            client = get_apig_client()
+            _sync_consumer_groups_to_local(db, tenant_id, gateways)
+        except (AliyunApigError, RuntimeError):
+            pass
+
     rows = db.exec(
         select(ApiKeyConsumerGroup)
         .where(ApiKeyConsumerGroup.tenant_id == tenant_id)
-        .order_by(ApiKeyConsumerGroup.created_at.desc())
+        .order_by(ApiKeyConsumerGroup.name)
     ).all()
-    return [_cg_read(r) for r in rows]
+    return [_cg_from_local(row) for row in rows]
+
+# ============ 消费者端点 ============
 
 
-@router.post("/consumer-groups", response_model=ApiKeyConsumerGroupRead)
-def create_consumer_group(
-    request: ApiKeyConsumerGroupCreate,
-    db: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
-) -> ApiKeyConsumerGroupRead:
-    """创建消费组:在指定网关下创建一个阿里云消费者。"""
-    ensure_tenant_admin(request.tenant_id, current_user)
-    gateway = get_gateway_config(request.gateway_name)
-    if not gateway:
-        raise HTTPException(
-            status_code=400,
-            detail=f"未知网关名称「{request.gateway_name}」，请检查后端 ALIYUN_APIG_GATEWAYS 配置",
-        )
-    client = get_apig_client()
-    if client is None:
-        raise HTTPException(
-            status_code=503,
-            detail="后端未配置阿里云 AK/SK（ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET），无法创建消费组",
-        )
-    try:
-        consumer_id = client.create_consumer(
-            name=request.name,
-            description=request.description or "",
-            gateway_type="AI",
-        )
-    except AliyunApigError as exc:
-        raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
-
-    row = ApiKeyConsumerGroup(
-        tenant_id=request.tenant_id,
-        name=request.name,
-        description=(request.description or "").strip() or None,
-        owner=(request.owner or "").strip() or None,
-        gateway_id=gateway.gateway_id,
-        gateway_name=gateway.name,
-        external_consumer_id=consumer_id,
-        created_by_user_id=current_user.id,
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return _cg_read(row)
-
-
-@router.put("/consumer-groups/{group_id}", response_model=ApiKeyConsumerGroupRead)
-def update_consumer_group(
-    group_id: str,
-    request: ApiKeyConsumerGroupUpdate,
-    db: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
-) -> ApiKeyConsumerGroupRead:
-    """编辑消费组:更新名称/描述/归属;描述变化时同步阿里云消费者(名称创建后不可改)。"""
-    ensure_tenant_admin(request.tenant_id, current_user)
-    row = db.get(ApiKeyConsumerGroup, group_id)
-    if not row or row.tenant_id != request.tenant_id:
-        raise HTTPException(status_code=404, detail="消费组不存在")
-    name = (request.name or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="消费组名称不能为空")
-
-    new_desc = (request.description or "").strip() or None
-    old_desc = (row.description or "").strip() or None
-    client = get_apig_client()
-    if client is not None and row.external_consumer_id and new_desc != old_desc:
-        try:
-            client.update_consumer(row.external_consumer_id, description=new_desc or "")
-        except AliyunApigError as exc:
-            raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
-
-    row.name = name
-    row.description = new_desc
-    row.owner = (request.owner or "").strip() or None
-    row.updated_at = utc_now()
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return _cg_read(row)
-
-
-@router.delete("/consumer-groups/{group_id}", response_model=ApiKeyConsumerGroupRead)
-def delete_consumer_group(
-    group_id: str,
+@router.get("/consumers", response_model=list[ApiKeyConsumerRead])
+def list_consumers_endpoint(
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
-) -> ApiKeyConsumerGroupRead:
-    """删除消费组:同步删除阿里云消费者。"""
+) -> list[ApiKeyConsumerRead]:
+    """列出消费者:从阿里云同步到本地,再从本地读取。"""
     ensure_tenant_admin(tenant_id, current_user)
-    row = db.get(ApiKeyConsumerGroup, group_id)
-    if not row or row.tenant_id != tenant_id:
-        raise HTTPException(status_code=404, detail="消费组不存在")
-    client = get_apig_client()
-    if client is not None and row.external_consumer_id:
+    gateways = get_gateway_configs()
+    if gateways:
         try:
-            client.delete_consumer(row.external_consumer_id)
-        except AliyunApigError:
-            pass  # 容忍删除失败,仍以本地删除为准
-    db.delete(row)
-    db.commit()
-    return _cg_read(row)
+            client = get_apig_client()
+            _sync_consumers_to_local(db, tenant_id, client, gateways)
+        except (AliyunApigError, RuntimeError):
+            pass
+
+    rows = db.exec(
+        select(ApiKeyConsumer)
+        .where(ApiKeyConsumer.tenant_id == tenant_id)
+        .order_by(ApiKeyConsumer.name)
+    ).all()
+    return [_co_from_local(row) for row in rows]
 
 
-@router.post("/consumer-groups/{group_id}/quota", response_model=ApiKeyConsumerGroupRead)
-def consumer_group_change_quota(
-    group_id: str,
-    request: ConsumerGroupQuotaUpdate,
+@router.post("/consumers/{consumer_id}/toggle", response_model=ApiKeyConsumerRead)
+def toggle_consumer(
+    consumer_id: str,
+    request: ApiKeyConsumerToggle,
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
-) -> ApiKeyConsumerGroupRead:
-    """批量改配额:把消费组(消费者)加入/移出指定配额规则。"""
+) -> ApiKeyConsumerRead:
+    """启用或停用消费者。consumer_id 为云端 consumerId（cs-）。"""
     ensure_tenant_admin(request.tenant_id, current_user)
-    group = db.get(ApiKeyConsumerGroup, group_id)
-    if not group or group.tenant_id != request.tenant_id:
-        raise HTTPException(status_code=404, detail="消费组不存在")
-    rule = db.get(ApiKeyQuotaRule, request.quota_rule_id)
-    if not rule or rule.tenant_id != request.tenant_id:
-        raise HTTPException(status_code=404, detail="配额规则不存在")
-    if group.gateway_id != rule.gateway_id:
-        raise HTTPException(status_code=400, detail="消费组与配额规则不在同一网关")
-    client = get_apig_client()
-    if client is None:
-        raise HTTPException(status_code=503, detail="后端未配置阿里云 AK/SK，无法批量改配额")
+    client = _require_apig_client("启用/停用消费者")
+    gateways = get_gateway_configs()
+    gateway = gateways[0] if gateways else None
     try:
-        if request.detach:
-            client.detach_consumer_from_rule(
-                gateway_id=rule.gateway_id,
-                rule_id=rule.external_rule_id,
-                consumer_id=group.external_consumer_id,
-            )
-        else:
-            client.attach_consumer_to_rule(
-                gateway_id=rule.gateway_id,
-                rule_id=rule.external_rule_id,
-                consumer_id=group.external_consumer_id,
-            )
-    except AliyunApigError as exc:
+        client.update_consumer(consumer_id=consumer_id, enable=request.enable)
+    except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
-    return _cg_read(group)
+
+    row = db.exec(
+        select(ApiKeyConsumer).where(
+            ApiKeyConsumer.tenant_id == request.tenant_id,
+            ApiKeyConsumer.external_consumer_id == consumer_id,
+        )
+    ).first()
+    if row:
+        row.enable = request.enable
+        row.status = "enabled" if request.enable else "disabled"
+        row.updated_at = utc_now()
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return _co_from_local(row) if row else ApiKeyConsumerRead(
+        id=consumer_id, tenant_id=request.tenant_id, name=consumer_id,
+        enable=request.enable, status="enabled" if request.enable else "disabled",
+    )
+
+
+@router.post("/consumers/{consumer_id}/quota", response_model=ApiKeyConsumerRead)
+def consumer_change_quota(
+    consumer_id: str,
+    request: ApiKeyConsumerQuotaUpdate,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiKeyConsumerRead:
+    """修改消费者绑定的配额规则。consumer_id 为云端 consumerId（cs-）。"""
+    ensure_tenant_admin(request.tenant_id, current_user)
+    client = _require_apig_client("修改消费者配额")
+    gateways = get_gateway_configs()
+    if not gateways:
+        raise HTTPException(status_code=400, detail="后端未配置网关（ALIYUN_APIG_GATEWAYS）")
+    gateway = gateways[0]
+    try:
+        client.attach_consumer_to_rule(
+            gateway_id=gateway.gateway_id,
+            rule_id=request.quota_rule_id,
+            consumer_id=consumer_id,
+        )
+    except (AliyunApigError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+
+    row = db.exec(
+        select(ApiKeyConsumer).where(
+            ApiKeyConsumer.tenant_id == request.tenant_id,
+            ApiKeyConsumer.external_consumer_id == consumer_id,
+        )
+    ).first()
+    if row:
+        row.updated_at = utc_now()
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return _co_from_local(row) if row else ApiKeyConsumerRead(
+        id=consumer_id, tenant_id=request.tenant_id, name=consumer_id,
+    )
 
 
 @router.get("/quota-rules", response_model=list[ApiKeyQuotaRuleRead])
@@ -442,14 +701,22 @@ def list_quota_rules(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[ApiKeyQuotaRuleRead]:
-    """列出配额规则。"""
+    """列出配额规则:先从阿里云同步到本地,再从本地读取。"""
     ensure_tenant_admin(tenant_id, current_user)
+    gateways = get_gateway_configs()
+    if gateways:
+        try:
+            client = get_apig_client()
+            _sync_quota_rules_to_local(db, tenant_id, client, gateways)
+        except (AliyunApigError, RuntimeError):
+            pass
+
     rows = db.exec(
         select(ApiKeyQuotaRule)
         .where(ApiKeyQuotaRule.tenant_id == tenant_id)
-        .order_by(ApiKeyQuotaRule.created_at.desc())
+        .order_by(ApiKeyQuotaRule.name, ApiKeyQuotaRule.created_at.desc())
     ).all()
-    return [_qr_read(r) for r in rows]
+    return [_qr_from_local(row) for row in rows]
 
 
 @router.post("/quota-rules", response_model=ApiKeyQuotaRuleRead)
@@ -470,13 +737,11 @@ def create_quota_rule(
             status_code=400,
             detail=f"未知网关名称「{request.gateway_name}」，请检查后端 ALIYUN_APIG_GATEWAYS 配置",
         )
-    client = get_apig_client()
-    if client is None:
-        raise HTTPException(
-            status_code=503,
-            detail="后端未配置阿里云 AK/SK，无法创建配额规则",
-        )
+    if request.quota_dimension not in _VALID_DIMENSIONS:
+        raise HTTPException(status_code=400, detail="quota_dimension 必须是 token / credit 之一")
+    client = _require_apig_client("创建配额规则")
     try:
+        # 维度必须透传：AI 网关现网规则使用 credit，此前硬编码 token 会导致维度不符
         rule_id = client.add_consumer_quota_rule(
             gateway_id=gateway.gateway_id,
             consumer_ids=[],
@@ -484,10 +749,12 @@ def create_quota_rule(
             period_type=request.period_type,
             rule_name=request.name,
             timezone="UTC+8",
+            quota_dimension=request.quota_dimension,
         )
-    except AliyunApigError as exc:
+    except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
 
+    # 本地仅留补充记录（创建人等），名称/额度/周期真值以云端为准
     row = ApiKeyQuotaRule(
         tenant_id=request.tenant_id,
         name=request.name,
@@ -502,7 +769,17 @@ def create_quota_rule(
     db.add(row)
     db.commit()
     db.refresh(row)
-    return _qr_read(row)
+    try:
+        detail = client.get_quota_rule(rule_id, gateway_id=gateway.gateway_id)
+    except (AliyunApigError, RuntimeError):
+        detail = {
+            "ruleId": rule_id,
+            "ruleName": request.name,
+            "quotaDimension": request.quota_dimension,
+            "quotaLimit": request.quota_limit,
+            "periodType": request.period_type,
+        }
+    return _qr_read_live(detail, tenant_id=request.tenant_id, gateway=gateway, local=row)
 
 
 @router.put("/quota-rules/{rule_id}", response_model=ApiKeyQuotaRuleRead)
@@ -512,35 +789,63 @@ def update_quota_rule_endpoint(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiKeyQuotaRuleRead:
-    """编辑配额规则:更新规则名称/额度/周期(并同步阿里云)。"""
+    """编辑配额规则(rule_id 即云端 ruleId):更新规则名称/额度/周期(并同步阿里云)。"""
     ensure_tenant_admin(request.tenant_id, current_user)
-    row = db.get(ApiKeyQuotaRule, rule_id)
-    if not row or row.tenant_id != request.tenant_id:
-        raise HTTPException(status_code=404, detail="配额规则不存在")
     if request.period_type and request.period_type not in _VALID_PERIODS:
         raise HTTPException(status_code=400, detail="period_type 必须是 day / week / month 之一")
     if request.quota_limit is not None and (not isinstance(request.quota_limit, int) or request.quota_limit <= 0):
         raise HTTPException(status_code=400, detail="quota_limit 必须为正整数")
 
-    client = get_apig_client()
-    if client is None:
-        raise HTTPException(status_code=503, detail="后端未配置阿里云 AK/SK，无法编辑配额规则")
-    try:
-        client.update_consumer_quota_rule(
-            gateway_id=row.gateway_id,
-            rule_id=row.external_rule_id,
-            quota_limit=request.quota_limit if request.quota_limit is not None else row.quota_limit,
+    client = _require_apig_client("编辑配额规则")
+    gateways = get_gateway_configs()
+    if not gateways:
+        raise HTTPException(status_code=400, detail="后端未配置网关（ALIYUN_APIG_GATEWAYS）")
+    gateway = gateways[0]
+    row = db.exec(
+        select(ApiKeyQuotaRule).where(
+            ApiKeyQuotaRule.tenant_id == request.tenant_id,
+            ApiKeyQuotaRule.external_rule_id == rule_id,
         )
-        if request.name is not None or request.period_type is not None:
-            client.update_quota_rule_meta(
-                gateway_id=row.gateway_id,
-                rule_id=row.external_rule_id,
-                rule_name=request.name or row.name,
-                period_type=request.period_type or row.period_type,
-            )
-    except AliyunApigError as exc:
+    ).first()
+    # 先取云端当前值，便于只更新传了的字段
+    try:
+        current = client.get_quota_rule(rule_id, gateway_id=gateway.gateway_id)
+    except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
 
+    try:
+        if request.quota_limit is not None:
+            client.update_consumer_quota_rule(
+                gateway_id=gateway.gateway_id,
+                rule_id=rule_id,
+                quota_limit=request.quota_limit,
+            )
+        if request.name is not None or request.period_type is not None:
+            client.update_quota_rule_meta(
+                gateway_id=gateway.gateway_id,
+                rule_id=rule_id,
+                rule_name=request.name if request.name is not None else current.get("ruleName"),
+                period_type=(
+                    request.period_type
+                    if request.period_type is not None
+                    else current.get("periodType")
+                ),
+            )
+    except (AliyunApigError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+
+    if row is None:
+        row = ApiKeyQuotaRule(
+            tenant_id=request.tenant_id,
+            name=request.name or current.get("ruleName") or "",
+            gateway_id=gateway.gateway_id,
+            gateway_name=gateway.name,
+            quota_dimension=current.get("quotaDimension") or "credit",
+            quota_limit=request.quota_limit or int(current.get("quotaLimit") or 0),
+            period_type=request.period_type or current.get("periodType") or "day",
+            external_rule_id=rule_id,
+            created_by_user_id=current_user.id,
+        )
     if request.name is not None:
         row.name = request.name
     if request.quota_limit is not None:
@@ -551,66 +856,65 @@ def update_quota_rule_endpoint(
     db.add(row)
     db.commit()
     db.refresh(row)
-    return _qr_read(row)
+
+    try:
+        detail = client.get_quota_rule(rule_id, gateway_id=gateway.gateway_id)
+    except (AliyunApigError, RuntimeError):
+        detail = current
+    return _qr_read_live(detail, tenant_id=request.tenant_id, gateway=gateway, local=row)
+
+# ============ 审批/申请/吊销/用量 端点 ============
 
 
-@router.delete("/quota-rules/{rule_id}", response_model=ApiKeyQuotaRuleRead)
-def delete_quota_rule(
-    rule_id: str,
-    tenant_id: str = Query(...),
-    db: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+def _ms_to_naive_iso(ms: object) -> str:
+    """阿里云返回的毫秒时间戳 -> 与本地行一致的 naive UTC ISO 字符串。"""
+    if not ms:
+        return utc_now().isoformat()
+    try:
+        return (
+            datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc)
+            .replace(tzinfo=None)
+            .isoformat()
+        )
+    except (TypeError, ValueError, OverflowError, OSError):
+        return utc_now().isoformat()
+
+
+def _qr_read_live(
+    item: dict,
+    *,
+    tenant_id: str,
+    gateway,
+    local: ApiKeyQuotaRule | None = None,
 ) -> ApiKeyQuotaRuleRead:
-    """删除配额规则:同步删除阿里云 QuotaRule。"""
-    ensure_tenant_admin(tenant_id, current_user)
-    row = db.get(ApiKeyQuotaRule, rule_id)
-    if not row or row.tenant_id != tenant_id:
-        raise HTTPException(status_code=404, detail="配额规则不存在")
-    client = get_apig_client()
-    if client is not None and row.external_rule_id:
-        try:
-            client.delete_quota_rule(row.external_rule_id, gateway_id=row.gateway_id)
-        except AliyunApigError:
-            pass
-    db.delete(row)
-    db.commit()
-    return _qr_read(row)
-
-
-def _cg_read(row: ApiKeyConsumerGroup) -> ApiKeyConsumerGroupRead:
-    return ApiKeyConsumerGroupRead(
-        id=row.id,
-        tenant_id=row.tenant_id,
-        name=row.name,
-        description=row.description,
-        owner=row.owner,
-        gateway_id=row.gateway_id,
-        gateway_name=row.gateway_name,
-        external_consumer_id=row.external_consumer_id,
-        consumer_type=row.consumer_type,
-        status=row.status,
-        created_by_user_id=row.created_by_user_id,
-        created_at=row.created_at.isoformat(),
-        updated_at=row.updated_at.isoformat(),
-    )
-
-
-def _qr_read(row: ApiKeyQuotaRule) -> ApiKeyQuotaRuleRead:
+    """阿里云配额规则 -> 配额规则读取模型（id 直接用云端 ruleId）。"""
+    rule_id = item.get("ruleId") or ""
     return ApiKeyQuotaRuleRead(
-        id=row.id,
-        tenant_id=row.tenant_id,
-        name=row.name,
-        gateway_id=row.gateway_id,
-        gateway_name=row.gateway_name,
-        quota_dimension=row.quota_dimension,
-        quota_limit=row.quota_limit,
-        period_type=row.period_type,
-        external_rule_id=row.external_rule_id,
-        status=row.status,
-        created_by_user_id=row.created_by_user_id,
-        created_at=row.created_at.isoformat(),
-        updated_at=row.updated_at.isoformat(),
+        id=rule_id,
+        tenant_id=tenant_id,
+        name=item.get("ruleName") or "",
+        gateway_id=gateway.gateway_id if gateway else None,
+        gateway_name=gateway.name if gateway else None,
+        quota_dimension=item.get("quotaDimension") or "credit",
+        quota_limit=int(item.get("quotaLimit") or 0),
+        period_type=item.get("periodType") or "day",
+        external_rule_id=rule_id,
+        status=item.get("ruleStatus") or "enabled",
+        created_by_user_id=(local.created_by_user_id if local else None),
+        created_at=_ms_to_naive_iso(item.get("createTimestamp")),
+        updated_at=_ms_to_naive_iso(item.get("updateTimestamp")),
     )
+
+
+def _require_apig_client(action: str):
+    """获取阿里云客户端，未配置凭据时返回 503。"""
+    client = get_apig_client()
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"后端未配置阿里云 AK/SK（ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET），无法{action}",
+        )
+    return client
 
 
 @router.post("", response_model=ApiKeyApplicationRead)
@@ -663,6 +967,99 @@ def list_my_applications(
     return [_read(row, include_secret=True) for row in rows]
 
 
+@router.get("/mine/usage", response_model=list[ApiKeyApplicationUsageItem])
+def list_my_usage(
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> list[ApiKeyApplicationUsageItem]:
+    """当前用户自己的配额使用情况（普通用户可查，本期=当前月）。
+
+    数据源：当前用户 approved 申请记录 → 当月实时查阿里云并写入快照（upsert）；
+    阿里云查询失败时回退读当月快照，保证换配额规则后已用量不丢。
+    """
+    ensure_tenant(db, tenant_id)
+
+    rows = db.exec(
+        select(ApiKeyApplication).where(
+            ApiKeyApplication.tenant_id == tenant_id,
+            ApiKeyApplication.user_id == current_user.id,
+            ApiKeyApplication.status == "approved",
+        )
+    ).all()
+    if not rows:
+        return []
+
+    month = _current_month()
+    client = get_apig_client()
+    items: list[ApiKeyApplicationUsageItem] = []
+    for row in rows:
+        quota_limit = int(row.quota_limit or 0)
+        used_amount = 0
+        if client and row.gateway_id and row.quota_rule_id and row.consumer_id:
+            try:
+                resp = client.get_consumer_quota_usage(
+                    gateway_id=row.gateway_id,
+                    rule_id=row.quota_rule_id,
+                    consumer_id=row.consumer_id,
+                )
+                data = resp.get("data") if isinstance(resp, dict) else {}
+                used_amount = int(data.get("usedAmount") or 0)
+            except (AliyunApigError, RuntimeError, ValueError):
+                used_amount = None  # 标记查询失败，回退快照
+            if used_amount is not None:
+                _upsert_usage_snapshot(
+                    db,
+                    tenant_id=tenant_id,
+                    month=month,
+                    consumer_id=row.consumer_id,
+                    consumer_name=row.consumer_name,
+                    gateway_id=row.gateway_id,
+                    gateway_name=row.gateway_name,
+                    quota_rule_id=row.quota_rule_id,
+                    quota_rule_name=row.quota_rule_name,
+                    quota_limit=row.quota_limit or 0,
+                    quota_period=row.quota_period,
+                    used_amount=used_amount,
+                )
+                db.commit()
+
+        # 实时查询失败时，回退读当月快照（按规则叠加）
+        if used_amount is None or not (client and row.gateway_id and row.quota_rule_id and row.consumer_id):
+            snap_rows = db.exec(
+                select(ApiKeyUsageSnapshot).where(
+                    ApiKeyUsageSnapshot.tenant_id == tenant_id,
+                    ApiKeyUsageSnapshot.month == month,
+                    ApiKeyUsageSnapshot.consumer_id == row.consumer_id,
+                )
+            ).all() if row.consumer_id else []
+            if snap_rows:
+                quota_limit = sum(int(s.quota_limit or 0) for s in snap_rows)
+                used_amount = sum(int(s.used_amount or 0) for s in snap_rows)
+            else:
+                used_amount = 0
+
+        usage_rate = (used_amount / quota_limit) if quota_limit > 0 else 0.0
+        items.append(
+            ApiKeyApplicationUsageItem(
+                id=row.id,
+                user_id=row.user_id,
+                username=row.username,
+                consumer_id=row.consumer_id,
+                consumer_name=row.consumer_name,
+                gateway_name=row.gateway_name,
+                gateway_id=row.gateway_id,
+                quota_limit=quota_limit,
+                quota_period=row.quota_period,
+                quota_rule_id=row.quota_rule_id,
+                used_amount=used_amount,
+                usage_rate=round(usage_rate, 4),
+                suggestion=_usage_suggestion(usage_rate),
+            )
+        )
+    return items
+
+
 @router.get("", response_model=list[ApiKeyApplicationRead])
 def list_applications(
     tenant_id: str = Query(...),
@@ -696,55 +1093,101 @@ def approve_application(
     ensure_tenant_admin(request.tenant_id, current_user)
     row = _get_pending(db, application_id, request.tenant_id)
 
-    # 1) 校验选定的消费组与配额规则
-    group = db.get(ApiKeyConsumerGroup, request.consumer_group_id)
-    if not group or group.tenant_id != request.tenant_id:
-        raise HTTPException(status_code=400, detail="未知消费组")
-    rule = db.get(ApiKeyQuotaRule, request.quota_rule_id)
-    if not rule or rule.tenant_id != request.tenant_id:
-        raise HTTPException(status_code=400, detail="未知配额规则")
-    if group.gateway_id != rule.gateway_id:
-        raise HTTPException(status_code=400, detail="消费组与配额规则不在同一网关")
+    consumer_name = (request.consumer_name or "").strip()
+    if not consumer_name:
+        raise HTTPException(status_code=400, detail="消费者名称不能为空")
 
-    # 2) 阿里云客户端(未配置 AK/SK 直接报错)
-    client = get_apig_client()
-    if client is None:
-        raise HTTPException(
-            status_code=503,
-            detail="后端未配置阿里云 AK/SK（ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET），无法分配 API Key",
+    # 1) 解析选定的消费组与配额规则（传来的都是云端 ID，实时向阿里云校验）
+    client = _require_apig_client("分配 API Key")
+    gateways = get_gateway_configs()
+    if not gateways:
+        raise HTTPException(status_code=400, detail="后端未配置网关（ALIYUN_APIG_GATEWAYS）")
+    gateway = gateways[0]
+    try:
+        group_detail = client.get_consumer_group(request.consumer_group_id)
+        rule_detail = client.get_quota_rule(
+            request.quota_rule_id, gateway_id=gateway.gateway_id
         )
+    except (AliyunApigError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=f"消费组或配额规则无效：{exc}") from exc
+    csg_name = group_detail.get("name") or ""
+    rule_name = rule_detail.get("ruleName") or ""
+    quota_limit = int(rule_detail.get("quotaLimit") or 0)
+    period_type = rule_detail.get("periodType") or "day"
 
-    # 3) 生成自定义 API Key,并追加到消费组消费者凭证;把消费者纳入配额规则
+    # 2) 生成本系统强随机 API Key（作为"系统生成"），以 Custom 模式创建消费者。
+    #    实测（2026-09）：真实云端新建消费者无论 Auto/System/Custom，GetConsumer
+    #    均不回带 credentials 明文，因此必须由本系统生成并持有明文。
     api_key = _generate_api_key()
     try:
-        client.add_consumer_credential(
-            consumer_id=group.external_consumer_id,
+        consumer_id = client.create_consumer(
+            name=consumer_name,
             api_key=api_key,
+            description=f"审批创建 · 申请人 {row.username or row.user_id}",
         )
-        client.attach_consumer_to_rule(
-            gateway_id=rule.gateway_id,
-            rule_id=rule.external_rule_id,
-            consumer_id=group.external_consumer_id,
-        )
-    except AliyunApigError as exc:
-        raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+    except (AliyunApigError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=f"阿里云创建消费者失败：{exc}") from exc
 
-    # 4) 落库
+    # 3) 绑定消费组（batch-add） + 绑定配额规则
+    try:
+        client.add_consumers_to_group(request.consumer_group_id, [consumer_id])
+        client.attach_consumer_to_rule(
+            gateway_id=gateway.gateway_id,
+            rule_id=request.quota_rule_id,
+            consumer_id=consumer_id,
+        )
+    except (AliyunApigError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=f"阿里云绑定失败：{exc}") from exc
+
+    # 4) 写透本地消费者表（供消费组页展示与启停管理）
+    now = utc_now()
+    existing_consumer = db.exec(
+        select(ApiKeyConsumer).where(
+            ApiKeyConsumer.tenant_id == request.tenant_id,
+            ApiKeyConsumer.external_consumer_id == consumer_id,
+        )
+    ).first()
+    if existing_consumer:
+        local_consumer = existing_consumer
+        local_consumer.external_consumer_group_id = request.consumer_group_id
+        local_consumer.consumer_group_name = csg_name
+        local_consumer.updated_at = now
+    else:
+        local_consumer = ApiKeyConsumer(
+            tenant_id=request.tenant_id,
+            name=consumer_name,
+            description=f"审批创建 · 申请人 {row.username or row.user_id}",
+            gateway_id=gateway.gateway_id,
+            gateway_name=gateway.name,
+            external_consumer_id=consumer_id,
+            external_consumer_group_id=request.consumer_group_id,
+            consumer_group_name=csg_name,
+            consumer_type="AI",
+            enable=True,
+            status="enabled",
+            created_by_user_id=current_user.id,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(local_consumer)
+
+    # 5) 落库审批单
+    default_api_url = "https://ai-gateway.folidaymall.com/v1/chat/completions"
     row.api_key_encrypted = encrypt_secret(api_key)
-    row.api_url = get_gateway_config(group.gateway_name).gateway_url if group.gateway_name else None
-    row.gateway_name = group.gateway_name
-    row.gateway_id = group.gateway_id
-    row.quota_limit = int(rule.quota_limit)
-    row.quota_period = rule.period_type
-    row.quota_rule_id = rule.external_rule_id
-    row.quota_rule_name = rule.name
-    row.consumer_id = group.external_consumer_id
-    row.consumer_name = group.name
-    row.consumer_group_id = group.id
-    row.consumer_group_name = group.name
+    row.api_url = (request.api_url or "").strip() or default_api_url
+    row.gateway_name = gateway.name
+    row.gateway_id = gateway.gateway_id
+    row.quota_limit = quota_limit
+    row.quota_period = period_type
+    row.quota_rule_id = request.quota_rule_id
+    row.quota_rule_name = rule_name
+    row.consumer_id = consumer_id
+    row.consumer_name = consumer_name
+    row.consumer_group_id = request.consumer_group_id
+    row.consumer_group_name = csg_name
     row.status = "approved"
     row.reviewer_user_id = current_user.id
-    row.reviewer_note = (request.reviewer_note or "").strip() or None
+    row.reviewer_note = None
     row.reviewed_at = utc_now()
     row.updated_at = utc_now()
     db.add(row)
@@ -773,6 +1216,65 @@ def reject_application(
     return _read(row, include_secret=False)
 
 
+def _list_consumer_api_keys(client: Any, consumer_id: str) -> list[str]:
+    """尽力拉取消费者名下的 API Key 明文列表（GetConsumer credentials）。
+
+    真实云端多数情况不回带凭证（返回空列表）；mock 模式回带。
+    """
+    try:
+        detail = client.get_consumer(consumer_id)
+    except (AliyunApigError, RuntimeError, ValueError):
+        return []
+    identity = detail.get("apiKeyIdentityConfig") or detail.get("apikeyIdentityConfig") or {}
+    keys: list[str] = []
+    for src in identity.get("apiKeySources", []) + identity.get("apikeySources", []):
+        for cred in src.get("credentials") or []:
+            ak = cred.get("apikey") or cred.get("apiKey")
+            if ak and ak not in keys:
+                keys.append(ak)
+    return keys
+
+
+@router.get("/{application_id}/revoke-preview")
+def revoke_preview(
+    application_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """吊销前预检：判定该消费者名下凭证数量，前端据此展示确认文案。"""
+    ensure_tenant_admin(tenant_id, current_user)
+    row = db.get(ApiKeyApplication, application_id)
+    if not row or row.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="API Key 申请不存在")
+    if row.status != "approved":
+        raise HTTPException(status_code=409, detail="仅已分配的 API Key 可吊销")
+    if not row.consumer_id:
+        return {"api_key_count": 1, "will_disable_consumer": False, "consumer_name": row.consumer_name}
+
+    client = get_apig_client()
+    keys = _list_consumer_api_keys(client, row.consumer_id) if client else []
+    if not keys:
+        # 云端不回带凭证 → 按本地同消费者 approved 记录数估算
+        sibling_count = len(
+            db.exec(
+                select(ApiKeyApplication).where(
+                    ApiKeyApplication.tenant_id == tenant_id,
+                    ApiKeyApplication.status == "approved",
+                    ApiKeyApplication.consumer_id == row.consumer_id,
+                )
+            ).all()
+        )
+        key_count = max(sibling_count, 1)
+    else:
+        key_count = len(keys)
+    return {
+        "api_key_count": key_count,
+        "will_disable_consumer": key_count <= 1,
+        "consumer_name": row.consumer_name,
+    }
+
+
 @router.post("/{application_id}/revoke", response_model=ApiKeyApplicationRead)
 def revoke_application(
     application_id: str,
@@ -780,12 +1282,93 @@ def revoke_application(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiKeyApplicationRead:
+    """吊销已分配的 API Key：去阿里云删除消费者下属对应凭证。
+
+    - 消费者仅剩这一个凭证时：停用（disable）该消费者，避免云端删除整消费者影响他人；
+    - 存在多个凭证时：用剩余凭证覆盖写（云侧无删除单凭证 API），消费者继续可用。
+    """
     ensure_tenant_admin(request.tenant_id, current_user)
     row = db.get(ApiKeyApplication, application_id)
     if not row or row.tenant_id != request.tenant_id:
         raise HTTPException(status_code=404, detail="API Key 申请不存在")
     if row.status == "revoked":
         return _read(row, include_secret=False)
+    if row.status != "approved":
+        raise HTTPException(status_code=409, detail="仅已分配的 API Key 可吊销")
+
+    revoked_key = try_decrypt_secret(row.api_key_encrypted or "")
+    client = get_apig_client()
+
+    if client and row.consumer_id:
+        keys = _list_consumer_api_keys(client, row.consumer_id)
+        try:
+            if not keys:
+                # 云端不回带凭证：按本地同消费者剩余记录推断
+                remaining_keys = []
+                siblings = db.exec(
+                    select(ApiKeyApplication).where(
+                        ApiKeyApplication.tenant_id == request.tenant_id,
+                        ApiKeyApplication.status == "approved",
+                        ApiKeyApplication.consumer_id == row.consumer_id,
+                    )
+                ).all()
+                for s in siblings:
+                    if s.id == row.id:
+                        continue
+                    k = try_decrypt_secret(s.api_key_encrypted or "")
+                    if k:
+                        remaining_keys.append(k)
+                if remaining_keys:
+                    # 多凭证：覆盖写剩余凭证（移除被吊销的 Key）
+                    client.update_consumer(row.consumer_id, keep_credentials=remaining_keys)
+                else:
+                    # 单凭证：停用消费者
+                    client.update_consumer(row.consumer_id, enable=False)
+                    local = db.exec(
+                        select(ApiKeyConsumer).where(
+                            ApiKeyConsumer.tenant_id == request.tenant_id,
+                            ApiKeyConsumer.external_consumer_id == row.consumer_id,
+                        )
+                    ).first()
+                    if local:
+                        local.enable = False
+                        local.status = "disabled"
+                        local.updated_at = utc_now()
+                        db.add(local)
+            elif revoked_key and revoked_key in keys:
+                if len(keys) <= 1:
+                    client.update_consumer(row.consumer_id, enable=False)
+                    local = db.exec(
+                        select(ApiKeyConsumer).where(
+                            ApiKeyConsumer.tenant_id == request.tenant_id,
+                            ApiKeyConsumer.external_consumer_id == row.consumer_id,
+                        )
+                    ).first()
+                    if local:
+                        local.enable = False
+                        local.status = "disabled"
+                        local.updated_at = utc_now()
+                        db.add(local)
+                else:
+                    remaining = [k for k in keys if k != revoked_key]
+                    client.update_consumer(row.consumer_id, keep_credentials=remaining)
+            else:
+                # 找不到匹配凭证（Key 已在云端被轮换等），保守起见仅停用
+                client.update_consumer(row.consumer_id, enable=False)
+                local = db.exec(
+                    select(ApiKeyConsumer).where(
+                        ApiKeyConsumer.tenant_id == request.tenant_id,
+                        ApiKeyConsumer.external_consumer_id == row.consumer_id,
+                    )
+                ).first()
+                if local:
+                    local.enable = False
+                    local.status = "disabled"
+                    local.updated_at = utc_now()
+                    db.add(local)
+        except (AliyunApigError, RuntimeError) as exc:
+            raise HTTPException(status_code=502, detail=f"阿里云吊销失败：{exc}") from exc
+
     row.status = "revoked"
     row.api_key_encrypted = None
     row.api_url = None
@@ -801,6 +1384,92 @@ def revoke_application(
 
 def _current_month() -> str:
     return utc_now().strftime("%Y-%m")
+
+
+def _upsert_usage_snapshot(
+    db: Session,
+    tenant_id: str,
+    month: str,
+    consumer_id: str,
+    consumer_name: str | None,
+    gateway_id: str | None,
+    gateway_name: str | None,
+    quota_rule_id: str,
+    quota_rule_name: str | None,
+    quota_limit: int,
+    quota_period: str | None,
+    used_amount: int,
+) -> None:
+    """把一次实时用量写入快照表（幂等 upsert，used_amount 取较大值）。"""
+    if not consumer_id or not quota_rule_id:
+        return
+    row = db.exec(
+        select(ApiKeyUsageSnapshot).where(
+            ApiKeyUsageSnapshot.tenant_id == tenant_id,
+            ApiKeyUsageSnapshot.month == month,
+            ApiKeyUsageSnapshot.consumer_id == consumer_id,
+            ApiKeyUsageSnapshot.quota_rule_id == quota_rule_id,
+        )
+    ).first()
+    if row is None:
+        db.add(
+            ApiKeyUsageSnapshot(
+                tenant_id=tenant_id,
+                month=month,
+                consumer_id=consumer_id,
+                consumer_name=consumer_name,
+                gateway_id=gateway_id,
+                gateway_name=gateway_name,
+                quota_rule_id=quota_rule_id,
+                quota_rule_name=quota_rule_name,
+                quota_limit=int(quota_limit or 0),
+                quota_period=quota_period,
+                used_amount=int(used_amount or 0),
+            )
+        )
+    else:
+        # 取较大值防止云端周期重置导致快照回退（月内用量单调递增）
+        row.used_amount = max(int(row.used_amount or 0), int(used_amount or 0))
+        row.consumer_name = consumer_name or row.consumer_name
+        row.quota_rule_name = quota_rule_name or row.quota_rule_name
+        row.quota_limit = int(quota_limit or row.quota_limit or 0)
+        row.quota_period = quota_period or row.quota_period
+        row.gateway_id = gateway_id or row.gateway_id
+        row.gateway_name = gateway_name or row.gateway_name
+        row.updated_at = utc_now()
+        db.add(row)
+
+
+def _summarize_snapshot_rows(rows: list[ApiKeyUsageSnapshot]) -> list[dict[str, Any]]:
+    """把快照行按消费者聚合：quota_limit 求和（换规则叠加）、used_amount 求和。"""
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for snap in rows:
+        key = snap.consumer_id or snap.consumer_name or snap.id
+        entry = merged.get(key)
+        if entry is None:
+            entry = {
+                "consumer_id": snap.consumer_id,
+                "consumer_name": snap.consumer_name or snap.consumer_id,
+                "gateway_name": snap.gateway_name,
+                "gateway_id": snap.gateway_id,
+                "quota_limit": 0,
+                "quota_period": snap.quota_period,
+                "quota_rule_ids": [snap.quota_rule_id] if snap.quota_rule_id else [],
+                "quota_rule_names": [snap.quota_rule_name] if snap.quota_rule_name else [],
+                "used_amount": 0,
+            }
+            merged[key] = entry
+            order.append(key)
+        entry["quota_limit"] += int(snap.quota_limit or 0)
+        entry["used_amount"] += int(snap.used_amount or 0)
+        if snap.quota_period and not entry["quota_period"]:
+            entry["quota_period"] = snap.quota_period
+        if snap.quota_rule_id and snap.quota_rule_id not in entry["quota_rule_ids"]:
+            entry["quota_rule_ids"].append(snap.quota_rule_id)
+        if snap.quota_rule_name and snap.quota_rule_name not in entry["quota_rule_names"]:
+            entry["quota_rule_names"].append(snap.quota_rule_name)
+    return [merged[key] for key in order]
 
 
 def _coerce_str(value: str | None) -> str | None:
@@ -831,50 +1500,130 @@ def list_usage(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> ApiKeyApplicationUsageRead:
-    """列出所有已签发 API Key 的用量明细与汇总（管理员）。"""
+    """配额使用明细：以消费者为主体，按月查询用量。
+
+    - 当月：实时从阿里云 ListQuotaRuleSubjects 查询，并 upsert 写入快照表（api_key_usage_snapshots）；
+    - 历史月份：直接读快照表，不再回源阿里云；
+    - 消费者中途更换配额规则时，快照按规则维度叠加，换规则不丢当月已用量。
+    """
     ensure_tenant_admin(tenant_id, current_user)
     target_month = (_coerce_str(month) or _current_month()).strip()
+    current_month = _current_month()
+    is_current_month = target_month >= current_month
 
-    rows = db.exec(
-        select(ApiKeyApplication).where(
-            ApiKeyApplication.tenant_id == tenant_id,
-            ApiKeyApplication.status == "approved",
-        )
+    if is_current_month:
+        # 仅当月查询时同步消费者（历史月不需要，避免多余阿里云调用）
+        gateways = get_gateway_configs()
+        if gateways:
+            try:
+                client = get_apig_client()
+                _sync_consumers_to_local(db, tenant_id, client, gateways)
+            except (AliyunApigError, RuntimeError):
+                pass
+
+    consumer_rows = db.exec(
+        select(ApiKeyConsumer).where(ApiKeyConsumer.tenant_id == tenant_id).order_by(ApiKeyConsumer.name)
     ).all()
 
     client = get_apig_client()
+
+    # 当月：实时查 subjects 构建 {consumer_id: (rule, usage)} 映射并写快照
+    subject_usage: dict[str, tuple[ApiKeyQuotaRule, dict[str, Any]]] = {}
+    if is_current_month and client:
+        rule_rows = db.exec(
+            select(ApiKeyQuotaRule).where(ApiKeyQuotaRule.tenant_id == tenant_id)
+        ).all()
+        for rule in rule_rows:
+            if not rule.external_rule_id:
+                continue
+            try:
+                subjects = client.list_quota_rule_subjects(
+                    rule.external_rule_id,
+                    gateway_id=rule.gateway_id,
+                )
+            except (AliyunApigError, RuntimeError, ValueError):
+                continue
+            for subj in subjects if isinstance(subjects, list) else []:
+                sid = subj.get("id") or ""
+                if sid:
+                    subject_usage[sid] = (rule, subj)
+
+    # 构建当月快照（存量快照按 consumer 维度分组，实时数据 upsert 后叠加展示）
+    snap_rows = db.exec(
+        select(ApiKeyUsageSnapshot).where(
+            ApiKeyUsageSnapshot.tenant_id == tenant_id,
+            ApiKeyUsageSnapshot.month == target_month,
+        )
+    ).all()
+
+    # 当月实时数据先 upsert 进快照
+    if is_current_month and client:
+        for row in consumer_rows:
+            rule, subj = subject_usage.get(row.external_consumer_id or "", (None, {}))
+            if rule is None:
+                continue
+            _upsert_usage_snapshot(
+                db,
+                tenant_id=tenant_id,
+                month=target_month,
+                consumer_id=row.external_consumer_id or "",
+                consumer_name=row.name,
+                gateway_id=row.gateway_id,
+                gateway_name=row.gateway_name,
+                quota_rule_id=rule.external_rule_id or "",
+                quota_rule_name=rule.name,
+                quota_limit=int(rule.quota_limit or 0),
+                quota_period=rule.period_type,
+                used_amount=int(subj.get("usedAmount") or 0),
+            )
+        db.commit()
+        db.expire_all()
+        snap_rows = db.exec(
+            select(ApiKeyUsageSnapshot).where(
+                ApiKeyUsageSnapshot.tenant_id == tenant_id,
+                ApiKeyUsageSnapshot.month == target_month,
+            )
+        ).all()
+
+    # 按消费者聚合快照行（quota_limit 求和 → 换规则叠加，used_amount 求和）
+    merged_by_consumer = _summarize_snapshot_rows(list(snap_rows))
+    merged_map = {m["consumer_id"]: m for m in merged_by_consumer}
+
     items: list[ApiKeyApplicationUsageItem] = []
     total_quota = 0
     total_used = 0
     high_count = 0
     low_count = 0
 
-    for row in rows:
-        # SQLite 历史迁移列可能以 VARCHAR 存储数值,统一转 int 防御
-        quota_limit = int(row.quota_limit or 0)
-        # 用量：优先使用当月缓存；否则尝试查询阿里云（mock/真实）
-        used_amount = 0
-        if row.usage_month == target_month and row.used_amount is not None:
-            used_amount = row.used_amount
-        elif client and row.gateway_id and row.quota_rule_id and row.consumer_id:
-            try:
-                resp = client.get_consumer_quota_usage(
-                    gateway_id=row.gateway_id,
-                    rule_id=row.quota_rule_id,
-                    consumer_id=row.consumer_id,
-                )
-                data = resp.get("data") if isinstance(resp, dict) else {}
-                used_amount = int(data.get("usedAmount") or 0)
-                # 写回缓存（仅缓存当前月）
-                if target_month == _current_month():
-                    row.used_amount = used_amount
-                    row.usage_month = target_month
-                    row.updated_at = utc_now()
-                    db.add(row)
-            except AliyunApigError:
-                used_amount = row.used_amount or 0
+    # 行主体 = 当前消费者列表 ∪ 快照中出现过的消费者（含已删除消费者，保留历史）
+    seen: set[str] = set()
+    ordered_consumers: list[tuple[str, str | None, str | None, str | None]] = []
+    for row in consumer_rows:
+        cid = row.external_consumer_id or ""
+        if cid not in seen:
+            seen.add(cid)
+            ordered_consumers.append((cid, row.name, row.gateway_name, row.gateway_id))
+    for m in merged_by_consumer:
+        cid = m["consumer_id"] or ""
+        if cid and cid not in seen:
+            seen.add(cid)
+            ordered_consumers.append(
+                (cid, m["consumer_name"], m["gateway_name"], m["gateway_id"])
+            )
+
+    for cid, name, gateway_name, gateway_id in ordered_consumers:
+        m = merged_map.get(cid)
+        if m:
+            quota_limit = int(m["quota_limit"])
+            used_amount = int(m["used_amount"])
+            quota_period = m["quota_period"]
+            rule_names = m["quota_rule_names"]
         else:
-            used_amount = row.used_amount or 0
+            rule, subj = subject_usage.get(cid, (None, {}))
+            quota_limit = int(rule.quota_limit or 0) if rule else 0
+            used_amount = int(subj.get("usedAmount") or 0)
+            quota_period = rule.period_type if rule else None
+            rule_names = [rule.name] if rule else []
 
         usage_rate = (used_amount / quota_limit) if quota_limit > 0 else 0.0
         suggestion = _usage_suggestion(usage_rate)
@@ -888,28 +1637,25 @@ def list_usage(
 
         items.append(
             ApiKeyApplicationUsageItem(
-                id=row.id,
-                user_id=row.user_id,
-                username=row.username,
-                user_no=_derive_user_no(row.user_id),
+                id=cid or name or "",
+                user_id=cid or "",
+                username=name,
+                user_no=None,
                 department=None,
-                consumer_id=row.consumer_id,
-                consumer_name=row.consumer_name,
-                gateway_name=row.gateway_name,
-                gateway_id=row.gateway_id,
+                consumer_id=cid or None,
+                consumer_name=name,
+                gateway_name=gateway_name,
+                gateway_id=gateway_id,
                 quota_limit=quota_limit,
-                quota_period=row.quota_period,
-                quota_rule_id=row.quota_rule_id,
+                quota_period=quota_period,
+                quota_rule_id=", ".join(rule_names) or None,
                 used_amount=used_amount,
                 usage_rate=round(usage_rate, 4),
                 suggestion=suggestion,
             )
         )
 
-    if target_month == _current_month():
-        db.commit()
-
-    allocated_users = len(rows)
+    allocated_users = len(items)
     avg_usage_rate = (total_used / total_quota) if total_quota > 0 else 0.0
 
     return ApiKeyApplicationUsageRead(
@@ -957,7 +1703,7 @@ def update_quota(
                 rule_id=row.quota_rule_id,
                 quota_limit=request.quota_limit,
             )
-        except AliyunApigError as exc:
+        except (AliyunApigError, RuntimeError) as exc:
             raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
 
     row.quota_limit = int(request.quota_limit)

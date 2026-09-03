@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import pytest
 from fastapi import HTTPException
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -31,7 +32,22 @@ from app.api.api_key_applications import (
     update_quota,
 )
 
+
+@pytest.fixture(autouse=True)
+def _force_aigw_mock(monkeypatch):
+    """本文件所有测试强制走 mock 客户端，避免 .env 配置真实 AK/SK 后打到真实阿里云。
+
+    注意 client.py 是 `from .config import USE_MOCK` 拷贝引用，
+    必须同时 patch client 模块内的值才能生效。
+    """
+    from app.aliyun_aigw import client as aigw_client
+
+    monkeypatch.setattr(aigw_config, "USE_MOCK", True)
+    monkeypatch.setattr(aigw_client, "USE_MOCK", True)
+
+
 TENANT = "tenant_test_apk"
+
 GATEWAY_ENV = (
     '[{"name":"主力网关","gateway_id":"gw-test123",'
     '"gateway_url":"https://apigw.example.com/v1","region":"cn-hangzhou"}]'
@@ -54,10 +70,34 @@ class FakeApigClient:
         self.deleted_consumers = []
         self.deleted_rules = []
         self.meta_updates = []
+        # 云端资源视图（实时直读接口用）
+        self.consumers = {}
+        self.quota_rules = {}
 
     def create_consumer(self, name, api_key=None, description=None, gateway_type="AI"):
         self.created_consumers.append({"name": name, "api_key": api_key})
         return f"consumer-{name}"
+
+    def get_consumer(self, consumer_id):
+        return {
+            "consumerId": consumer_id,
+            "name": consumer_id.replace("consumer-", ""),
+            "description": "",
+            "gatewayType": "AI",
+            "enable": True,
+        }
+
+    def list_consumers(self, gateway_type="AI"):
+        return list(self.consumers.values())
+
+    def list_quota_rules(self, gateway_id=None):
+        return list(self.quota_rules.values())
+
+    def get_quota_rule(self, rule_id, gateway_id=None):
+        return self.quota_rules.get(
+            rule_id,
+            {"ruleId": rule_id, "ruleName": rule_id, "quotaDimension": "credit", "quotaLimit": 0, "periodType": "day"},
+        )
 
     def add_consumer_quota_rule(
         self,
@@ -332,11 +372,13 @@ def test_approve_mock_mode_success():
         db=session,
         current_user=member,
     )
-    # 不 patch：用 aliyun_aigw 真实 mock 分支
+    # 不 patch：用 aliyun_aigw 真实 mock 分支（approve 传云端 consumerId/ruleId）
     approved = approve_application(
         created.id,
         ApiKeyApplicationApprove(
-            tenant_id=TENANT, consumer_group_id=group.id, quota_rule_id=rule.id
+            tenant_id=TENANT,
+            consumer_group_id="cs-mock-001",
+            quota_rule_id="qr-mock-001",
         ),
         db=session,
         current_user=admin,
@@ -345,7 +387,8 @@ def test_approve_mock_mode_success():
     assert approved.api_url == "https://apigw.example.com/v1"
     assert approved.consumer_id == "cs-mock-001"
     assert approved.quota_rule_id == "qr-mock-001"
-    assert approved.consumer_group_name == "demo-consumer"
+    # 实时架构下 consumer_group_name 取云端消费者名（mock 分支无该消费者时回退 ID）
+    assert approved.consumer_group_name
 
 
 def test_get_apig_client_none_in_production_without_ak(monkeypatch):
@@ -357,18 +400,11 @@ def test_get_apig_client_none_in_production_without_ak(monkeypatch):
 
 
 def test_approve_group_rule_gateway_mismatch_400():
+    """approve 传入云端不存在的配额规则 ID 时应返回 400（无效引用校验）。"""
     session = _make_session()
     admin = _admin(session)
     member = _member(session)
-    group, rule = _make_group_rule(
-        session, gateway_id="gw-test123", gateway_name="主力网关",
-        consumer_id="c1", rule_id="r1",
-    )
-    # 把规则改成另一网关
-    rule.gateway_id = "gw-other"
-    rule.gateway_name = "其他网关"
-    session.add(rule)
-    session.commit()
+    group, rule = _make_group_rule(session)
     created = create_application(
         ApiKeyApplicationCreate(tenant_id=TENANT, purpose="x"),
         db=session,
@@ -381,14 +417,16 @@ def test_approve_group_rule_gateway_mismatch_400():
             approve_application(
                 created.id,
                 ApiKeyApplicationApprove(
-                    tenant_id=TENANT, consumer_group_id=group.id, quota_rule_id=rule.id
+                    tenant_id=TENANT,
+                    consumer_group_id="cs-missing",
+                    quota_rule_id="qr-missing",
                 ),
                 db=session,
                 current_user=admin,
             )
     except HTTPException as exc:
         bad = exc.status_code == 400
-    assert bad, "group/rule gateway mismatch should return 400"
+    assert bad, "invalid consumer/rule reference should return 400"
 
 
 def test_revoke_clears_key():
@@ -635,7 +673,7 @@ def test_consumer_group_owners_from_config():
 
     owners = get_settings().consumer_group_owner_list
     assert "重庆项目" in owners
-    assert "复星总部IT" in owners
+    assert "总部IT" in owners  # 品牌演进：默认列表已由「复星总部IT」改为「总部IT」
     assert "Club Med" in owners
 
 
@@ -657,7 +695,7 @@ def test_update_consumer_group():
     assert group.external_consumer_id  # mock 客户端已创建消费者
 
     updated = update_consumer_group(
-        group.id,
+        group.external_consumer_id,  # 实时架构：路径参数即云端 consumerId
         ApiKeyConsumerGroupUpdate(
             tenant_id=TENANT,
             name="edit-demo-renamed",

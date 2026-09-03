@@ -116,13 +116,22 @@ def _mock_dispatch(
     if method == "POST" and path == "/v1/consumers":
         name = (body or {}).get("name", "mock-consumer")
         consumer_id = "cs-mock-" + uuid.uuid4().hex[:8]
+        # Custom 模式：明文由调用方传入；System 模式：mock 自动生成
+        apikey = ""
+        for src in ((body or {}).get("apiKeyIdentityConfig") or {}).get("apiKeySources", []):
+            for cred in src.get("credentials", []):
+                if cred.get("apikey"):
+                    apikey = cred["apikey"]
+                elif cred.get("generateMode") == "System" and not apikey:
+                    apikey = "sk-mock-" + uuid.uuid4().hex[:24]
         consumer = {
             "consumerId": consumer_id,
             "name": name,
             "description": (body or {}).get("description", ""),
             "gatewayType": (body or {}).get("gatewayType", "AI"),
             "enable": (body or {}).get("enable", True),
-            "apikeys": [],
+            "apikeys": [apikey] if apikey else [],
+            "consumerGroups": [],
         }
         _MOCK_CONSUMERS[consumer_id] = consumer
         return {
@@ -149,13 +158,26 @@ def _mock_dispatch(
                 consumer["description"] = b["description"]
             if "enable" in b:
                 consumer["enable"] = b["enable"]
-            # 追加自定义 API Key 凭证
-            identity = b.get("apikeyIdentityConfig") or {}
-            for src in identity.get("apikeySources", []):
-                for cred in src.get("credentials", []):
-                    ak = cred.get("apikey")
-                    if ak and ak not in consumer["apikeys"]:
-                        consumer["apikeys"].append(ak)
+            # 绑定消费组（csg- 列表，全量覆盖）
+            if "consumerGroupIds" in b:
+                consumer["consumerGroups"] = [
+                    {"consumerGroupId": csg, "name": csg}
+                    for csg in (b["consumerGroupIds"] or [])
+                ]
+            # 自定义 API Key 凭证：_mock_credential_replace=True 时全量覆盖（裁剪语义），否则追加
+            identity = b.get("apiKeyIdentityConfig") or b.get("apikeyIdentityConfig") or {}
+            replace_mode = identity.pop("_mock_credential_replace", False)
+            for src in identity.get("apiKeySources", []) + identity.get("apikeySources", []):
+                creds = src.get("credentials", [])
+                if replace_mode:
+                    consumer["apikeys"] = [
+                        cred.get("apikey") for cred in creds if cred.get("apikey")
+                    ]
+                else:
+                    for cred in creds:
+                        ak = cred.get("apikey")
+                        if ak and ak not in consumer["apikeys"]:
+                            consumer["apikeys"].append(ak)
         return {
             "requestId": "mock-" + uuid.uuid4().hex[:12],
             "code": "Ok",
@@ -177,6 +199,68 @@ def _mock_dispatch(
             "code": "Ok",
             "message": "success",
             "data": {"items": items, "total": len(items)},
+        }
+    if method == "GET" and path.startswith("/v1/consumers/"):
+        cid = path.rsplit("/", 1)[-1]
+        c = _MOCK_CONSUMERS.get(cid)
+        if c is None:
+            return {
+                "requestId": "mock-" + uuid.uuid4().hex[:12],
+                "code": "NotFound",
+                "message": f"consumer {cid} not found",
+            }
+        return {
+            "requestId": "mock-" + uuid.uuid4().hex[:12],
+            "code": "Ok",
+            "message": "success",
+            "data": {
+                "consumerId": c["consumerId"],
+                "name": c["name"],
+                "description": c["description"],
+                "gatewayType": c["gatewayType"],
+                "enable": c["enable"],
+                "consumerGroups": c.get("consumerGroups", []),
+                "apiKeyIdentityConfig": {
+                    "type": "Apikey",
+                    "apiKeySources": [
+                        {
+                            "source": "Default",
+                            "value": "Authorization",
+                            "credentials": [
+                                {"generateMode": "System", "apikey": ak}
+                            ],
+                        }
+                        for ak in c.get("apikeys", [])
+                    ],
+                },
+            },
+        }
+    # 批量加入消费者组（BatchAddConsumerGroupConsumers）
+    _batch_add = re.match(r"/v1/consumer-groups/([^/]+)/consumers/batch-add$", path)
+    if _batch_add and method == "POST":
+        csg = _batch_add.group(1)
+        ids = (body or {}).get("consumerIds") or []
+        success, skipped, failed = [], [], []
+        for cid in ids:
+            consumer = _MOCK_CONSUMERS.get(cid)
+            if consumer is None:
+                failed.append(cid)
+            elif any(g["consumerGroupId"] == csg for g in consumer.get("consumerGroups", [])):
+                skipped.append(cid)
+            else:
+                consumer.setdefault("consumerGroups", []).append(
+                    {"consumerGroupId": csg, "name": csg}
+                )
+                success.append(cid)
+        return {
+            "requestId": "mock-" + uuid.uuid4().hex[:12],
+            "code": "Ok",
+            "message": "success",
+            "data": {
+                "successConsumerIds": success,
+                "skippedConsumerIds": skipped,
+                "failedConsumerIds": failed,
+            },
         }
     # 配额规则 CRUD（mock）
     _qlist = re.match(r"/v1/gateways/[^/]+/quota-rules$", path)

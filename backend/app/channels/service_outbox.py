@@ -37,7 +37,6 @@ SENDING_STALE_SECONDS = 120
 _delivery_thread: threading.Thread | None = None
 _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
-_FEISHU_DEDUP_RECOVERY_SECONDS = 55 * 60
 _NON_DELIVERY_CHANNELS = {
     "public_api",
     PILOTDECK_GROUP_CHAT_CHANNEL,
@@ -219,10 +218,7 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
         ).first()
         if existing:
             return
-        if binding.channel == "feishu":
-            valid_target = bool(target.get("message_id") or target.get("receive_id"))
-        else:
-            valid_target = bool(target.get("to_user_id") and target.get("context_token"))
+        valid_target = bool(target.get("to_user_id") and target.get("context_token"))
         if not valid_target:
             _stage_failed_delivery(
                 db,
@@ -498,21 +494,6 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
                 last_error="reaction 事件边界无效",
             )
             return
-    if (
-        binding.channel == "feishu"
-        and delivery.kind not in _REACTION_KINDS
-        and delivery.attempts > 0
-        and delivery.first_attempt_at is not None
-        and (utc_now() - delivery.first_attempt_at).total_seconds()
-        > _FEISHU_DEDUP_RECOVERY_SECONDS
-    ):
-        _finish_delivery_claim(
-            db,
-            delivery,
-            status="failed",
-            last_error="remote_state_unknown",
-        )
-        return
     if delivery.kind == "reply":
         chat_session = db.get(ChatSession, delivery.session_id)
         invalid_session = (
@@ -884,35 +865,6 @@ def notify_binding_creator(db: Session, binding: ChannelBinding, text: str) -> N
         logger.exception("渠道告警投递登记失败 binding=%s", binding.id)
 
 
-def _resolve_assignee_feishu_open_id(
-    db: Session,
-    binding: ChannelBinding,
-    assignee_user_id: str | None,
-) -> str | None:
-    """确定 handoff assignee 的飞书 open_id。
-
-    主链路:用当前 binding 的 external_account_scope 查 ChannelIdentity
-    (staffdeck_user_id → external_user_id),保证跨 binding/scope 隔离。
-    未命中返回 None(由调用方兜底,网页收件箱仍可用)。
-
-    注:手机号/邮箱反查需要 User 表存储手机号/邮箱,当前 User 模型无此字段,
-    故反查 fallback 暂不启用;待前端用户档案补齐后可在此接入。
-    """
-    scope = external_account_scope(db, binding)
-    if assignee_user_id:
-        identity = db.exec(
-            select(ChannelIdentity).where(
-                ChannelIdentity.tenant_id == binding.tenant_id,
-                ChannelIdentity.channel == "feishu",
-                ChannelIdentity.external_account_scope == scope,
-                ChannelIdentity.staffdeck_user_id == assignee_user_id,
-            )
-        ).first()
-        if identity and identity.external_user_id:
-            return identity.external_user_id
-    return None
-
-
 def resolve_assignee_channel_identity(
     db: Session,
     binding: ChannelBinding,
@@ -920,8 +872,7 @@ def resolve_assignee_channel_identity(
 ) -> ChannelIdentity | None:
     """按当前 binding 渠道与 scope 解析 assignee 的非群聊渠道身份。
 
-    与 _resolve_assignee_feishu_open_id 同一套 scope 隔离逻辑,
-    但渠道随 binding 走,供通用 handoff 通知投递使用(飞书/企微等)。
+    渠道随 binding 走,供通用 handoff 通知投递使用(企微等)。
     未命中返回 None(网页收件箱兜底)。
     """
     scope = external_account_scope(db, binding)
@@ -940,17 +891,11 @@ def resolve_assignee_channel_identity(
 
 
 # 支持 handoff 通知私聊投递的渠道:适配器具备"指定用户主动私聊"能力。
-# 钉钉/微信适配器只能回会话内消息(依赖 session_webhook/context_token),
-# 无法主动私聊处理人,故不在集合内。
-HANDOFF_NOTIFY_CHANNELS = frozenset({"feishu", "wecom"})
+# 钉钉适配器只能回会话内消息,无法主动私聊处理人。
+HANDOFF_NOTIFY_CHANNELS = frozenset({"wecom"})
 
 # 各渠道 handoff 通知的投递 target 构造。
 _HANDOFF_NOTIFY_TARGET_BUILDERS = {
-    "feishu": lambda external_user_id, handoff_id: {
-        "receive_id_type": "open_id",
-        "receive_id": external_user_id,
-        "handoff_id": handoff_id,
-    },
     "wecom": lambda external_user_id, handoff_id: {
         "to_user_id": external_user_id,
         "handoff_id": handoff_id,
@@ -965,7 +910,7 @@ def resolve_handoff_notify_binding(
 ) -> ChannelBinding | None:
     """按通知渠道偏好解析可达的投递 binding。
 
-    notify_channel 为具体渠道(如 feishu)时,在租户内找该渠道的 active binding
+    notify_channel 为具体渠道(如企微)时,在租户内找该渠道的 active binding
     (排除团队绑定与非交付渠道);找不到返回 None。
     """
     notify_channel = str(notify_channel or "").strip()

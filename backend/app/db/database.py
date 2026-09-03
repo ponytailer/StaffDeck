@@ -64,6 +64,7 @@ def init_db() -> None:
     _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
     _migrate_sqlite_skill_schema()
+    _migrate_pg_api_key_schema()
     _purge_orphaned_chat_sessions()
 
 
@@ -3082,6 +3083,43 @@ def _migrate_api_key_consumer_group(conn, tables: set[str]) -> None:
     columns = {column["name"] for column in inspect(engine).get_columns("api_key_consumer_groups")}
     if "owner" not in columns:
         conn.execute(text("ALTER TABLE api_key_consumer_groups ADD COLUMN owner VARCHAR"))
+    if "external_consumer_group_id" not in columns:
+        conn.execute(text("ALTER TABLE api_key_consumer_groups ADD COLUMN external_consumer_group_id VARCHAR"))
+    if "consumer_count" not in columns:
+        conn.execute(text("ALTER TABLE api_key_consumer_groups ADD COLUMN consumer_count INTEGER"))
+
+
+def _migrate_api_key_consumer(conn, tables: set[str]) -> None:
+    """新增消费者表(api_key_consumers)。"""
+    if "api_key_consumers" not in tables:
+        from app.db.models import ApiKeyConsumer
+
+        ApiKeyConsumer.metadata.create_all(bind=engine)
+        return
+    columns = {column["name"] for column in inspect(engine).get_columns("api_key_consumers")}
+    for col_name, col_type in [
+        ("external_consumer_group_id", "VARCHAR"),
+        ("consumer_group_name", "VARCHAR"),
+        ("deploy_status", "VARCHAR"),
+        ("enable", "BOOLEAN DEFAULT TRUE"),
+    ]:
+        if col_name not in columns:
+            conn.execute(text(f"ALTER TABLE api_key_consumers ADD COLUMN {col_name} {col_type}"))
+
+
+def _migrate_pg_api_key_schema() -> None:
+    """PostgreSQL 模式下的 API Key 相关表迁移。"""
+    backend = engine.url.get_backend_name()
+    if backend != "postgresql":
+        return
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        _migrate_api_key_application_gateway(conn, tables)
+        _migrate_api_key_consumer_group(conn, tables)
+        _migrate_api_key_consumer(conn, tables)
+        _migrate_api_key_quota_rule(conn, tables)
+        _migrate_api_key_usage_snapshot(conn, tables)
 
 
 def _migrate_api_key_quota_rule(conn, tables: set[str]) -> None:
@@ -3090,6 +3128,15 @@ def _migrate_api_key_quota_rule(conn, tables: set[str]) -> None:
         from app.db.models import ApiKeyQuotaRule
 
         ApiKeyQuotaRule.metadata.create_all(bind=engine)
+        return
+
+
+def _migrate_api_key_usage_snapshot(conn, tables: set[str]) -> None:
+    """新增配额用量快照表(api_key_usage_snapshots)。"""
+    if "api_key_usage_snapshots" not in tables:
+        from app.db.models import ApiKeyUsageSnapshot
+
+        ApiKeyUsageSnapshot.metadata.create_all(bind=engine)
         return
 
 
