@@ -3123,12 +3123,17 @@ def _migrate_pg_api_key_schema() -> None:
 
 
 def _migrate_api_key_quota_rule(conn, tables: set[str]) -> None:
-    """新增配额规则表(api_key_quota_rules)。"""
+    """新增配额规则表(api_key_quota_rules)；已存在时补充新增列。"""
     if "api_key_quota_rules" not in tables:
         from app.db.models import ApiKeyQuotaRule
 
         ApiKeyQuotaRule.metadata.create_all(bind=engine)
         return
+    columns = {column["name"] for column in inspect(engine).get_columns("api_key_quota_rules")}
+    # 主体粒度（consumer / consumer_group，网关 2.1.21+ 支持组粒度）；
+    # 存量行留 NULL，由 _sync_quota_rules_to_local 从云端 GetGatewayQuotaRule 回填
+    if "subject_type" not in columns:
+        conn.execute(text("ALTER TABLE api_key_quota_rules ADD COLUMN subject_type VARCHAR"))
 
 
 def _migrate_api_key_usage_snapshot(conn, tables: set[str]) -> None:

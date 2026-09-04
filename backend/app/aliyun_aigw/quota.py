@@ -66,13 +66,23 @@ def create_quota_rule(
     window_alignment: str = "calendar",
     timezone: str = "UTC+8",
     consumer_ids: list[str] | None = None,
+    consumer_group_ids: list[str] | None = None,
     dry_run: bool = False,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    """新增消费者配额规则（AddGatewayQuotaRule）。"""
+    """新增配额规则（AddGatewayQuotaRule）。
+
+    两种主体粒度（AI 网关 2.1.21+ 支持，2.1.23 已实测可用）：
+    - consumer_ids：消费者粒度（subjectType=consumer，默认）
+    - consumer_group_ids：消费组粒度（subjectType=consumer_group）
+    两者互斥，同时传入以消费组为准（云端要求互斥，此处显式防护）。
+    """
     gid = _resolve_gateway_id(gateway_id)
     if not USE_MOCK and not gid:
         raise ValueError("缺少网关配置：ALIYUN_APIG_GATEWAY_ID 或传入 gateway_id")
+    if consumer_ids and consumer_group_ids:
+        raise ValueError("consumer_ids 与 consumer_group_ids 互斥，不能同时传入")
+    subject_type = "consumer_group" if consumer_group_ids else "consumer"
     body: dict[str, Any] = {
         "ruleName": rule_name,
         "quotaDimension": quota_dimension,
@@ -80,8 +90,11 @@ def create_quota_rule(
         "periodType": period_type,
         "windowAlignment": window_alignment,
         "timezone": timezone,
+        "subjectType": subject_type,
     }
-    if consumer_ids:
+    if consumer_group_ids:
+        body["consumerGroupIds"] = consumer_group_ids
+    elif consumer_ids:
         body["consumerIds"] = consumer_ids
     if dry_run:
         body["dryRun"] = True
@@ -169,10 +182,17 @@ def update_quota_rule(
     quota_limit: int | None = None,
     add_ids: list[str] | None = None,
     remove_ids: list[str] | None = None,
+    add_group_ids: list[str] | None = None,
+    remove_group_ids: list[str] | None = None,
     dry_run: bool = False,
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    """编辑配额规则（UpdateGatewayQuotaRule）。"""
+    """编辑配额规则（UpdateGatewayQuotaRule）。
+
+    add_ids/remove_ids：消费者主体（cs-）；add_group_ids/remove_group_ids：
+    消费组主体（csg-，网关 2.1.21+ 支持消费组粒度）。同一次调用内消费者
+    与消费组可混合提交，云端按主体类型分别处理。
+    """
     gid = _resolve_gateway_id(gateway_id)
     if not USE_MOCK and not gid:
         raise ValueError("缺少网关配置：ALIYUN_APIG_GATEWAY_ID 或传入 gateway_id")
@@ -181,10 +201,12 @@ def update_quota_rule(
         body["ruleName"] = rule_name
     if quota_limit is not None:
         body["quotaLimit"] = int(quota_limit)
-    if add_ids:
-        body["addIds"] = add_ids
-    if remove_ids:
-        body["removeIds"] = remove_ids
+    merged_add = list(add_ids or []) + list(add_group_ids or [])
+    merged_remove = list(remove_ids or []) + list(remove_group_ids or [])
+    if merged_add:
+        body["addIds"] = merged_add
+    if merged_remove:
+        body["removeIds"] = merged_remove
     if dry_run:
         body["dryRun"] = True
     if overwrite:

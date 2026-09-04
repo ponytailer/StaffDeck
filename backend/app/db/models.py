@@ -738,6 +738,7 @@ class ApiKeyQuotaRule(SQLModel, table=True):
     quota_limit: int
     period_type: str = "day"  # day / week / month
     external_rule_id: Optional[str] = None  # 阿里云配额规则 ID,如 qr-mock-001
+    subject_type: Optional[str] = "consumer"  # consumer / consumer_group（组粒度 2.1.21+）
     status: str = Field(default="enabled", index=True)
     created_by_user_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)

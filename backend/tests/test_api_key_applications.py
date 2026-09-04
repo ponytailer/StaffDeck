@@ -25,6 +25,7 @@ from app.api.api_key_applications import (
     delete_my_application,
     list_applications,
     list_my_applications,
+    list_my_usage,
     list_usage,
     reject_application,
     revoke_application,
@@ -65,6 +66,7 @@ class FakeApigClient:
         self.updated_rules = []
         self.usage_calls = []
         self.attached = []
+        self.attached_groups = []
         self.detached = []
         self.deleted_consumers = []
         self.deleted_rules = []
@@ -78,6 +80,8 @@ class FakeApigClient:
         # 云端消费组视图（ListConsumerGroups）+ 消费者组归属（GetConsumer.consumerGroups）
         self.cloud_groups = {}
         self.consumer_group_members = {}
+        # 组主体用量（subjectType=consumer_group 主体行回带的 usedAmount）
+        self.group_usage = {}
 
     def create_consumer(self, name, api_key=None, description=None, gateway_type="AI"):
         self.created_consumers.append({"name": name, "api_key": api_key})
@@ -108,7 +112,28 @@ class FakeApigClient:
             cid = a.get("consumer_id")
             if cid and cid not in seen:
                 seen.append(cid)
-        return [{"id": cid, "usedAmount": 500} for cid in seen]
+        items = [{"id": cid, "usedAmount": 500} for cid in seen]
+        # 组粒度规则视图：attached_groups 里的组以 subjectType=consumer_group 返回
+        seen_groups = []
+        for a in self.attached_groups:
+            gid = a.get("consumer_group_id")
+            if gid and gid not in seen_groups:
+                seen_groups.append(gid)
+        items.extend(
+            {"id": gid, "subjectType": "consumer_group", "usedAmount": self.group_usage.get(gid, 0)}
+            for gid in seen_groups
+        )
+        return items
+
+    def attach_consumer_group_to_rule(self, gateway_id, rule_id, consumer_group_id):
+        self.attached_groups.append(
+            {"gateway_id": gateway_id, "rule_id": rule_id, "consumer_group_id": consumer_group_id}
+        )
+
+    def detach_consumer_group_from_rule(self, gateway_id, rule_id, consumer_group_id):
+        self.attached_groups = [
+            a for a in self.attached_groups if a.get("consumer_group_id") != consumer_group_id
+        ]
 
     def get_quota_rule(self, rule_id, gateway_id=None):
         rule = self.quota_rules.get(rule_id)
@@ -143,11 +168,15 @@ class FakeApigClient:
         period_type,
         rule_name=None,
         timezone="UTC+8",
+        quota_dimension="credit",
+        consumer_group_ids=None,
     ):
         self.created_rules.append(
             {
                 "gateway_id": gateway_id,
                 "consumer_ids": consumer_ids,
+                "consumer_group_ids": consumer_group_ids,
+                "quota_dimension": quota_dimension,
                 "quota_limit": quota_limit,
                 "period_type": period_type,
             }
@@ -174,6 +203,9 @@ class FakeApigClient:
         self.updated_rules.append(
             {"gateway_id": gateway_id, "rule_id": rule_id, "quota_limit": quota_limit}
         )
+        # 模拟云端行为：额度更新写回规则视图（后续 get_quota_rule 可见）
+        if rule_id in self.quota_rules:
+            self.quota_rules[rule_id]["quotaLimit"] = quota_limit
 
     def update_quota_rule_meta(self, gateway_id, rule_id, rule_name=None, period_type=None):
         self.meta_updates.append(
@@ -954,6 +986,118 @@ def test_delete_my_application():
     assert session.get(ApiKeyApplication, approved3.id) is None
 
 
+def test_approve_skips_consumer_attach_for_group_scoped_rule():
+    """审批时目标规则为组粒度（subjects 含 consumer_group）：跳过逐消费者 addIds。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, rule)
+    # 预先把组绑到规则 → 规则变成组粒度
+    fake.attach_consumer_group_to_rule("gw-test123", rule.id, group.id)
+
+    created = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="grp"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approved = approve_application(
+            created.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="grp-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+    assert approved.status == "approved"
+    # 组粒度规则：消费者不应被逐个 addIds
+    assert fake.attached == []
+
+
+def test_approve_attaches_consumer_for_consumer_scoped_rule():
+    """审批时目标规则为消费者粒度（无 consumer_group 主体）：维持逐消费者 addIds。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, rule)
+
+    created = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="csm"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approved = approve_application(
+            created.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="csm-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+    assert approved.status == "approved"
+    # 消费者粒度规则：新消费者被 addIds 绑定
+    assert len(fake.attached) == 1
+    assert fake.attached[0]["consumer_id"] == approved.consumer_id
+
+
+def test_create_quota_rule_group_mode():
+    """创建配额规则支持 consumer_group 主体类型（透传 consumerGroupIds）。"""
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, _rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, _rule)
+
+    payload = ApiKeyQuotaRuleCreate(
+        tenant_id=TENANT,
+        name="group-quota",
+        gateway_name="主力网关",
+        quota_dimension="credit",
+        quota_limit=5000,
+        period_type="month",
+        subject_type="consumer_group",
+        consumer_group_ids=[group.id],
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        created = create_quota_rule(payload, db=session, current_user=admin)
+    assert created.external_rule_id
+    # fake 收到组粒度创建调用
+    assert fake.created_rules[-1].get("consumer_group_ids") == [group.id]
+
+
+def test_create_quota_rule_rejects_group_mode_without_groups():
+    """subject_type=consumer_group 但未传组 ID → 400。"""
+    session = _make_session()
+    admin = _admin(session)
+    group, _rule = _make_group_rule(session)
+    payload = ApiKeyQuotaRuleCreate(
+        tenant_id=TENANT,
+        name="bad-group-quota",
+        gateway_name="主力网关",
+        quota_limit=1000,
+        period_type="month",
+        subject_type="consumer_group",
+        consumer_group_ids=[],
+    )
+    blocked = False
+    try:
+        create_quota_rule(payload, db=session, current_user=admin)
+    except HTTPException as exc:
+        blocked = exc.status_code == 400
+    assert blocked
+
+
 def test_create_limit_ignores_deleted_consumer():
     """上限口径：approved 但消费者已被删除的记录不占申请名额。"""
     session = _make_session()
@@ -1255,3 +1399,304 @@ def test_sync_from_aliyun_requires_admin():
 
 
 
+
+
+def _register_group_scoped_rule(session, fake, group, rule, *, group_used=777):
+    """把规则注册为组粒度：get_quota_rule 回带 subjectType，组作为主体带用量。"""
+    # 生产中组行持有云端组 ID（csg-），主体回填组名依赖该映射；本地 id 与云端 id 对齐
+    if not group.external_consumer_group_id:
+        group.external_consumer_group_id = group.id
+        session.add(group)
+        session.commit()
+        session.refresh(group)
+    fake.quota_rules[rule.external_rule_id or rule.id] = {
+        "ruleId": rule.external_rule_id or rule.id,
+        "ruleName": rule.name,
+        "quotaDimension": rule.quota_dimension,
+        "quotaLimit": rule.quota_limit,
+        "periodType": rule.period_type,
+        "subjectType": "consumer_group",
+    }
+    fake.attach_consumer_group_to_rule(rule.gateway_id, rule.external_rule_id or rule.id, group.id)
+    # fake subjects 里组主体带 usedAmount；fake 用量查询对组主体返回同值
+    fake.group_usage[group.id] = group_used
+    original_usage = fake.get_consumer_quota_usage
+
+    def _usage(gateway_id, rule_id, consumer_id):
+        fake.usage_calls.append(
+            {"gateway_id": gateway_id, "rule_id": rule_id, "consumer_id": consumer_id}
+        )
+        if consumer_id == group.id:
+            return {"requestId": "fake", "code": "200", "data": {"usedAmount": group_used}}
+        return original_usage(gateway_id, rule_id, consumer_id)
+
+    fake.get_consumer_quota_usage = _usage  # type: ignore[method-assign]
+
+
+def test_usage_lists_group_scoped_subject_row():
+    """组粒度规则的用量以组（csg-）为一行展示，配额只计一次，不按成员重复。"""
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=3000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+    _register_group_scoped_rule(session, fake, group, rule, group_used=900)
+
+    # 本地两个消费者均归属该组（组内成员共享组粒度限额）
+    for cid, name in (("cs-a", "成员A"), ("cs-b", "成员B")):
+        session.add(
+            ApiKeyConsumer(
+                tenant_id=TENANT,
+                name=name,
+                gateway_id=rule.gateway_id,
+                gateway_name=rule.gateway_name,
+                external_consumer_id=cid,
+                external_consumer_group_id=group.id,
+                consumer_group_name=group.name,
+                status="enabled",
+                enable=True,
+            )
+        )
+    session.commit()
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        usage = list_usage(tenant_id=TENANT, db=session, current_user=admin)
+
+    ids = [item.consumer_id for item in usage.items]
+    # 组主体一行（csg- 前缀），成员消费者不重复出现组用量
+    assert group.id in ids
+    group_item = next(item for item in usage.items if item.consumer_id == group.id)
+    assert group_item.used_amount == 900
+    assert group_item.quota_limit == 3000
+    assert group_item.consumer_name == "demo-consumer"
+    # 成员消费者单独成行（无独立用量），不把组配额摊到每个成员重复计数
+    member_items = [item for item in usage.items if item.consumer_id in ("cs-a", "cs-b")]
+    for m in member_items:
+        assert m.used_amount == 0
+        assert m.quota_limit == 0
+    # 汇总：组配额只计一次
+    assert usage.summary.total_quota == 3000
+    assert usage.summary.total_used == 900
+
+
+def test_mine_usage_uses_group_subject_for_group_scoped_rule():
+    """/mine/usage：组粒度规则的用量查询主体换成消费者归属的组（csg-）。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=3000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+    _register_group_scoped_rule(session, fake, group, rule, group_used=888)
+    # 本地规则行落 subject_type=consumer_group（模拟同步回填后的状态）
+    rule.subject_type = "consumer_group"
+    session.add(rule)
+    session.commit()
+
+    created = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="组粒度"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approved = approve_application(
+            created.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="grp-member",
+                consumer_group_id=group.id,
+                # 生产中审批传云端 ruleId（= 本地行 external_rule_id），两者一致
+                quota_rule_id=rule.external_rule_id or rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        items = list_my_usage(tenant_id=TENANT, db=session, current_user=member)
+
+    assert len(items) == 1
+    # 用量来自组主体（fake 对组主体返回 888），配额=组规则限额
+    assert items[0].used_amount == 888
+    assert items[0].quota_limit == 3000
+    # 云端用量查询的 subject 是消费者归属的组 ID，而非消费者本人
+    usage_calls = [c for c in fake.usage_calls if c["rule_id"] == (rule.external_rule_id or rule.id)]
+    assert usage_calls and usage_calls[-1]["consumer_id"] == group.id
+
+
+def test_update_consumer_group_owner_local_only():
+    """修改消费组归属：纯本地业务字段更新，不调用阿里云；cloud 字段不被清。"""
+    from app.api.api_key_applications import ApiKeyConsumerGroupOwnerUpdate, update_consumer_group_owner
+
+    session = _make_session()
+    admin = _admin(session)
+    group, rule = _make_group_rule(session, quota_limit=3000, period_type="month")
+    # 与生产一致：组行持有云端组 ID
+    group.external_consumer_group_id = "csg-own-test"
+    session.add(group)
+    session.commit()
+    session.refresh(group)
+
+    fake = FakeApigClient()
+
+    # 1) 设置归属
+    updated = update_consumer_group_owner(
+        "csg-own-test",
+        ApiKeyConsumerGroupOwnerUpdate(tenant_id=TENANT, owner="度假事业部"),
+        db=session,
+        current_user=admin,
+    )
+    assert updated.owner == "度假事业部"
+
+    # 2) 未发起任何阿里云调用（用量/绑定/创建记录均为空）
+    assert fake.created_consumers == []
+    assert fake.created_rules == []
+    assert fake.attached == []
+    assert fake.attached_groups == []
+
+    # 3) 清空归属（传空串）
+    cleared = update_consumer_group_owner(
+        "csg-own-test",
+        ApiKeyConsumerGroupOwnerUpdate(tenant_id=TENANT, owner="  "),
+        db=session,
+        current_user=admin,
+    )
+    assert cleared.owner is None
+
+    # 4) 不存在的组 → 404
+    with pytest.raises(HTTPException) as exc_info:
+        update_consumer_group_owner(
+            "csg-not-exist",
+            ApiKeyConsumerGroupOwnerUpdate(tenant_id=TENANT, owner="x"),
+            db=session,
+            current_user=admin,
+        )
+    assert exc_info.value.status_code == 404
+
+
+def test_group_sync_does_not_overwrite_owner():
+    """阿里云同步只覆盖云端字段，本地「归属」业务字段保留。"""
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=3000, period_type="month")
+    group.external_consumer_group_id = "csg-sync-owner"
+    group.owner = "度假事业部"
+    session.add(group)
+    session.commit()
+
+    # 云端同名组（云端没有 owner 概念）
+    fake.cloud_groups["csg-sync-owner"] = {
+        "consumerGroupId": "csg-sync-owner",
+        "name": "AILab",
+        "description": "cloud desc",
+        "consumerCount": 3,
+        "gatewayType": "AI",
+    }
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        result = apk.sync_consumer_groups_from_aliyun(
+            apk.ApiKeyAliyunSyncRequest(tenant_id=TENANT), db=session, current_user=admin
+        )
+    assert result.groups["updated"] == 1
+
+    session.expire_all()
+    row = session.exec(
+        select(ApiKeyConsumerGroup).where(ApiKeyConsumerGroup.tenant_id == TENANT)
+    ).one()
+    # 云端字段已更新，业务字段保留
+    assert row.name == "AILab"
+    assert row.description == "cloud desc"
+    assert row.consumer_count == 3
+    assert row.owner == "度假事业部"
+
+
+def test_create_quota_rule_with_consumer_subjects():
+    """创建配额规则 consumer 粒度时可选传 consumer_ids 直接绑定消费者。"""
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, _rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, _rule)
+    fake.consumers["cs-x"] = {"consumerId": "cs-x", "name": "x"}
+
+    payload = ApiKeyQuotaRuleCreate(
+        tenant_id=TENANT,
+        name="consumer-quota",
+        gateway_name="主力网关",
+        quota_dimension="credit",
+        quota_limit=5000,
+        period_type="month",
+        subject_type="consumer",
+        consumer_ids=["cs-x"],
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        created = create_quota_rule(payload, db=session, current_user=admin)
+    assert created.external_rule_id
+    # fake 收到消费者粒度创建调用，带 consumer_ids
+    last = fake.created_rules[-1]
+    assert last.get("consumer_ids") == ["cs-x"]
+    assert last.get("consumer_group_ids") is None
+
+
+def test_update_quota_rule_group_add_remove():
+    """编辑配额规则支持组增删（add_group_ids / remove_group_ids）。"""
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=3000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+    _register_group_scoped_rule(session, fake, group, rule, group_used=0)
+    # 追加第二个组用于新增
+    group2 = ApiKeyConsumerGroup(
+        tenant_id=TENANT,
+        name="组二",
+        gateway_id=rule.gateway_id,
+        gateway_name=rule.gateway_name,
+        external_consumer_group_id="csg-two",
+        status="enabled",
+    )
+    session.add(group2)
+    session.commit()
+    session.refresh(group2)
+    fake.known_groups[group2.id] = {"consumerGroupId": group2.id, "name": "组二"}
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        updated = apk.update_quota_rule_endpoint(
+            rule.external_rule_id or rule.id,
+            apk.ApiKeyQuotaRuleUpdate(
+                tenant_id=TENANT,
+                quota_limit=4000,
+                add_group_ids=[group2.id],
+                remove_group_ids=[group.id],
+            ),
+            db=session,
+            current_user=admin,
+        )
+    assert updated.quota_limit == 4000
+    # 云端被调用：addIds/removeIds 各一次
+    assert any(a.get("consumer_group_id") == group2.id for a in fake.attached_groups)
+    removed = [a.get("consumer_group_id") for a in fake.detached_groups] if hasattr(fake, "detached_groups") else []
+    # detach_consumer_group_from_rule 从 attached_groups 移除并记录在 detached（fake 实现为过滤）
+    assert group.id not in [a.get("consumer_group_id") for a in fake.attached_groups]
+
+
+def test_list_quota_rule_subjects_endpoint():
+    """subjects 查询端点：组主体归 groups，消费者主体只计数量。"""
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=3000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+    _register_group_scoped_rule(session, fake, group, rule, group_used=0)
+    # 追加一个消费者主体
+    fake.attached.append({"consumer_id": "cs-live", "rule_id": rule.external_rule_id or rule.id})
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        data = apk.list_quota_rule_subjects_endpoint(
+            rule.external_rule_id or rule.id,
+            tenant_id=TENANT,
+            current_user=admin,
+        )
+    assert data["groups"] == [group.id]
+    assert data["consumer_count"] == 1

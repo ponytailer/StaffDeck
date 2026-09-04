@@ -5,6 +5,7 @@ import {
   ChevronRight,
   KeyRound,
   LoaderCircle,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -119,6 +120,7 @@ type QuotaRule = {
   quota_limit: number;
   period_type: string;
   external_rule_id: string | null;
+  subject_type?: string | null; // consumer（按消费者）/ consumer_group（按消费组整组）
   status: string;
   created_by_user_id: string | null;
   created_at: string;
@@ -314,6 +316,9 @@ export default function ApiKeyApprovalsPage({
   const [qrDimension, setQrDimension] = useState<'token' | 'credit'>('token');
   const [qrLimit, setQrLimit] = useState('');
   const [qrPeriod, setQrPeriod] = useState<'day' | 'week' | 'month'>('month');
+  const [qrSubjectType, setQrSubjectType] = useState<'consumer' | 'consumer_group'>('consumer');
+  const [qrGroupIds, setQrGroupIds] = useState<string[]>([]);
+  const [qrConsumerIds, setQrConsumerIds] = useState<string[]>([]);
   const [qrSubmitting, setQrSubmitting] = useState(false);
 
   // Quota rule edit dialog
@@ -321,6 +326,9 @@ export default function ApiKeyApprovalsPage({
   const [editRuleName, setEditRuleName] = useState('');
   const [editRuleLimit, setEditRuleLimit] = useState('');
   const [editRulePeriod, setEditRulePeriod] = useState<'day' | 'week' | 'month'>('month');
+  const [editRuleGroups, setEditRuleGroups] = useState<string[]>([]); // 当前绑定的组（云端回显）
+  const [editRuleOrigGroups, setEditRuleOrigGroups] = useState<string[]>([]); // 打开时快照，用于算增删
+  const [editRuleGroupsLoading, setEditRuleGroupsLoading] = useState(false);
   const [editRuleSubmitting, setEditRuleSubmitting] = useState(false);
 
   // Adjust quota dialog (for usage tab)
@@ -333,6 +341,11 @@ export default function ApiKeyApprovalsPage({
   const [consumerQuotaRuleId, setConsumerQuotaRuleId] = useState('');
   const [consumerQuotaSubmitting, setConsumerQuotaSubmitting] = useState(false);
   const [togglingConsumerId, setTogglingConsumerId] = useState<string | null>(null);
+
+  // Consumer group owner edit dialog（归属=业务字段，仅本地保存，不调阿里云）
+  const [editOwnerTarget, setEditOwnerTarget] = useState<ConsumerGroup | null>(null);
+  const [editOwnerValue, setEditOwnerValue] = useState('');
+  const [editOwnerSubmitting, setEditOwnerSubmitting] = useState(false);
 
   // ------------------------------------------------------------------------
   // Data loading
@@ -562,6 +575,9 @@ export default function ApiKeyApprovalsPage({
         quota_dimension: qrDimension,
         quota_limit: limit,
         period_type: qrPeriod,
+        subject_type: qrSubjectType,
+        consumer_ids: qrSubjectType === 'consumer' ? qrConsumerIds : [],
+        consumer_group_ids: qrSubjectType === 'consumer_group' ? qrGroupIds : [],
       });
       notify.success('配额规则创建成功');
       setQrOpen(false);
@@ -570,6 +586,9 @@ export default function ApiKeyApprovalsPage({
       setQrDimension('token');
       setQrLimit('');
       setQrPeriod('month');
+      setQrSubjectType('consumer');
+      setQrGroupIds([]);
+      setQrConsumerIds([]);
       await loadRules();
     } catch (error) {
       notify.error(error instanceof ApiError ? error.message : '创建失败');
@@ -587,11 +606,16 @@ export default function ApiKeyApprovalsPage({
     }
     setEditRuleSubmitting(true);
     try {
+      // 对比打开弹窗时的快照，计算需要增删的组
+      const addGroupIds = editRuleGroups.filter((id) => !editRuleOrigGroups.includes(id));
+      const removeGroupIds = editRuleOrigGroups.filter((id) => !editRuleGroups.includes(id));
       await api.put<QuotaRule>(`/api/enterprise/api-key-applications/quota-rules/${editRule.id}`, {
         tenant_id: TENANT_ID,
         name: editRuleName.trim() || undefined,
         quota_limit: limit,
         period_type: editRulePeriod,
+        add_group_ids: addGroupIds,
+        remove_group_ids: removeGroupIds,
       });
       notify.success('配额规则已更新');
       setEditRule(null);
@@ -603,7 +627,52 @@ export default function ApiKeyApprovalsPage({
     }
   }
 
+  // 编辑弹窗打开时回显当前绑定的消费组（云端 subjects，一律拉取——
+  // 消费者粒度规则也可能在云端混绑组主体，不能只看本地 subject_type）
+  async function openEditRule(row: QuotaRule) {
+    setEditRule(row);
+    setEditRuleName(row.name);
+    setEditRuleLimit(String(row.quota_limit));
+    setEditRulePeriod(row.period_type as 'day' | 'week' | 'month');
+    setEditRuleGroups([]);
+    setEditRuleOrigGroups([]);
+    setEditRuleGroupsLoading(true);
+    try {
+      const data = await api.get<{ groups: string[]; consumer_count: number }>(
+        `/api/enterprise/api-key-applications/quota-rules/${row.id}/subjects?tenant_id=${TENANT_ID}`,
+      );
+      setEditRuleGroups(data.groups);
+      setEditRuleOrigGroups(data.groups);
+    } catch {
+      // 回显失败不阻塞编辑，提交时按空快照处理
+    } finally {
+      setEditRuleGroupsLoading(false);
+    }
+  }
+
   // -- Consumer actions --
+
+  async function submitGroupOwner() {
+    if (!editOwnerTarget) return;
+    setEditOwnerSubmitting(true);
+    try {
+      const updated = await api.put<ConsumerGroup>(
+        `/api/enterprise/api-key-applications/consumer-groups/${editOwnerTarget.external_consumer_group_id || editOwnerTarget.id}/owner`,
+        {
+          tenant_id: TENANT_ID,
+          owner: editOwnerValue.trim() || null,
+        },
+      );
+      // 局部更新，避免整表刷新触发阿里云隐式同步
+      setGroups((prev) => prev.map((g) => (g.id === updated.id ? updated : g)));
+      notify.success('归属已更新');
+      setEditOwnerTarget(null);
+    } catch (error) {
+      notify.error(error instanceof ApiError ? error.message : '更新失败');
+    } finally {
+      setEditOwnerSubmitting(false);
+    }
+  }
 
   async function toggleConsumer(consumer: Consumer, enable: boolean) {
     setTogglingConsumerId(consumer.id);
@@ -974,13 +1043,27 @@ export default function ApiKeyApprovalsPage({
     {
       key: 'owner',
       title: '归属',
-      width: 130,
-      render: (row) =>
-        row.owner ? (
-          <span className="block truncate text-[12px] text-[#464c5e]">{row.owner}</span>
-        ) : (
-          <span className="text-[12px] text-[#c0c6d4]">—</span>
-        ),
+      width: 170,
+      render: (row) => (
+        <div className="flex min-w-0 items-center justify-between gap-[6px]">
+          {row.owner ? (
+            <span className="truncate text-[12px] text-[#464c5e]" title={row.owner}>{row.owner}</span>
+          ) : (
+            <span className="truncate text-[12px] text-[#c0c6d4]">—</span>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setEditOwnerTarget(row);
+              setEditOwnerValue(row.owner ?? '');
+            }}
+            className="shrink-0 rounded-[6px] p-[4px] text-[#a3aaba] transition-colors hover:bg-[#f3f4f6] hover:text-[#464c5e]"
+            title="修改归属"
+          >
+            <Pencil className="size-[13px]" />
+          </button>
+        </div>
+      ),
     },
     {
       key: 'gateway',
@@ -1105,6 +1188,21 @@ export default function ApiKeyApprovalsPage({
       render: (row) => <span className="text-[12px] text-[#464c5e]">{row.quota_dimension}</span>,
     },
     {
+      key: 'subject_type',
+      title: '主体',
+      width: 88,
+      render: (row) =>
+        row.subject_type === 'consumer_group' ? (
+          <span className="inline-flex h-[20px] items-center rounded-[6px] bg-[#eef2ff] px-[8px] text-[11px] font-medium text-[#4f46e5]">
+            消费组
+          </span>
+        ) : (
+          <span className="inline-flex h-[20px] items-center rounded-[6px] bg-[#f3f4f6] px-[8px] text-[11px] font-medium text-[#6b7280]">
+            消费者
+          </span>
+        ),
+    },
+    {
       key: 'limit',
       title: '额度',
       width: 100,
@@ -1143,12 +1241,7 @@ export default function ApiKeyApprovalsPage({
           <div className="flex items-center justify-end gap-[8px]">
             <UIButton
               disabled={busy}
-              onClick={() => {
-                setEditRule(row);
-                setEditRuleName(row.name);
-                setEditRuleLimit(String(row.quota_limit));
-                setEditRulePeriod(row.period_type as 'day' | 'week' | 'month');
-              }}
+              onClick={() => void openEditRule(row)}
               className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
             >
               <SlidersHorizontal className="size-[13px]" />
@@ -1878,6 +1971,82 @@ export default function ApiKeyApprovalsPage({
             </label>
           </div>
           <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">主体类型</span>
+            <Select value={qrSubjectType} onValueChange={(v) => setQrSubjectType(v as 'consumer' | 'consumer_group')}>
+              <SelectTrigger className="h-[34px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="consumer">按消费者分配（逐个绑定）</SelectItem>
+                <SelectItem value="consumer_group">按消费组分配（整组共享）</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+          {qrSubjectType === 'consumer_group' && (
+            <div className="flex flex-col gap-[6px]">
+              <span className="text-[12px] font-medium text-[#464c5e]">绑定消费组</span>
+              {groups.length === 0 ? (
+                <p className="text-[12px] text-[#c0c6d4]">暂无消费组，请先在消费组页创建</p>
+              ) : (
+                <div className="flex max-h-[120px] flex-col gap-[4px] overflow-y-auto rounded-[8px] border border-[#eceef1] p-[8px]">
+                  {groups.map((g) => (
+                    <label key={g.id} className="flex items-center gap-[8px] text-[12px] text-[#464c5e]">
+                      <input
+                        type="checkbox"
+                        checked={qrGroupIds.includes(g.id)}
+                        onChange={(e) => {
+                          setQrGroupIds((prev) =>
+                            e.target.checked ? [...prev, g.id] : prev.filter((id) => id !== g.id),
+                          );
+                        }}
+                        className="size-[14px] accent-[#18181a]"
+                      />
+                      {g.name}
+                    </label>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] leading-[16px] text-[#858b9c]">
+                组粒度配额（网关 2.1.21+）：整组共享该规则限额，成员入组即生效，无需逐个绑定。
+              </p>
+            </div>
+          )}
+          {qrSubjectType === 'consumer' && (
+            <div className="flex flex-col gap-[6px]">
+              <span className="text-[12px] font-medium text-[#464c5e]">
+                绑定消费者<span className="ml-[4px] font-normal text-[#a3aaba]">（可选，创建后也可在审批时绑定）</span>
+              </span>
+              {consumers.length === 0 ? (
+                <p className="text-[12px] text-[#c0c6d4]">暂无消费者</p>
+              ) : (
+                <div className="flex max-h-[120px] flex-col gap-[4px] overflow-y-auto rounded-[8px] border border-[#eceef1] p-[8px]">
+                  {consumers.map((c) => (
+                    <label key={c.id} className="flex items-center gap-[8px] text-[12px] text-[#464c5e]">
+                      <input
+                        type="checkbox"
+                        checked={qrConsumerIds.includes(c.external_consumer_id || c.id)}
+                        onChange={(e) => {
+                          const cid = c.external_consumer_id || c.id;
+                          setQrConsumerIds((prev) =>
+                            e.target.checked ? [...prev, cid] : prev.filter((id) => id !== cid),
+                          );
+                        }}
+                        className="size-[14px] accent-[#18181a]"
+                      />
+                      <span className="truncate">{c.name}</span>
+                      {c.consumer_group_name && (
+                        <span className="truncate text-[11px] text-[#a3aaba]">{c.consumer_group_name}</span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] leading-[16px] text-[#858b9c]">
+                消费者粒度：每个消费者独立占用该规则限额。可留空创建后再绑定。
+              </p>
+            </div>
+          )}
+          <label className="flex flex-col gap-[6px]">
             <span className="text-[12px] font-medium text-[#464c5e]">配额上限</span>
             <Input
               type="number"
@@ -1908,6 +2077,51 @@ export default function ApiKeyApprovalsPage({
             >
               {qrSubmitting && <LoaderCircle className="size-[14px] animate-spin" />}
               创建
+            </UIButton>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Consumer group owner edit dialog */}
+      <Dialog open={Boolean(editOwnerTarget)} onOpenChange={(open) => !open && setEditOwnerTarget(null)}>
+        <DialogContent
+          aria-describedby={undefined}
+          className="flex w-[calc(100%-2rem)] flex-col gap-[14px] rounded-[14px] px-[20px] py-[16px] sm:max-w-[440px]"
+        >
+          <DialogTitle className="text-[15px] font-medium text-[#18181a]">修改消费组归属</DialogTitle>
+          <p className="text-[12px] leading-[18px] text-[#757f9c]">
+            消费组：{editOwnerTarget?.name}
+            {editOwnerTarget?.gateway_name ? ` · 网关 ${editOwnerTarget.gateway_name}` : ''}
+          </p>
+          <label className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">归属</span>
+            <Input
+              value={editOwnerValue}
+              onChange={(e) => setEditOwnerValue(e.target.value)}
+              disabled={editOwnerSubmitting}
+              placeholder="填写业务归属方，留空表示清空"
+              className="h-[34px] text-[12px]"
+            />
+          </label>
+          <p className="text-[11px] leading-[16px] text-[#a3aaba]">
+            归属为业务记录字段，仅保存在本系统，不会同步至阿里云。
+          </p>
+          <div className="flex items-center justify-end gap-[8px]">
+            <UIButton
+              variant="outline"
+              disabled={editOwnerSubmitting}
+              onClick={() => setEditOwnerTarget(null)}
+              className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:bg-[#f6f6f6]"
+            >
+              取消
+            </UIButton>
+            <UIButton
+              disabled={editOwnerSubmitting}
+              onClick={() => void submitGroupOwner()}
+              className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] text-[14px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
+            >
+              {editOwnerSubmitting && <LoaderCircle className="size-[14px] animate-spin" />}
+              保存
             </UIButton>
           </div>
         </DialogContent>
@@ -1953,6 +2167,40 @@ export default function ApiKeyApprovalsPage({
               </SelectContent>
             </Select>
           </label>
+          <div className="flex flex-col gap-[6px]">
+            <span className="text-[12px] font-medium text-[#464c5e]">绑定消费组</span>
+            {editRuleGroupsLoading ? (
+              <p className="flex items-center gap-[6px] text-[12px] text-[#858b9c]">
+                <LoaderCircle className="size-[13px] animate-spin" /> 加载绑定信息…
+              </p>
+            ) : groups.length === 0 ? (
+              <p className="text-[12px] text-[#c0c6d4]">暂无消费组</p>
+            ) : (
+              <div className="flex max-h-[120px] flex-col gap-[4px] overflow-y-auto rounded-[8px] border border-[#eceef1] p-[8px]">
+                {groups.map((g) => {
+                  const gid = g.external_consumer_group_id || g.id;
+                  return (
+                    <label key={g.id} className="flex items-center gap-[8px] text-[12px] text-[#464c5e]">
+                      <input
+                        type="checkbox"
+                        checked={editRuleGroups.includes(gid)}
+                        onChange={(e) => {
+                          setEditRuleGroups((prev) =>
+                            e.target.checked ? [...prev, gid] : prev.filter((id) => id !== gid),
+                          );
+                        }}
+                        className="size-[14px] accent-[#18181a]"
+                      />
+                      {g.name}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <p className="text-[11px] leading-[16px] text-[#858b9c]">
+              勾选/取消勾选保存后生效（新增或移出规则）。消费者主体的绑定关系不在本页调整，请到阿里云控制台操作。
+            </p>
+          </div>
           <div className="flex items-center justify-end gap-[8px]">
             <UIButton
               variant="outline"

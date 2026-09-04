@@ -85,12 +85,21 @@ class AliyunApigClient:
         rule_name: str | None = None,
         timezone: str = "UTC+8",
         quota_dimension: str = "credit",
+        consumer_group_ids: list[str] | None = None,
     ) -> str:
-        """为消费者创建 FinOps 配额规则。先 dryRun 预检, 再正式提交。返回 ruleId。
+        """创建 FinOps 配额规则。先 dryRun 预检, 再正式提交。返回 ruleId。
+
+        两种主体粒度（互斥）：
+        - consumer_ids：消费者粒度（cs- 列表）
+        - consumer_group_ids：消费组粒度（csg- 列表，AI 网关 2.1.21+ 支持，
+          整组共享规则限额，组成员入组即生效，无需逐个绑定）
 
         quota_dimension 必须在 token / credit 之间显式选择并透传到阿里云
         （AI 网关现网规则使用的维度为 credit，此前硬编码 token 会导致维度不符）。
         """
+        if consumer_ids and consumer_group_ids:
+            raise AliyunApigError("consumer_ids 与 consumer_group_ids 互斥，不能同时传入")
+        group_mode = bool(consumer_group_ids)
         preview = quota.create_quota_rule(
             rule_name or "quota-rule",
             quota_dimension,
@@ -98,7 +107,8 @@ class AliyunApigClient:
             gateway_id=gateway_id,
             period_type=period_type,
             timezone=timezone,
-            consumer_ids=consumer_ids,
+            consumer_ids=None if group_mode else consumer_ids,
+            consumer_group_ids=consumer_group_ids,
             dry_run=True,
         )
         preview_data = preview.get("data", preview) if isinstance(preview, dict) else preview
@@ -112,7 +122,8 @@ class AliyunApigClient:
             gateway_id=gateway_id,
             period_type=period_type,
             timezone=timezone,
-            consumer_ids=consumer_ids,
+            consumer_ids=None if group_mode else consumer_ids,
+            consumer_group_ids=consumer_group_ids,
             dry_run=False,
         )
         committed_data = committed.get("data", committed) if isinstance(committed, dict) else committed
@@ -206,6 +217,27 @@ class AliyunApigClient:
     ) -> None:
         """把消费者移出配额规则（UpdateGatewayQuotaRule removeIds）。"""
         quota.update_quota_rule(rule_id, gateway_id=gateway_id, remove_ids=[consumer_id])
+
+    def attach_consumer_group_to_rule(
+        self,
+        gateway_id: str,
+        rule_id: str,
+        consumer_group_id: str,
+    ) -> None:
+        """把消费组加入配额规则限流范围（UpdateGatewayQuotaRule addIds 传组 ID）。
+
+        消费组粒度配额（网关 2.1.21+）：整组共享规则限额，组成员入组即生效。
+        """
+        quota.update_quota_rule(rule_id, gateway_id=gateway_id, add_group_ids=[consumer_group_id])
+
+    def detach_consumer_group_from_rule(
+        self,
+        gateway_id: str,
+        rule_id: str,
+        consumer_group_id: str,
+    ) -> None:
+        """把消费组移出配额规则（UpdateGatewayQuotaRule removeIds 传组 ID）。"""
+        quota.update_quota_rule(rule_id, gateway_id=gateway_id, remove_group_ids=[consumer_group_id])
 
     def update_quota_rule_meta(
         self,

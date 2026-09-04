@@ -287,6 +287,25 @@ def _sync_quota_rules_to_local(
             )
             counts["created"] += 1
 
+    # 回填主体粒度（consumer / consumer_group）：ListGatewayQuotaRules 不返回
+    # subjectType，需按规则单独调 GetGatewayQuotaRule；只查新增行与存量空值行，
+    # 查询失败按消费者粒度兜底（兼容旧行为），成功后落库避免下次重复调用。
+    rows_needing_subject = [
+        row
+        for row in list(existing.values())
+        + [r for r in db.new if isinstance(r, ApiKeyQuotaRule) and r.external_rule_id]
+        if row.external_rule_id and not row.subject_type
+    ]
+    if rows_needing_subject:
+        for row in rows_needing_subject:
+            try:
+                detail = client.get_quota_rule(row.external_rule_id, gateway_id=gateway.gateway_id)
+            except (AliyunApigError, RuntimeError, ValueError):
+                row.subject_type = row.subject_type or "consumer"
+                continue
+            row.subject_type = detail.get("subjectType") or "consumer"
+            row.updated_at = now
+
     # 完整镜像模式：云端已删除的配额规则本地同步移除
     if mirror:
         for rule_id, row in existing.items():
@@ -351,6 +370,7 @@ def _qr_from_local(row: ApiKeyQuotaRule) -> ApiKeyQuotaRuleRead:
         quota_limit=row.quota_limit,
         period_type=row.period_type,
         external_rule_id=row.external_rule_id,
+        subject_type=row.subject_type or "consumer",
         status=row.status,
         created_by_user_id=row.created_by_user_id,
         created_at=row.created_at.isoformat() if row.created_at else None,
@@ -462,6 +482,9 @@ class ApiKeyQuotaRuleCreate(BaseModel):
     quota_dimension: str = "credit"  # token / credit
     quota_limit: int  # 配额上限
     period_type: str = "month"  # day / week / month
+    subject_type: str = "consumer"  # consumer（按消费者逐个绑定）/ consumer_group（按消费组整组绑定）
+    consumer_ids: list[str] = []  # subject_type=consumer 时可选：创建时直接绑定的消费者（cs-）
+    consumer_group_ids: list[str] = []  # subject_type=consumer_group 时生效
     description: str | None = None
     owner: str | None = None  # 业务归属（非阿里云字段）
 
@@ -471,6 +494,9 @@ class ApiKeyQuotaRuleUpdate(BaseModel):
     name: str | None = None
     quota_limit: int | None = None
     period_type: str | None = None
+    # 绑定消费组增删（组粒度主体）；消费者主体数量可能很多，改消费者请到阿里云控制台
+    add_group_ids: list[str] = []
+    remove_group_ids: list[str] = []
 
 
 class ApiKeyQuotaRuleRead(BaseModel):
@@ -483,6 +509,7 @@ class ApiKeyQuotaRuleRead(BaseModel):
     quota_limit: int
     period_type: str
     external_rule_id: str | None
+    subject_type: str | None = None  # consumer / consumer_group（组粒度整组共享限额）
     status: str
     created_by_user_id: str | None
     created_at: str
@@ -668,6 +695,44 @@ def list_consumer_groups(
     return [_cg_from_local(row) for row in rows]
 
 
+class ApiKeyConsumerGroupOwnerUpdate(BaseModel):
+    """修改消费组「归属」。归属是纯业务字段（本地记录），不联动阿里云。"""
+
+    tenant_id: str
+    owner: str | None = None  # 传空表示清空归属
+
+
+@router.put("/consumer-groups/{group_id}/owner", response_model=ApiKeyConsumerGroupRead)
+def update_consumer_group_owner(
+    group_id: str,
+    request: ApiKeyConsumerGroupOwnerUpdate,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiKeyConsumerGroupRead:
+    """修改消费组「归属」（业务数据）：仅更新本地记录，不调用阿里云 API。
+
+    group_id 优先按云端消费组 ID（csg-）匹配，兼容纯本地记录的主键。
+    阿里云同步只覆盖云端字段（名称/描述/成员数），不会覆盖归属。
+    """
+    ensure_tenant_admin(request.tenant_id, current_user)
+    row = db.exec(
+        select(ApiKeyConsumerGroup).where(
+            ApiKeyConsumerGroup.tenant_id == request.tenant_id,
+            ApiKeyConsumerGroup.external_consumer_group_id == group_id,
+        )
+    ).first()
+    if row is None:
+        row = db.get(ApiKeyConsumerGroup, group_id)
+        if row is None or row.tenant_id != request.tenant_id:
+            raise HTTPException(status_code=404, detail="消费组不存在")
+    row.owner = (request.owner or "").strip() or None
+    row.updated_at = utc_now()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _cg_from_local(row)
+
+
 class ApiKeyAliyunSyncRequest(BaseModel):
     tenant_id: str
 
@@ -785,14 +850,48 @@ def consumer_change_quota(
     if not gateways:
         raise HTTPException(status_code=400, detail="后端未配置网关（ALIYUN_APIG_GATEWAYS）")
     gateway = gateways[0]
+    # 目标规则若是消费组粒度（subjectType=consumer_group），消费者换绑应转成
+    # 把消费者所在消费组 addIds 到该规则（或提示走组粒度）；此处先查 subjects
     try:
-        client.attach_consumer_to_rule(
-            gateway_id=gateway.gateway_id,
-            rule_id=request.quota_rule_id,
-            consumer_id=consumer_id,
+        rule_is_group_scoped = any(
+            s.get("subjectType") == "consumer_group"
+            for s in client.list_quota_rule_subjects(
+                request.quota_rule_id, gateway_id=gateway.gateway_id
+            )
         )
-    except (AliyunApigError, RuntimeError) as exc:
-        raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+    except (AliyunApigError, RuntimeError):
+        rule_is_group_scoped = False
+    if rule_is_group_scoped:
+        # 组粒度规则：把消费者归属的消费组绑到规则（找不到归属组则报错）
+        consumer_row = db.exec(
+            select(ApiKeyConsumer).where(
+                ApiKeyConsumer.tenant_id == request.tenant_id,
+                ApiKeyConsumer.external_consumer_id == consumer_id,
+            )
+        ).first()
+        group_id = consumer_row.external_consumer_group_id if consumer_row else None
+        if not group_id:
+            raise HTTPException(
+                status_code=409,
+                detail="该配额规则为消费组粒度，且消费者未归属任何消费组，无法绑定；请先将其加入消费组",
+            )
+        try:
+            client.attach_consumer_group_to_rule(
+                gateway_id=gateway.gateway_id,
+                rule_id=request.quota_rule_id,
+                consumer_group_id=group_id,
+            )
+        except (AliyunApigError, RuntimeError) as exc:
+            raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+    else:
+        try:
+            client.attach_consumer_to_rule(
+                gateway_id=gateway.gateway_id,
+                rule_id=request.quota_rule_id,
+                consumer_id=consumer_id,
+            )
+        except (AliyunApigError, RuntimeError) as exc:
+            raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
 
     row = db.exec(
         select(ApiKeyConsumer).where(
@@ -854,17 +953,29 @@ def create_quota_rule(
         )
     if request.quota_dimension not in _VALID_DIMENSIONS:
         raise HTTPException(status_code=400, detail="quota_dimension 必须是 token / credit 之一")
+    if request.subject_type not in ("consumer", "consumer_group"):
+        raise HTTPException(status_code=400, detail="subject_type 必须是 consumer / consumer_group 之一")
+    if request.subject_type == "consumer_group" and not request.consumer_group_ids:
+        raise HTTPException(status_code=400, detail="subject_type=consumer_group 时必须提供 consumer_group_ids")
     client = _require_apig_client("创建配额规则")
     try:
-        # 维度必须透传：AI 网关现网规则使用 credit，此前硬编码 token 会导致维度不符
+        # 两种主体粒度（AI 网关 2.1.21+ 支持消费组粒度，2.1.23 可用）：
+        # - consumer：按消费者逐个绑定（consumerIds，可选——不传则创建空规则，
+        #   后续审批/阿里云控制台再绑）
+        # - consumer_group：按消费组整组绑定（consumerGroupIds，与 consumerIds 互斥）
         rule_id = client.add_consumer_quota_rule(
             gateway_id=gateway.gateway_id,
-            consumer_ids=[],
+            consumer_ids=(
+                request.consumer_ids if request.subject_type == "consumer" else []
+            ),
             quota_limit=request.quota_limit,
             period_type=request.period_type,
             rule_name=request.name,
             timezone="UTC+8",
             quota_dimension=request.quota_dimension,
+            consumer_group_ids=(
+                request.consumer_group_ids if request.subject_type == "consumer_group" else None
+            ),
         )
     except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
@@ -879,6 +990,7 @@ def create_quota_rule(
         quota_limit=request.quota_limit,
         period_type=request.period_type,
         external_rule_id=rule_id,
+        subject_type=request.subject_type,
         created_by_user_id=current_user.id,
     )
     db.add(row)
@@ -946,6 +1058,15 @@ def update_quota_rule_endpoint(
                     else current.get("periodType")
                 ),
             )
+        # 绑定消费组增删（组粒度主体；消费者主体请到阿里云控制台调整）
+        for gid in request.add_group_ids:
+            client.attach_consumer_group_to_rule(
+                gateway_id=gateway.gateway_id, rule_id=rule_id, consumer_group_id=gid
+            )
+        for gid in request.remove_group_ids:
+            client.detach_consumer_group_from_rule(
+                gateway_id=gateway.gateway_id, rule_id=rule_id, consumer_group_id=gid
+            )
     except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
 
@@ -955,12 +1076,13 @@ def update_quota_rule_endpoint(
             name=request.name or current.get("ruleName") or "",
             gateway_id=gateway.gateway_id,
             gateway_name=gateway.name,
-            quota_dimension=current.get("quotaDimension") or "credit",
-            quota_limit=request.quota_limit or int(current.get("quotaLimit") or 0),
-            period_type=request.period_type or current.get("periodType") or "day",
-            external_rule_id=rule_id,
-            created_by_user_id=current_user.id,
-        )
+        quota_dimension=current.get("quotaDimension") or "credit",
+        quota_limit=request.quota_limit or int(current.get("quotaLimit") or 0),
+        period_type=request.period_type or current.get("periodType") or "day",
+        external_rule_id=rule_id,
+        subject_type=current.get("subjectType") or "consumer",
+        created_by_user_id=current_user.id,
+    )
     if request.name is not None:
         row.name = request.name
     if request.quota_limit is not None:
@@ -977,6 +1099,39 @@ def update_quota_rule_endpoint(
     except (AliyunApigError, RuntimeError):
         detail = current
     return _qr_read_live(detail, tenant_id=request.tenant_id, gateway=gateway, local=row)
+
+
+@router.get("/quota-rules/{rule_id}/subjects")
+def list_quota_rule_subjects_endpoint(
+    rule_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """查询配额规则当前绑定的主体（编辑弹窗回显）。
+
+    返回 {"groups": [csg-...], "consumer_count": n}：仅回显消费组主体
+    （消费者数量可能很多，编辑端不展示，去阿里云控制台调整）。
+    """
+    ensure_tenant_admin(tenant_id, current_user)
+    client = _require_apig_client("查询配额规则主体")
+    gateways = get_gateway_configs()
+    if not gateways:
+        raise HTTPException(status_code=400, detail="后端未配置网关（ALIYUN_APIG_GATEWAYS）")
+    gateway = gateways[0]
+    try:
+        subjects = client.list_quota_rule_subjects(rule_id, gateway_id=gateway.gateway_id)
+    except (AliyunApigError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+    groups: list[str] = []
+    consumer_count = 0
+    for subj in subjects if isinstance(subjects, list) else []:
+        if subj.get("subjectType") == "consumer_group":
+            sid = subj.get("id") or ""
+            if sid and sid not in groups:
+                groups.append(sid)
+        else:
+            consumer_count += 1
+    return {"groups": groups, "consumer_count": consumer_count}
 
 # ============ 审批/申请/吊销/用量 端点 ============
 
@@ -1014,6 +1169,7 @@ def _qr_read_live(
         quota_limit=int(item.get("quotaLimit") or 0),
         period_type=item.get("periodType") or "day",
         external_rule_id=rule_id,
+        subject_type=item.get("subjectType") or "consumer",
         status=item.get("ruleStatus") or "enabled",
         created_by_user_id=(local.created_by_user_id if local else None),
         created_at=_ms_to_naive_iso(item.get("createTimestamp")),
@@ -1146,16 +1302,56 @@ def list_my_usage(
 
     month = _current_month()
     client = get_apig_client()
+
+    # 组粒度规则（subjectType=consumer_group，2.1.23）：用量主体是消费组 csg-
+    # 而非消费者 cs-，实时查询需换用消费者归属的组 ID；组内成员共享规则限额
+    rule_subject_map: dict[str, str] = {}  # quota_rule_id -> subject_type
+    rule_ids = {r.quota_rule_id for r in rows if r.quota_rule_id}
+    if rule_ids:
+        for rr in db.exec(
+            select(ApiKeyQuotaRule).where(
+                ApiKeyQuotaRule.tenant_id == tenant_id,
+                ApiKeyQuotaRule.external_rule_id.in_(rule_ids),
+            )
+        ).all():
+            if rr.external_rule_id:
+                rule_subject_map[rr.external_rule_id] = rr.subject_type or "consumer"
+
+    # 消费者 -> 归属消费组（组粒度用量查询的映射依据）
+    consumer_group_map: dict[str, tuple[str | None, str | None]] = {}
+    consumer_ids_all = {r.consumer_id for r in rows if r.consumer_id}
+    if consumer_ids_all:
+        for c in db.exec(
+            select(ApiKeyConsumer).where(ApiKeyConsumer.tenant_id == tenant_id)
+        ).all():
+            if c.external_consumer_id:
+                consumer_group_map[c.external_consumer_id] = (
+                    c.external_consumer_group_id,
+                    c.consumer_group_name,
+                )
+
     items: list[ApiKeyApplicationUsageItem] = []
     for row in rows:
         quota_limit = int(row.quota_limit or 0)
         used_amount = 0
-        if client and row.gateway_id and row.quota_rule_id and row.consumer_id:
+        rule_subject_type = rule_subject_map.get(row.quota_rule_id or "", "consumer")
+        subject_id = row.consumer_id
+        subject_name = row.consumer_name
+        if (
+            rule_subject_type == "consumer_group"
+            and row.consumer_id
+            and row.consumer_id in consumer_group_map
+        ):
+            group_id, group_name = consumer_group_map[row.consumer_id]
+            if group_id:
+                subject_id = group_id
+                subject_name = group_name or group_id
+        if client and row.gateway_id and row.quota_rule_id and subject_id:
             try:
                 resp = client.get_consumer_quota_usage(
                     gateway_id=row.gateway_id,
                     rule_id=row.quota_rule_id,
-                    consumer_id=row.consumer_id,
+                    consumer_id=subject_id,
                 )
                 data = resp.get("data") if isinstance(resp, dict) else {}
                 used_amount = int(data.get("usedAmount") or 0)
@@ -1166,8 +1362,8 @@ def list_my_usage(
                     db,
                     tenant_id=tenant_id,
                     month=month,
-                    consumer_id=row.consumer_id,
-                    consumer_name=row.consumer_name,
+                    consumer_id=subject_id,
+                    consumer_name=subject_name,
                     gateway_id=row.gateway_id,
                     gateway_name=row.gateway_name,
                     quota_rule_id=row.quota_rule_id,
@@ -1178,15 +1374,15 @@ def list_my_usage(
                 )
                 db.commit()
 
-        # 实时查询失败时，回退读当月快照（按规则叠加）
-        if used_amount is None or not (client and row.gateway_id and row.quota_rule_id and row.consumer_id):
+        # 实时查询失败时，回退读当月快照（按规则叠加；组粒度主体查组 ID 的快照）
+        if used_amount is None or not (client and row.gateway_id and row.quota_rule_id and subject_id):
             snap_rows = db.exec(
                 select(ApiKeyUsageSnapshot).where(
                     ApiKeyUsageSnapshot.tenant_id == tenant_id,
                     ApiKeyUsageSnapshot.month == month,
-                    ApiKeyUsageSnapshot.consumer_id == row.consumer_id,
+                    ApiKeyUsageSnapshot.consumer_id == subject_id,
                 )
-            ).all() if row.consumer_id else []
+            ).all() if subject_id else []
             if snap_rows:
                 quota_limit = sum(int(s.quota_limit or 0) for s in snap_rows)
                 used_amount = sum(int(s.used_amount or 0) for s in snap_rows)
@@ -1342,13 +1538,29 @@ def approve_application(
         raise HTTPException(status_code=502, detail=f"阿里云创建消费者失败：{exc}") from exc
 
     # 3) 绑定消费组（batch-add） + 绑定配额规则
+    # 配额规则两种接入方式：
+    # - 规则本身是消费组粒度（subjectType=consumer_group，2.1.23 支持）：组成员
+    #   入组即共享组规则限额，消费者无需（也不能）单独 addIds 绑定
+    # - 规则是消费者粒度：逐个把新消费者 addIds 绑到规则
+    # 判定方式：查规则当前 subjects，若存在 consumer_group 主体即认定组粒度规则
+    rule_is_group_scoped = False
+    try:
+        for subj in client.list_quota_rule_subjects(
+            request.quota_rule_id, gateway_id=gateway.gateway_id
+        ):
+            if subj.get("subjectType") == "consumer_group":
+                rule_is_group_scoped = True
+                break
+    except (AliyunApigError, RuntimeError):
+        rule_is_group_scoped = False  # 查询失败按消费者粒度处理（兼容旧行为）
     try:
         client.add_consumers_to_group(request.consumer_group_id, [consumer_id])
-        client.attach_consumer_to_rule(
-            gateway_id=gateway.gateway_id,
-            rule_id=request.quota_rule_id,
-            consumer_id=consumer_id,
-        )
+        if not rule_is_group_scoped:
+            client.attach_consumer_to_rule(
+                gateway_id=gateway.gateway_id,
+                rule_id=request.quota_rule_id,
+                consumer_id=consumer_id,
+            )
     except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云绑定失败：{exc}") from exc
 
@@ -1771,7 +1983,12 @@ def list_usage(
 
     client = get_apig_client()
 
-    # 当月：实时查 subjects 构建 {consumer_id: (rule, usage)} 映射并写快照
+    # 当月：实时查 subjects 构建 {subject_id: (rule, subj)} 映射并写快照。
+    # 主体两种粒度（2.1.21+ 支持组粒度）：
+    # - subjectType=consumer：subject id 为消费者 cs-，直接按消费者落快照；
+    # - subjectType=consumer_group：subject id 为消费组 csg-，组内成员共享
+    #   规则限额与用量。以「组」为主体落一条快照（配额/用量只计一次，
+    #   避免 N 个成员重复计数）；个人面板 /mine/usage 会把组用量映射给成员。
     subject_usage: dict[str, tuple[ApiKeyQuotaRule, dict[str, Any]]] = {}
     if is_current_month and client:
         rule_rows = db.exec(
@@ -1790,6 +2007,16 @@ def list_usage(
             for subj in subjects if isinstance(subjects, list) else []:
                 sid = subj.get("id") or ""
                 if sid:
+                    # 组主体补组名，快照/展示用（云端 subjectName 可能为空，回退本地组名）
+                    if subj.get("subjectType") == "consumer_group" and not subj.get("name"):
+                        grp = db.exec(
+                            select(ApiKeyConsumerGroup).where(
+                                ApiKeyConsumerGroup.tenant_id == tenant_id,
+                                ApiKeyConsumerGroup.external_consumer_group_id == sid,
+                            )
+                        ).first()
+                        if grp:
+                            subj["name"] = grp.name
                     subject_usage[sid] = (rule, subj)
 
     # 构建当月快照（存量快照按 consumer 维度分组，实时数据 upsert 后叠加展示）
@@ -1800,7 +2027,7 @@ def list_usage(
         )
     ).all()
 
-    # 当月实时数据先 upsert 进快照
+    # 当月实时数据先 upsert 进快照（消费者主体按消费者行；组主体单独立行）
     if is_current_month and client:
         for row in consumer_rows:
             rule, subj = subject_usage.get(row.external_consumer_id or "", (None, {}))
@@ -1814,6 +2041,25 @@ def list_usage(
                 consumer_name=row.name,
                 gateway_id=row.gateway_id,
                 gateway_name=row.gateway_name,
+                quota_rule_id=rule.external_rule_id or "",
+                quota_rule_name=rule.name,
+                quota_limit=int(rule.quota_limit or 0),
+                quota_period=rule.period_type,
+                used_amount=int(subj.get("usedAmount") or 0),
+            )
+        # 组粒度主体（subjectType=consumer_group）：组共享规则限额与用量，以组
+        # 为主体落一条快照，避免按组内每个消费者重复计配额；行内不与消费者行混淆
+        for sid, (rule, subj) in subject_usage.items():
+            if rule is None or subj.get("subjectType") != "consumer_group":
+                continue
+            _upsert_usage_snapshot(
+                db,
+                tenant_id=tenant_id,
+                month=target_month,
+                consumer_id=sid,
+                consumer_name=subj.get("name") or sid,
+                gateway_id=rule.gateway_id,
+                gateway_name=rule.gateway_name,
                 quota_rule_id=rule.external_rule_id or "",
                 quota_rule_name=rule.name,
                 quota_limit=int(rule.quota_limit or 0),
@@ -1839,7 +2085,8 @@ def list_usage(
     high_count = 0
     low_count = 0
 
-    # 行主体 = 当前消费者列表（历史月份再并入快照中出现过的消费者，保留历史）
+    # 行主体 = 当前消费者列表（历史月份再并入快照中出现过的消费者，保留历史）；
+    # 组粒度主体（csg- 行）追加在消费者行之后展示
     current_consumer_ids = {row.external_consumer_id or "" for row in consumer_rows}
     seen: set[str] = set()
     ordered_consumers: list[tuple[str, str | None, str | None, str | None]] = []
@@ -1848,6 +2095,10 @@ def list_usage(
         if cid not in seen:
             seen.add(cid)
             ordered_consumers.append((cid, row.name, row.gateway_name, row.gateway_id))
+    for sid, (rule, subj) in subject_usage.items():
+        if subj.get("subjectType") == "consumer_group" and sid not in seen:
+            seen.add(sid)
+            ordered_consumers.append((sid, subj.get("name") or sid, rule.gateway_name, rule.gateway_id))
     if not is_current_month:
         for m in merged_by_consumer:
             cid = m["consumer_id"] or ""
