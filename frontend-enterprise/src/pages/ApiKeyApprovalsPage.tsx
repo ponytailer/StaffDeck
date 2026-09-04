@@ -319,6 +319,7 @@ export default function ApiKeyApprovalsPage({
   const [qrSubjectType, setQrSubjectType] = useState<'consumer' | 'consumer_group'>('consumer');
   const [qrGroupIds, setQrGroupIds] = useState<string[]>([]);
   const [qrConsumerIds, setQrConsumerIds] = useState<string[]>([]);
+  const [qrConsumerSearch, setQrConsumerSearch] = useState(''); // 搜索选人（消费者太多不全量展示）
   const [qrSubmitting, setQrSubmitting] = useState(false);
 
   // Quota rule edit dialog
@@ -589,6 +590,7 @@ export default function ApiKeyApprovalsPage({
       setQrSubjectType('consumer');
       setQrGroupIds([]);
       setQrConsumerIds([]);
+      setQrConsumerSearch('');
       await loadRules();
     } catch (error) {
       notify.error(error instanceof ApiError ? error.message : '创建失败');
@@ -2014,31 +2016,84 @@ export default function ApiKeyApprovalsPage({
           {qrSubjectType === 'consumer' && (
             <div className="flex flex-col gap-[6px]">
               <span className="text-[12px] font-medium text-[#464c5e]">
-                绑定消费者<span className="ml-[4px] font-normal text-[#a3aaba]">（可选，创建后也可在审批时绑定）</span>
+                绑定消费者<span className="ml-[4px] font-normal text-[#a3aaba]">（可选，搜索后逐个选中）</span>
               </span>
-              {consumers.length === 0 ? (
-                <p className="text-[12px] text-[#c0c6d4]">暂无消费者</p>
-              ) : (
-                <div className="flex max-h-[120px] flex-col gap-[4px] overflow-y-auto rounded-[8px] border border-[#eceef1] p-[8px]">
-                  {consumers.map((c) => (
-                    <label key={c.id} className="flex items-center gap-[8px] text-[12px] text-[#464c5e]">
-                      <input
-                        type="checkbox"
-                        checked={qrConsumerIds.includes(c.external_consumer_id || c.id)}
-                        onChange={(e) => {
-                          const cid = c.external_consumer_id || c.id;
-                          setQrConsumerIds((prev) =>
-                            e.target.checked ? [...prev, cid] : prev.filter((id) => id !== cid),
-                          );
-                        }}
-                        className="size-[14px] accent-[#18181a]"
-                      />
-                      <span className="truncate">{c.name}</span>
-                      {c.consumer_group_name && (
-                        <span className="truncate text-[11px] text-[#a3aaba]">{c.consumer_group_name}</span>
-                      )}
-                    </label>
-                  ))}
+              {/* 已选中的消费者，标签形式可移除 */}
+              {qrConsumerIds.length > 0 && (
+                <div className="flex flex-wrap gap-[6px]">
+                  {qrConsumerIds.map((cid) => {
+                    const c = consumers.find((item) => (item.external_consumer_id || item.id) === cid);
+                    return (
+                      <span
+                        key={cid}
+                        className="inline-flex h-[24px] items-center gap-[4px] rounded-[6px] bg-[#f3f4f6] px-[8px] text-[12px] text-[#464c5e]"
+                      >
+                        {c?.name ?? cid}
+                        <button
+                          type="button"
+                          disabled={qrSubmitting}
+                          onClick={() => setQrConsumerIds((prev) => prev.filter((id) => id !== cid))}
+                          className="rounded-[4px] p-[1px] text-[#a3aaba] transition-colors hover:bg-[#e3e7f1] hover:text-[#464c5e]"
+                          title="移除"
+                        >
+                          <X className="size-[12px]" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-[10px] top-1/2 size-[14px] -translate-y-1/2 text-[#a3aaba]" />
+                <Input
+                  value={qrConsumerSearch}
+                  onChange={(e) => setQrConsumerSearch(e.target.value)}
+                  disabled={qrSubmitting}
+                  placeholder="输入名称搜索消费者，点击结果选中"
+                  className="h-[34px] pl-[30px] text-[12px]"
+                />
+              </div>
+              {qrConsumerSearch.trim() && (
+                <div className="flex max-h-[140px] flex-col overflow-y-auto rounded-[8px] border border-[#eceef1]">
+                  {(() => {
+                    const kw = qrConsumerSearch.trim().toLowerCase();
+                    const matched = consumers.filter(
+                      (c) =>
+                        c.name.toLowerCase().includes(kw) ||
+                        (c.external_consumer_id || '').toLowerCase().includes(kw),
+                    );
+                    const selectable = matched.filter(
+                      (c) => !qrConsumerIds.includes(c.external_consumer_id || c.id),
+                    );
+                    if (selectable.length === 0) {
+                      return (
+                        <p className="px-[10px] py-[8px] text-[12px] text-[#c0c6d4]">
+                          {matched.length > 0 ? '匹配的消费者均已选中' : '无匹配消费者'}
+                        </p>
+                      );
+                    }
+                    return selectable.map((c) => {
+                      const cid = c.external_consumer_id || c.id;
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          disabled={qrSubmitting}
+                          onClick={() => {
+                            setQrConsumerIds((prev) => [...prev, cid]);
+                            setQrConsumerSearch('');
+                          }}
+                          className="flex items-center gap-[8px] px-[10px] py-[7px] text-left text-[12px] text-[#464c5e] transition-colors hover:bg-[#f6f6f6]"
+                        >
+                          <span className="truncate font-medium">{c.name}</span>
+                          {c.consumer_group_name && (
+                            <span className="truncate text-[11px] text-[#a3aaba]">{c.consumer_group_name}</span>
+                          )}
+                          <Plus className="ml-auto size-[13px] shrink-0 text-[#a3aaba]" />
+                        </button>
+                      );
+                    });
+                  })()}
                 </div>
               )}
               <p className="text-[11px] leading-[16px] text-[#858b9c]">
