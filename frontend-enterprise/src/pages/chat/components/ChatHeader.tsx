@@ -10,6 +10,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Badge } from '@/components/ui';
 import { api, TENANT_ID } from '@/api/client';
+import {
+  getEnterpriseAuthSession,
+  setEnterpriseAuthSession,
+} from '@/auth';
 import { staffdeckDisplayText } from '@/employee';
 import { EnterpriseRoute } from '@/enums/routes';
 import { cn } from '@/lib/utils';
@@ -19,6 +23,7 @@ import IconChevronDown from '@/assets/icons/chevron-down.svg?react';
 import IconLogout from '@/assets/icons/logout.svg?react';
 import AccountApiKeyDialog from '@/components/AccountApiKeyDialog';
 import ChangePasswordDialog from '@/components/ChangePasswordDialog';
+import EditDisplayNameDialog from '@/components/EditDisplayNameDialog';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 import {
@@ -43,12 +48,15 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const [teamName, setTeamName] = useState<string | null>(sessionTeamName);
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [editDisplayNameOpen, setEditDisplayNameOpen] = useState(false);
+  // auth 是打开页面时的会话快照:改名成功后用本地覆盖值立即更新 UI,并同步回 localStorage
+  const [displayNameOverride, setDisplayNameOverride] = useState<string | null>(null);
   const name = teamId
     ? teamName || rawName.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
     : rawName;
 
   const user = auth?.user;
-  const displayName = user?.display_name || user?.username || '';
+  const displayName = displayNameOverride || user?.display_name || user?.username || '';
   const isAdmin = user?.role === 'admin';
   // 发起人非当前用户时展示其名字（管理员/处理人查看他人会话的场景）
   const sessionOwnerName = currentSession?.user_display_name
@@ -141,8 +149,19 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
                       {initial}
                     </span>
                     <div className="flex min-w-0 flex-col gap-[2px]">
-                      <span className="truncate text-[14px] font-medium text-[#18181a]">
-                        {displayName}
+                      <span className="flex min-w-0 items-center gap-[4px]">
+                        <span className="truncate text-[14px] font-medium text-[#18181a]">
+                          {displayName}
+                        </span>
+                        <button
+                          type="button"
+                          title="修改显示名"
+                          aria-label="修改显示名"
+                          onClick={() => setEditDisplayNameOpen(true)}
+                          className="inline-grid size-[16px] shrink-0 place-items-center text-[#a0a8bd] transition-colors hover:text-[#18181a]"
+                        >
+                          <IconEdit className="size-[11px]" />
+                        </button>
                       </span>
                       {user.username && user.username !== displayName && (
                         <span className="truncate text-[12px] text-[#858b9c]">
@@ -208,6 +227,21 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
       <ChangePasswordDialog
         open={changePasswordOpen}
         onClose={() => setChangePasswordOpen(false)}
+      />
+      <EditDisplayNameDialog
+        open={editDisplayNameOpen}
+        currentDisplayName={displayName}
+        onClose={() => setEditDisplayNameOpen(false)}
+        onSaved={(name) => {
+          setDisplayNameOverride(name);
+          const session = getEnterpriseAuthSession();
+          if (session) {
+            setEnterpriseAuthSession({
+              ...session,
+              user: { ...session.user, display_name: name },
+            });
+          }
+        }}
       />
     </div>
   );

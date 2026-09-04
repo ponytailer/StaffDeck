@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Copy, Eye, EyeOff, KeyRound, LoaderCircle } from 'lucide-react';
+import { Copy, Eye, EyeOff, KeyRound, LoaderCircle, ShieldAlert, Trash2 } from 'lucide-react';
 
 import { Textarea } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { notify } from '@/components/ui/app-toast';
 import { StatusBadge } from '@/pages/scheduled-tasks/StatusBadge';
 import { api, ApiError, TENANT_ID } from '../api/client';
@@ -21,6 +29,9 @@ type ApiKeyApplication = {
   api_key_masked: string | null;
   api_key: string | null;
   api_url: string | null;
+  consumer_id: string | null;
+  consumer_name: string | null;
+  consumer_status: 'enabled' | 'disabled' | 'deleted' | null;
   reviewer_note: string | null;
   reviewed_at: string | null;
   created_at: string;
@@ -85,10 +96,40 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
     });
   };
 
-  const activeCount = items.filter(
-    (item) => item.status === 'pending' || item.status === 'approved',
-  ).length;
+  const activeCount = items.filter((item) => {
+    if (item.status === 'pending') return true;
+    if (item.status !== 'approved') return false;
+    // approved 但关联消费者已被删除的记录不占申请名额
+    return item.consumer_status !== 'deleted';
+  }).length;
   const canApply = activeCount < MAX_APPLICATIONS;
+
+  const [deleting, setDeleting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ApiKeyApplication | null>(null);
+
+  // 可删除的记录：已驳回 / 已吊销 / 消费者已被删除的批准记录（不再占用名额的终止态）
+  const isDeletable = (item: ApiKeyApplication) =>
+    item.status === 'rejected' ||
+    item.status === 'revoked' ||
+    (item.status === 'approved' && item.consumer_status === 'deleted');
+
+  async function removeRecord() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.delete(
+        `/api/enterprise/api-key-applications/mine/${deleteTarget.id}?tenant_id=${TENANT_ID}`,
+      );
+      notify.success('记录已删除');
+      setDeleteTarget(null);
+      await load();
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '删除失败';
+      notify.error(message);
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   const load = () => {
     setLoading(true);
@@ -167,6 +208,10 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
               {items.map((item) => {
                 const meta = STATUS_META[item.status];
                 const usage = usageItems.find((u) => u.id === item.id);
+                const consumerDisabled =
+                  item.status === 'approved' && item.consumer_status === 'disabled';
+                const consumerDeleted =
+                  item.status === 'approved' && item.consumer_status === 'deleted';
                 const periodLabel =
                   usage?.quota_period === 'month'
                     ? `${new Date().getFullYear()}年${new Date().getMonth() + 1}月`
@@ -186,11 +231,35 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                           申请于 {formatTime(item.created_at)}
                         </span>
                       </div>
-                      <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
+                      <div className="flex shrink-0 items-center gap-[6px]">
+                        <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
+                        {isDeletable(item) && (
+                          <button
+                            type="button"
+                            aria-label="删除记录"
+                            title="删除该记录"
+                            disabled={deleting}
+                            onClick={() => setDeleteTarget(item)}
+                            className="grid size-[26px] place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-[#757f9c] transition-colors hover:bg-[#fdeeee] hover:text-[#c0392b] disabled:opacity-60"
+                          >
+                            <Trash2 className="size-[13px]" />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {item.status === 'approved' && (
                       <div className="mt-[12px] flex flex-col gap-[8px]">
+                        {(consumerDisabled || consumerDeleted) && (
+                          <div className="flex items-start gap-[8px] rounded-[8px] bg-[#fdeeee] px-[10px] py-[8px]">
+                            <ShieldAlert className="mt-[1px] size-[14px] shrink-0 text-[#c0392b]" />
+                            <p className="text-[12px] leading-[18px] text-[#c0392b]">
+                              {consumerDeleted
+                                ? '分配的消费者账号已被管理员删除，当前 API Key 已失效。如有需要请重新申请。'
+                                : '分配的消费者账号已被停用，当前无法调用。请联系管理员重新启用。'}
+                            </p>
+                          </div>
+                        )}
                         <label className="flex flex-col gap-[4px]">
                           <span className="text-[11px] font-medium text-[#464c5e]">API Key</span>
                           <div className="flex items-center gap-[6px]">
@@ -221,7 +290,10 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                           <label className="flex flex-col gap-[4px]">
                             <span className="text-[11px] font-medium text-[#464c5e]">网关地址</span>
                             <div className="flex items-center gap-[6px]">
-                              <code className="min-w-0 flex-1 truncate rounded-[8px] bg-[#f6f6f6] px-[10px] py-[7px] font-mono text-[12px] text-[#18181a]">
+                              <code
+                                className="min-w-0 flex-1 truncate rounded-[8px] bg-[#f6f6f6] px-[10px] py-[7px] font-mono text-[12px] text-[#18181a]"
+                                title={item.api_url}
+                              >
                                 {item.api_url}
                               </code>
                               <button
@@ -331,6 +403,45 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
           )}
         </div>
       </div>
+
+      <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && !deleting && setDeleteTarget(null)}>
+        <DialogContent className="max-w-[400px] gap-[14px] rounded-[14px] p-[20px]">
+          <DialogHeader className="gap-[6px]">
+            <DialogTitle className="text-[15px] font-medium text-[#18181a]">删除记录</DialogTitle>
+            <DialogDescription className="text-[12px] leading-[18px] text-[#757f9c]">
+              删除后该记录将不可恢复，不影响阿里云网关侧的任何配置。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-[8px] bg-[#f8f9fb] px-[12px] py-[10px] text-[12px] leading-[18px] text-[#464c5e]">
+            <div className="font-medium text-[#18181a]">
+              {deleteTarget?.status === 'approved' ? '已失效的 API Key' : '申请记录'}
+            </div>
+            <div className="mt-[2px] truncate">
+              {deleteTarget?.purpose || '（未填写用途）'}
+            </div>
+            {deleteTarget?.api_key_masked && (
+              <div className="mt-[2px] font-mono text-[#858b9c]">{deleteTarget.api_key_masked}</div>
+            )}
+          </div>
+          <DialogFooter className="gap-[8px]">
+            <UIButton
+              disabled={deleting}
+              onClick={() => setDeleteTarget(null)}
+              className="h-[32px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[14px] text-[13px] font-normal text-[#464c5e] hover:bg-black/5"
+            >
+              取消
+            </UIButton>
+            <UIButton
+              disabled={deleting}
+              onClick={() => void removeRecord()}
+              className="h-[32px] rounded-[10px] bg-[#c0392b] px-[14px] text-[13px] font-normal text-white hover:bg-[#a93226] disabled:opacity-60"
+            >
+              {deleting && <LoaderCircle className="size-[14px] animate-spin" />}
+              删除
+            </UIButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 

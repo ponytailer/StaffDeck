@@ -55,6 +55,21 @@ _MOCK_CONSUMERS: dict[str, dict[str, Any]] = {
 }
 
 
+# 内存态授权规则（仅 mock 模式；模拟「消费者→AI API」授权关系）
+_MOCK_AUTHZ_RULES: list[dict[str, Any]] = [
+    {
+        "consumerAuthorizationRuleId": "car-mock-001",
+        "principalType": "ConsumerGroup",
+        "consumerGroupInfo": {"consumerGroupId": "csg-mock-001", "name": "AILab"},
+        "apiInfo": {"httpApiId": "api-mock-llm-001", "name": "AI_TEXT_AUTO", "type": "LLM"},
+    },
+]
+
+# Mock 演示环境的 AI API 与环境 ID（审批授权时使用）
+MOCK_LLM_API_ID = "api-mock-llm-001"
+MOCK_ENVIRONMENT_ID = "env-mock-001"
+
+
 def _mock_quota_usage(
     subject_id: str | None = None,
     rule_id: str | None = None,
@@ -116,14 +131,15 @@ def _mock_dispatch(
     if method == "POST" and path == "/v1/consumers":
         name = (body or {}).get("name", "mock-consumer")
         consumer_id = "cs-mock-" + uuid.uuid4().hex[:8]
-        # Custom 模式：明文由调用方传入；System 模式：mock 自动生成
+        # Custom 模式：明文由调用方传入；System 模式：mock 自动生成。
+        # 【与真实云端一致】credentials 挂在 apiKeyIdentityConfig 顶层。
         apikey = ""
-        for src in ((body or {}).get("apiKeyIdentityConfig") or {}).get("apiKeySources", []):
-            for cred in src.get("credentials", []):
-                if cred.get("apikey"):
-                    apikey = cred["apikey"]
-                elif cred.get("generateMode") == "System" and not apikey:
-                    apikey = "sk-mock-" + uuid.uuid4().hex[:24]
+        identity_cfg = (body or {}).get("apiKeyIdentityConfig") or (body or {}).get("apikeyIdentityConfig") or {}
+        for cred in identity_cfg.get("credentials", []):
+            if cred.get("apikey"):
+                apikey = cred["apikey"]
+            elif cred.get("generateMode") == "System" and not apikey:
+                apikey = "sk-mock-" + uuid.uuid4().hex[:24]
         consumer = {
             "consumerId": consumer_id,
             "name": name,
@@ -164,12 +180,15 @@ def _mock_dispatch(
                     {"consumerGroupId": csg, "name": csg}
                     for csg in (b["consumerGroupIds"] or [])
                 ]
-            # 自定义 API Key 凭证：_mock_credential_replace=True 时全量覆盖（裁剪语义），否则追加
+            # 自定义 API Key 凭证：_mock_credential_replace=True 或 credentials 里
+            # 带 generateMode=Custom 的显式覆盖（api_key 设置/轮换语义）时全量覆盖，
+            # 其余情况追加。
+            # 【与真实云端一致】credentials 挂在 apiKeyIdentityConfig 顶层。
             identity = b.get("apiKeyIdentityConfig") or b.get("apikeyIdentityConfig") or {}
             replace_mode = identity.pop("_mock_credential_replace", False)
-            for src in identity.get("apiKeySources", []) + identity.get("apikeySources", []):
-                creds = src.get("credentials", [])
-                if replace_mode:
+            creds = identity.get("credentials", [])
+            if creds:
+                if replace_mode or any(c.get("generateMode") == "Custom" for c in creds):
                     consumer["apikeys"] = [
                         cred.get("apikey") for cred in creds if cred.get("apikey")
                     ]
@@ -222,18 +241,38 @@ def _mock_dispatch(
                 "consumerGroups": c.get("consumerGroups", []),
                 "apiKeyIdentityConfig": {
                     "type": "Apikey",
-                    "apiKeySources": [
-                        {
-                            "source": "Default",
-                            "value": "Authorization",
-                            "credentials": [
-                                {"generateMode": "System", "apikey": ak}
-                            ],
-                        }
+                    "apikeySource": {"source": "Default", "value": "Authorization"},
+                    "credentials": [
+                        {"generateMode": "Custom", "apikey": ak}
                         for ak in c.get("apikeys", [])
                     ],
                 },
             },
+        }
+    # 消费组列表（ListConsumerGroups）：从消费者归属聚合派生
+    if method == "GET" and path == "/v1/consumer-groups":
+        groups: dict[str, dict[str, Any]] = {}
+        for c in _MOCK_CONSUMERS.values():
+            for g in c.get("consumerGroups", []):
+                gid = g.get("consumerGroupId") or ""
+                if not gid:
+                    continue
+                entry = groups.setdefault(
+                    gid,
+                    {
+                        "consumerGroupId": gid,
+                        "name": g.get("name") or gid,
+                        "gatewayType": c.get("gatewayType", "AI"),
+                        "consumerCount": 0,
+                    },
+                )
+                entry["consumerCount"] = int(entry["consumerCount"]) + 1
+        items = list(groups.values())
+        return {
+            "requestId": "mock-" + uuid.uuid4().hex[:12],
+            "code": "Ok",
+            "message": "success",
+            "data": {"items": items, "totalSize": len(items)},
         }
     # 批量加入消费者组（BatchAddConsumerGroupConsumers）
     _batch_add = re.match(r"/v1/consumer-groups/([^/]+)/consumers/batch-add$", path)
@@ -260,6 +299,26 @@ def _mock_dispatch(
                 "successConsumerIds": success,
                 "skippedConsumerIds": skipped,
                 "failedConsumerIds": failed,
+            },
+        }
+    # 单个消费组详情（GetConsumerGroup）
+    _cg = re.match(r"/v1/consumer-groups/([^/]+)$", path)
+    if _cg and method == "GET":
+        csg = _cg.group(1)
+        members = [
+            c["consumerId"]
+            for c in _MOCK_CONSUMERS.values()
+            if any(g["consumerGroupId"] == csg for g in c.get("consumerGroups", []))
+        ]
+        return {
+            "requestId": "mock-" + uuid.uuid4().hex[:12],
+            "code": "Ok",
+            "message": "success",
+            "data": {
+                "consumerGroupId": csg,
+                "name": csg,
+                "gatewayType": "AI",
+                "consumerIds": members,
             },
         }
     # 配额规则 CRUD（mock）
@@ -320,6 +379,83 @@ def _mock_dispatch(
         if method == "DELETE":
             _MOCK_QUOTA_RULES[:] = [r for r in _MOCK_QUOTA_RULES if r["ruleId"] != rid]
             return {"requestId": "mock", "code": "Ok", "message": "success"}
+    # 消费者授权规则（CreateConsumerAuthorizationRules）
+    if method == "POST" and path == "/v1/authorization-rules":
+        b = body or {}
+        created = []
+        for rule in b.get("authorizationRules", []):
+            rid = "car-mock-" + uuid.uuid4().hex[:8]
+            principal = rule.get("principalType", "Consumer")
+            if principal == "ConsumerGroup":
+                csg = rule.get("consumerGroupId", "")
+                entry = {
+                    "consumerAuthorizationRuleId": rid,
+                    "principalType": "ConsumerGroup",
+                    "consumerGroupInfo": {"consumerGroupId": csg, "name": csg},
+                    "apiInfo": {
+                        "httpApiId": (rule.get("resourceIdentifier") or {}).get("resourceId", ""),
+                        "name": "AI_TEXT_AUTO",
+                        "type": "LLM",
+                    },
+                }
+            else:
+                cid = rule.get("consumerId", "")
+                entry = {
+                    "consumerAuthorizationRuleId": rid,
+                    "principalType": "Consumer",
+                    "consumerInfo": {"consumerId": cid, "name": cid, "enable": True},
+                    "apiInfo": {
+                        "httpApiId": (rule.get("resourceIdentifier") or {}).get("resourceId", ""),
+                        "name": "AI_TEXT_AUTO",
+                        "type": "LLM",
+                    },
+                }
+            _MOCK_AUTHZ_RULES.append(entry)
+            created.append(rid)
+        return {
+            "requestId": "mock-" + uuid.uuid4().hex[:12],
+            "code": "Ok",
+            "message": "success",
+            "data": {"consumerAuthorizationRuleIds": created},
+        }
+    # 查询授权规则（QueryConsumerAuthorizationRules）
+    if method == "GET" and path == "/v1/authorization-rules":
+        q = query or {}
+        items = [
+            r for r in _MOCK_AUTHZ_RULES
+            if (not q.get("consumerId")
+                or (r.get("consumerInfo") or {}).get("consumerId") == q["consumerId"])
+            and (not q.get("consumerGroupId")
+                 or (r.get("consumerGroupInfo") or {}).get("consumerGroupId") == q["consumerGroupId"])
+        ]
+        return {
+            "requestId": "mock-" + uuid.uuid4().hex[:12],
+            "code": "Ok",
+            "message": "success",
+            "data": {"items": items, "pageNumber": 1, "pageSize": 50, "totalSize": len(items)},
+        }
+    # LLM API 列表（ListHttpApis，授权目标发现用）
+    if method == "GET" and path == "/v1/http-apis":
+        items = [{
+            "httpApiId": "api-mock-parent-001",
+            "name": "AI_TEXT_AUTO",
+            "type": "LLM",
+            "versionedHttpApis": [{
+                "httpApiId": MOCK_LLM_API_ID,
+                "name": "AI_TEXT_AUTO",
+                "deployConfigs": [{
+                    "environmentId": MOCK_ENVIRONMENT_ID,
+                    "gatewayId": "gw-mock-001",
+                    "gatewayType": "AI",
+                }],
+            }],
+        }]
+        return {
+            "requestId": "mock-" + uuid.uuid4().hex[:12],
+            "code": "Ok",
+            "message": "success",
+            "data": {"items": items, "totalSize": len(items)},
+        }
     if method == "GET" and "/usage" in path:
         return _mock_quota_usage()
     return {"requestId": "mock", "code": "Ok", "message": "success", "data": {}}

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import config
+from . import authorization_rules
 from . import consumer_groups
 from . import consumers
 from . import quota
@@ -41,12 +42,11 @@ class AliyunApigClient:
         description: str | None = None,
         gateway_type: str = "AI",
     ) -> str:
-        """创建消费者并配置 API Key 凭证。返回 consumerId。
+        """创建消费者（API Key 凭证，来源 Authorization: Bearer）。返回 consumerId。
 
-        api_key 非空：Custom 模式写入该 Key（审批流程由本系统生成强随机 Key，
-        明文创建时即持有，无需回读）；为空：System 模式由云端生成。
-        注意：实测（2026-09）新建消费者 GetConsumer 均不回带 credentials 明文，
-        因此需要拿到明文的场景必须用 Custom 模式。
+        api_key 非空（推荐）：Custom 模式写入服务端生成的 Key，本系统持有明文
+        （实测云端 System 模式 GetConsumer 不回带明文，需要明文的场景必须服务端生成）。
+        api_key 为空：System 模式由云端生成。
         """
         resp = consumers.create_consumer(
             name=name,
@@ -139,8 +139,55 @@ class AliyunApigClient:
         consumer_id: str,
         api_key: str,
     ) -> None:
-        """向已有消费者追加一个自定义 API Key 凭证（UpdateConsumer）。"""
+        """为已有消费者设置/轮换 API Key 凭证（UpdateConsumer 覆盖写）。"""
         consumers.update_consumer(consumer_id, api_key=api_key)
+
+    def authorize_consumer_api(
+        self,
+        consumer_id: str,
+        api_id: str,
+        environment_id: str,
+    ) -> dict[str, Any]:
+        """建立「消费者→AI API」授权规则（CreateConsumerAuthorizationRules）。
+
+        实测：仅创建消费者+凭证而缺授权规则时，调用网关一律 401。
+        """
+        return authorization_rules.create_authorization_rule(
+            consumer_id, api_id=api_id, environment_id=environment_id,
+        )
+
+    def ensure_consumer_api_authorization(
+        self,
+        consumer_id: str,
+        gateway_id: str,
+        api_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """确保消费者对 LLM API 有授权规则（缺失时创建；返回 None 表示已有授权）。
+
+        api_id 为空时自动发现网关下第一个 LLM API。
+        """
+        return authorization_rules.ensure_consumer_api_authorization(
+            self, consumer_id, gateway_id, api_id=api_id,
+        )
+
+    def has_api_authorization(self, consumer_id: str, api_id: str) -> bool:
+        """判断消费者对指定 AI API 是否已有授权规则。"""
+        return authorization_rules.has_api_authorization(consumer_id, api_id)
+
+    def ensure_group_member_authorized(
+        self,
+        consumer_id: str,
+        consumer_group_id: str,
+        gateway_id: str,
+        api_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """确保入组消费者可调用 LLM API。
+
+        组已有授权规则时直接依赖组授权（返回 None）；否则为消费者单独兜底建规则。
+        """
+        return authorization_rules.ensure_group_member_authorized(
+            self, consumer_id, consumer_group_id, gateway_id, api_id=api_id,
+        )
 
     def attach_consumer_to_rule(
         self,

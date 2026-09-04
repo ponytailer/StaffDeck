@@ -66,6 +66,12 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=6)
 
 
+class UpdateProfileRequest(BaseModel):
+    """个人资料自改:当前仅允许修改自己的显示名(管理员改他人走 /users/{id})。"""
+
+    display_name: str = Field(..., min_length=1, max_length=80)
+
+
 class UserChannelIdentity(BaseModel):
     channel: str
     display_name: Optional[str] = None
@@ -471,6 +477,22 @@ def change_my_password(
     db.add(current_user)
     db.commit()
     return Response(status_code=204)
+
+
+@router.put("/me/profile", response_model=UserRead)
+def update_my_profile(
+    request: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> UserRead:
+    """个人修改自己的显示名:置空时回退为用户名(与管理员编辑同规则)。"""
+    display_name = request.display_name.strip()[:80]
+    current_user.display_name = display_name or current_user.username
+    current_user.updated_at = utc_now()
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return _user_read(current_user, _avatar_pointer_for(db, current_user.id))
 
 
 @router.put("/users/{user_id}", response_model=UserRead)

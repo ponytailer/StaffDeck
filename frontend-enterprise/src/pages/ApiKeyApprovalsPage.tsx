@@ -6,7 +6,9 @@ import {
   KeyRound,
   LoaderCircle,
   Plus,
+  RefreshCw,
   Search,
+  ShieldAlert,
   SlidersHorizontal,
   Users,
   X,
@@ -62,6 +64,7 @@ type ApiKeyApproval = {
   quota_rule_name: string | null;
   consumer_id: string | null;
   consumer_name: string | null;
+  consumer_status: 'enabled' | 'disabled' | 'deleted' | null;
   consumer_group_name: string | null;
   used_amount: number | null;
   usage_month: string | null;
@@ -198,6 +201,15 @@ function formatTime(value: string | null): string {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
+type AliyunSyncCounts = { created: number; updated: number; removed: number };
+
+type AliyunSyncResult = {
+  synced_at: string;
+  groups: AliyunSyncCounts;
+  consumers: AliyunSyncCounts;
+  quota_rules: AliyunSyncCounts;
+};
+
 function StatCard({
   label,
   value,
@@ -257,6 +269,10 @@ export default function ApiKeyApprovalsPage({
   // Consumers
   const [consumers, setConsumers] = useState<Consumer[]>([]);
   const [consumersLoading, setConsumersLoading] = useState(false);
+
+  // Aliyun manual sync (consumer groups tab)
+  const [syncing, setSyncing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
   // Quota rules
   const [rules, setRules] = useState<QuotaRule[]>([]);
@@ -371,6 +387,24 @@ export default function ApiKeyApprovalsPage({
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载配额规则失败'))
       .finally(() => setRulesLoading(false));
   }, []);
+
+  const syncFromAliyun = useCallback(() => {
+    setSyncing(true);
+    return api
+      .post<AliyunSyncResult>('/api/enterprise/api-key-applications/consumer-groups/sync', {
+        tenant_id: TENANT_ID,
+      })
+      .then((res) => {
+        setLastSyncedAt(res.synced_at);
+        const fmt = (c: AliyunSyncCounts) => `新增 ${c.created} · 更新 ${c.updated} · 移除 ${c.removed}`;
+        notify.success(
+          `已从阿里云同步（云端为准）：消费组 ${fmt(res.groups)}；消费者 ${fmt(res.consumers)}；配额规则 ${fmt(res.quota_rules)}`,
+        );
+        return Promise.all([loadGroups(), loadConsumers(), loadRules()]);
+      })
+      .catch((error) => notify.error(error instanceof Error ? error.message : '同步阿里云数据失败'))
+      .finally(() => setSyncing(false));
+  }, [loadGroups, loadConsumers, loadRules]);
 
   const loadUsage = useCallback((month?: string) => {
     setUsageLoading(true);
@@ -644,7 +678,7 @@ export default function ApiKeyApprovalsPage({
 
   const pendingRows = rows.filter((r) => r.status === 'pending');
   const issuedRows = rows.filter((r) => r.status === 'approved');
-  const historyRows = rows.filter((r) => r.status === 'rejected' || r.status === 'revoked');
+  const historyRows = rows.filter((r) => r.status !== 'pending');
 
   // Rules that match the selected consumer group's gateway (for approve dialog)
   const approveCompatibleRules = approveGroupId
@@ -805,7 +839,9 @@ export default function ApiKeyApprovalsPage({
       className: 'whitespace-normal',
       render: (row) =>
         row.api_url ? (
-          <code className="block truncate font-mono text-[12px] text-[#464c5e]">{row.api_url}</code>
+          <code className="block truncate font-mono text-[12px] text-[#464c5e]" title={row.api_url}>
+            {row.api_url}
+          </code>
         ) : (
           <span className="text-[12px] text-[#c0c6d4]">—</span>
         ),
@@ -820,6 +856,22 @@ export default function ApiKeyApprovalsPage({
         ) : (
           <span className="text-[12px] text-[#c0c6d4]">—</span>
         ),
+    },
+    {
+      key: 'consumer_health',
+      title: '状态',
+      width: 110,
+      render: (row) => {
+        if (row.status === 'approved' && row.consumer_status === 'deleted') {
+          return (
+            <span className="inline-flex items-center gap-[4px] rounded-full bg-[#fdeeee] px-[8px] py-[2px] text-[11px] font-medium text-[#c0392b]">
+              <ShieldAlert className="size-[12px]" />
+              已删除
+            </span>
+          );
+        }
+        return <span className="text-[12px] text-[#c0c6d4]">—</span>;
+      },
     },
     {
       key: 'actions',
@@ -1504,14 +1556,29 @@ export default function ApiKeyApprovalsPage({
                 <span className="text-[14px] font-normal leading-none">消费者列表</span>
                 <span className="text-[12px] text-[#c0c6d4]">随时启用/停用或更换配额规则</span>
               </div>
-              <div className="relative w-[200px]">
-                <Search className="absolute left-[8px] top-1/2 size-[14px] -translate-y-1/2 text-[#c0c6d4]" />
-                <Input
-                  value={consumerSearch}
-                  onChange={(e) => setConsumerSearch(e.target.value)}
-                  placeholder="搜索消费者名称"
-                  className="h-[30px] pl-[28px] text-[12px]"
-                />
+              <div className="flex items-center gap-[8px]">
+                {lastSyncedAt && (
+                  <span className="hidden text-[12px] text-[#c0c6d4] lg:inline">
+                    上次同步 {formatTime(lastSyncedAt)}
+                  </span>
+                )}
+                <UIButton
+                  onClick={syncFromAliyun}
+                  disabled={syncing}
+                  className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
+                >
+                  <RefreshCw className={cn('size-[13px]', syncing && 'animate-spin')} />
+                  {syncing ? '同步中…' : '同步阿里云'}
+                </UIButton>
+                <div className="relative w-[200px]">
+                  <Search className="absolute left-[8px] top-1/2 size-[14px] -translate-y-1/2 text-[#c0c6d4]" />
+                  <Input
+                    value={consumerSearch}
+                    onChange={(e) => setConsumerSearch(e.target.value)}
+                    placeholder="搜索消费者名称"
+                    className="h-[30px] pl-[28px] text-[12px]"
+                  />
+                </div>
               </div>
             </div>
             <DataTable

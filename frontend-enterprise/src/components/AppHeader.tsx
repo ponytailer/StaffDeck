@@ -23,6 +23,7 @@ import {
 import LanguageSwitcher from './LanguageSwitcher';
 import AccountApiKeyDialog from './AccountApiKeyDialog';
 import ChangePasswordDialog from './ChangePasswordDialog';
+import EditDisplayNameDialog from './EditDisplayNameDialog';
 
 /** 只允许 http/https/data:image/blob 协议的图片地址,其余一律视为无效。 */
 function safeImageUrl(value: string): string {
@@ -86,6 +87,7 @@ export default function AppHeader({
   const [avatarSaving, setAvatarSaving] = useState(false);
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [editDisplayNameOpen, setEditDisplayNameOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const displayName = user?.display_name || user?.username || '';
@@ -292,8 +294,19 @@ export default function AppHeader({
                         )}
                       </div>
                       <div className="flex min-w-0 flex-col gap-[2px]">
-                        <span className="truncate text-[14px] font-medium text-[#18181a]">
-                          {displayName}
+                        <span className="flex min-w-0 items-center gap-[4px]">
+                          <span className="truncate text-[14px] font-medium text-[#18181a]">
+                            {displayName}
+                          </span>
+                          <button
+                            type="button"
+                            title="修改显示名"
+                            aria-label="修改显示名"
+                            onClick={() => setEditDisplayNameOpen(true)}
+                            className="inline-grid size-[16px] shrink-0 place-items-center text-[#a0a8bd] transition-colors hover:text-[#18181a]"
+                          >
+                            <IconEdit className="size-[11px]" />
+                          </button>
                         </span>
                         {user.username && user.username !== displayName && (
                           <span className="truncate text-[12px] text-[#858b9c]">
@@ -381,6 +394,12 @@ export default function AppHeader({
       <ChangePasswordDialog
         open={changePasswordOpen}
         onClose={() => setChangePasswordOpen(false)}
+      />
+      <EditDisplayNameDialog
+        open={editDisplayNameOpen}
+        currentDisplayName={displayName}
+        onClose={() => setEditDisplayNameOpen(false)}
+        onSaved={() => void refreshSessionUser()}
       />
     </header>
   );

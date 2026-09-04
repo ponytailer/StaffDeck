@@ -5,8 +5,14 @@
 - DeleteConsumer   DELETE /v1/consumers/{consumerId}
 - ListConsumers    GET    /v1/consumers
 
-CreateConsumer 支持传入自定义 API Key（apikeyIdentityConfig.generateMode=Custom），
+CreateConsumer 支持传入自定义 API Key（credentials.generateMode=Custom），
 由系统生成强随机串直接持有明文返回给申请人。
+
+授权模型（2026-09 实测）：
+- 消费者凭证与「消费者→AI API 授权规则」是两回事。创建消费者后必须再创建
+  授权规则（CreateConsumerAuthorizationRules，resourceType=LLM + environmentId），
+  否则调用网关即使凭证正确也返回 401。
+- 查询授权规则用 QueryConsumerAuthorizationRules（GET /v1/authorization-rules）。
 """
 from __future__ import annotations
 
@@ -25,8 +31,10 @@ def create_consumer(
 ) -> dict[str, Any]:
     """创建消费者。gateway_type=AI 表示 AI 网关消费者。
 
-    identityConfig 必填：api_key 非空时用自定义凭证（Custom 模式），
-    否则用 Auto 模式由系统生成（真实 API 校验 identityConfig 不能为空）。
+    凭证方式固定为 API Key，来源 value="Authorization"（即 Authorization: Bearer <token>）。
+    api_key 非空：generateMode=Custom，写入服务端生成的 Key（本系统持有明文，推荐——
+    实测云端 System 模式 GetConsumer 不回带明文）；
+    api_key 为空：generateMode=System 由云端生成。
     """
     body: dict[str, Any] = {
         "name": name,
@@ -34,9 +42,10 @@ def create_consumer(
         "enable": enable,
         "gatewayType": gateway_type,
     }
-    # 实测（2026-09）：真实云端 apikeySource.source 仅接受 Default/Header，
-    # 传 Authorization 会 400 InvalidParameter.WithValue；且 identityConfig 必填。
-    # Custom 模式由调用方（本系统）生成强随机 Key 写入，明文在创建时即持有。
+    # 实测（2026-09）：真实云端 apikeySource.source 仅接受 Default/Header；
+    # value="Authorization" 即标准 Authorization: Bearer <token> 头。
+    # 【关键实测结论】credentials 必须挂在 apiKeyIdentityConfig 顶层，
+    # 嵌在 apiKeySources[].credentials 里会被云端静默丢弃（创建返回 Ok 但 Key 无法鉴权 401）。
     credentials: list[dict[str, Any]] = (
         [{"generateMode": "Custom", "apikey": api_key}]
         if api_key
@@ -44,15 +53,15 @@ def create_consumer(
     )
     body["apiKeyIdentityConfig"] = {
         "type": "Apikey",
-        "apiKeySources": [
-            {"source": "Default", "value": "Authorization", "credentials": credentials}
-        ],
+        "apikeySource": {"source": "Default", "value": "Authorization"},
+        "credentials": credentials,
     }
     return _request("POST", "/v1/consumers", action="CreateConsumer", body=body)
 
 
 def delete_consumer(consumer_id: str) -> dict[str, Any]:
     """删除消费者。"""
+    # 实测：DELETE 成功时响应体可能为空（resp.json() 返回 None），此处不做结构断言
     return _request(
         "DELETE",
         f"/v1/consumers/{consumer_id}",
@@ -70,14 +79,12 @@ def update_consumer(
     consumer_group_ids: list[str] | None = None,
     keep_credentials: list[str] | None = None,
 ) -> dict[str, Any]:
-    """更新消费者。api_key 非空时将其作为自定义凭证追加到该消费者。
-
-    用于审批分配 API Key:把申请的自定义 Key 以 Custom 模式写入组内消费者,
-    使同一消费组(消费者)下的多个成员共享该消费者与对应配额规则。
+    """更新消费者。
 
     阿里云 UpdateConsumer 支持修改 name/description/enable(已实测)。
     consumer_group_ids 非空时把消费者加入指定消费组(csg- 列表,全量覆盖,
     传空列表会把消费者移出所有组)。
+    api_key 非空时将其作为服务端生成的 Custom 凭证覆盖写入。
     keep_credentials 非空时执行"凭证裁剪":按剩余凭证全量覆盖 apiKeySources
     (云侧无 DeleteConsumerApiKey API,删除单凭证只能覆盖写)。
     """
@@ -91,30 +98,21 @@ def update_consumer(
     if consumer_group_ids is not None:
         body["consumerGroupIds"] = consumer_group_ids
     if api_key:
+        # 【关键实测结论】credentials 必须挂在 apiKeyIdentityConfig 顶层（同 create_consumer），
+        # 嵌在 apiKeySources[].credentials 里会被云端静默丢弃（返回 Ok 但 Key 无法鉴权 401）。
         body["apiKeyIdentityConfig"] = {
             "type": "Apikey",
-            "apiKeySources": [
-                {
-                    "source": "Default",
-                    "value": "Authorization",
-                    "credentials": [{"generateMode": "Custom", "apikey": api_key}],
-                }
-            ],
+            "apikeySource": {"source": "Default", "value": "Authorization"},
+            "credentials": [{"generateMode": "Custom", "apikey": api_key}],
         }
     elif keep_credentials is not None:
-        # 凭证裁剪：仅保留 keep_credentials 中的 Key（按明文匹配 Custom 凭证）。
+        # 凭证裁剪：仅保留 keep_credentials 中的 Key（覆盖写剩余凭证）。
         # mock 模式：_mock_credential_replace 标记 mock 分支走"全量覆盖"而非"追加"。
         body["apiKeyIdentityConfig"] = {
             "type": "Apikey",
-            "apiKeySources": [
-                {
-                    "source": "Default",
-                    "value": "Authorization",
-                    "credentials": [
-                        {"generateMode": "Custom", "apikey": ak}
-                        for ak in keep_credentials
-                    ],
-                }
+            "apikeySource": {"source": "Default", "value": "Authorization"},
+            "credentials": [
+                {"generateMode": "Custom", "apikey": ak} for ak in keep_credentials
             ],
             "_mock_credential_replace": True,
         }

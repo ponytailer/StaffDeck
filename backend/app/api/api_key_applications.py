@@ -13,8 +13,6 @@ from app.aliyun_aigw import (
     get_apig_client,
     get_gateway_config,
     get_gateway_configs,
-    list_consumer_group_consumers,
-    list_consumer_groups as aliyun_list_consumer_groups,
 )
 from app.config import get_settings
 from app.db import get_session
@@ -49,16 +47,22 @@ router = APIRouter(
 def _sync_consumer_groups_to_local(
     db: Session,
     tenant_id: str,
+    client,
     gateways: list,
-) -> None:
-    """从阿里云同步消费者组到本地 DB（幂等）。"""
-    if not gateways:
-        return
+    mirror: bool = False,
+) -> dict[str, int]:
+    """从阿里云同步消费组到本地 DB（幂等）。
+
+    mirror=False（GET 列表等隐式同步）：仅新增/更新，不删本地数据。
+    mirror=True（手动同步按钮）：完整镜像语义，云端已删除的组同步移除
+    （仅镜像行，无 external id 的纯本地记录保留）。
+    返回变更计数 {"created", "updated", "removed"}；云端调用失败时向上抛出。
+    """
+    counts = {"created": 0, "updated": 0, "removed": 0}
+    if not gateways or client is None:
+        return counts
     gateway = gateways[0]
-    try:
-        cloud_items = aliyun_list_consumer_groups()
-    except (AliyunApigError, RuntimeError):
-        return
+    cloud_items = client.list_consumer_groups()
 
     existing = {
         row.external_consumer_group_id: row
@@ -67,34 +71,48 @@ def _sync_consumer_groups_to_local(
                 ApiKeyConsumerGroup.tenant_id == tenant_id
             )
         ).all()
+        if row.external_consumer_group_id
     }
 
     now = utc_now()
+    cloud_ids: set[str] = set()
     for item in cloud_items:
         csg_id = item.get("consumerGroupId") or ""
         if not csg_id:
             continue
+        cloud_ids.add(csg_id)
         if csg_id in existing:
             row = existing[csg_id]
             row.name = item.get("name") or row.name
             row.description = item.get("description")
             row.consumer_count = item.get("consumerCount")
             row.updated_at = now
+            counts["updated"] += 1
         else:
-            row = ApiKeyConsumerGroup(
-                tenant_id=tenant_id,
-                name=item.get("name") or "",
-                description=item.get("description"),
-                gateway_id=gateway.gateway_id,
-                gateway_name=gateway.name,
-                external_consumer_group_id=csg_id,
-                consumer_type=item.get("gatewayType") or "AI",
-                consumer_count=item.get("consumerCount"),
-                created_at=now,
-                updated_at=now,
+            db.add(
+                ApiKeyConsumerGroup(
+                    tenant_id=tenant_id,
+                    name=item.get("name") or "",
+                    description=item.get("description"),
+                    gateway_id=gateway.gateway_id,
+                    gateway_name=gateway.name,
+                    external_consumer_group_id=csg_id,
+                    consumer_type=item.get("gatewayType") or "AI",
+                    consumer_count=item.get("consumerCount"),
+                    created_at=now,
+                    updated_at=now,
+                )
             )
-            db.add(row)
+            counts["created"] += 1
+
+    # 完整镜像模式：云端已删除的消费组本地同步移除
+    if mirror:
+        for csg_id, row in existing.items():
+            if csg_id not in cloud_ids:
+                db.delete(row)
+                counts["removed"] += 1
     db.commit()
+    return counts
 
 
 def _sync_consumers_to_local(
@@ -102,15 +120,20 @@ def _sync_consumers_to_local(
     tenant_id: str,
     client,
     gateways: list,
-) -> None:
-    """从阿里云同步消费者到本地 DB（幂等）。"""
-    if not gateways:
-        return
+    mirror: bool = False,
+) -> dict[str, int]:
+    """从阿里云同步消费者到本地 DB（幂等）。
+
+    mirror=False（隐式同步）：仅新增/更新；归属变更只在云端有值时跟随。
+    mirror=True（手动同步按钮）：完整镜像语义——归属以云端为准（移出组则
+    清空本地归属），云端已删除的消费者同步移除。
+    返回变更计数；云端调用失败时向上抛出。
+    """
+    counts = {"created": 0, "updated": 0, "removed": 0}
+    if not gateways or client is None:
+        return counts
     gateway = gateways[0]
-    try:
-        cloud_items = client.list_consumers()
-    except (AliyunApigError, RuntimeError):
-        return
+    cloud_items = client.list_consumers()
 
     existing = {
         row.external_consumer_id: row
@@ -119,57 +142,84 @@ def _sync_consumers_to_local(
                 ApiKeyConsumer.tenant_id == tenant_id
             )
         ).all()
+        if row.external_consumer_id
     }
 
     now = utc_now()
+    cloud_ids: set[str] = set()
     for item in cloud_items:
         consumer_id = item.get("consumerId") or ""
         if not consumer_id:
             continue
-        # 获取消费者详情以提取消费组归属
-        consumer_groups_info = []
+        cloud_ids.add(consumer_id)
+
+        # 消费组归属取自云端消费者详情；详情获取失败时保留本地归属
+        csg_name = ""
+        csg_id = ""
         try:
             detail = client.get_consumer(consumer_id)
             consumer_groups_info = detail.get("consumerGroups") or []
+            if consumer_groups_info:
+                first_csg = (
+                    consumer_groups_info[0]
+                    if isinstance(consumer_groups_info, list)
+                    else consumer_groups_info
+                )
+                if isinstance(first_csg, dict):
+                    csg_name = first_csg.get("name") or ""
+                    csg_id = first_csg.get("consumerGroupId") or ""
         except (AliyunApigError, RuntimeError):
-            pass
+            csg_id = None  # 详情失败：无法判定，保持本地值
+            csg_name = None
 
-        csg_name = ""
-        csg_id = ""
-        if consumer_groups_info:
-            first_csg = consumer_groups_info[0] if isinstance(consumer_groups_info, list) else consumer_groups_info
-            csg_name = (first_csg.get("name") or "") if isinstance(first_csg, dict) else ""
-            csg_id = (first_csg.get("consumerGroupId") or "") if isinstance(first_csg, dict) else ""
-
+        enable = item.get("enable", True)
         if consumer_id in existing:
             row = existing[consumer_id]
             row.name = item.get("name") or row.name
             row.description = item.get("description")
-            row.enable = item.get("enable", True)
+            row.enable = enable
             row.deploy_status = item.get("deployStatus")
-            row.external_consumer_group_id = csg_id or row.external_consumer_group_id
-            row.consumer_group_name = csg_name or row.consumer_group_name
-            row.status = "enabled" if item.get("enable", True) else "disabled"
+            if csg_id is not None:
+                if mirror:
+                    # 完整镜像：云端为准，移出组则清空本地归属
+                    row.external_consumer_group_id = csg_id or None
+                    row.consumer_group_name = csg_name or None
+                else:
+                    # 隐式同步：云端无归属时保留本地值
+                    row.external_consumer_group_id = csg_id or row.external_consumer_group_id
+                    row.consumer_group_name = csg_name or row.consumer_group_name
+            row.status = "enabled" if enable else "disabled"
             row.updated_at = now
+            counts["updated"] += 1
         else:
-            row = ApiKeyConsumer(
-                tenant_id=tenant_id,
-                name=item.get("name") or "",
-                description=item.get("description"),
-                gateway_id=gateway.gateway_id,
-                gateway_name=gateway.name,
-                external_consumer_id=consumer_id,
-                external_consumer_group_id=csg_id,
-                consumer_group_name=csg_name,
-                consumer_type=item.get("gatewayType") or "AI",
-                deploy_status=item.get("deployStatus"),
-                enable=item.get("enable", True),
-                status="enabled" if item.get("enable", True) else "disabled",
-                created_at=now,
-                updated_at=now,
+            db.add(
+                ApiKeyConsumer(
+                    tenant_id=tenant_id,
+                    name=item.get("name") or "",
+                    description=item.get("description"),
+                    gateway_id=gateway.gateway_id,
+                    gateway_name=gateway.name,
+                    external_consumer_id=consumer_id,
+                    external_consumer_group_id=csg_id or None,
+                    consumer_group_name=csg_name or None,
+                    consumer_type=item.get("gatewayType") or "AI",
+                    deploy_status=item.get("deployStatus"),
+                    enable=enable,
+                    status="enabled" if enable else "disabled",
+                    created_at=now,
+                    updated_at=now,
+                )
             )
-            db.add(row)
+            counts["created"] += 1
+
+    # 完整镜像模式：云端已删除的消费者本地同步移除
+    if mirror:
+        for consumer_id, row in existing.items():
+            if consumer_id not in cloud_ids:
+                db.delete(row)
+                counts["removed"] += 1
     db.commit()
+    return counts
 
 
 def _sync_quota_rules_to_local(
@@ -177,16 +227,20 @@ def _sync_quota_rules_to_local(
     tenant_id: str,
     client,
     gateways: list,
-) -> None:
-    """从阿里云同步配额规则到本地 DB（幂等操作）。"""
-    if not gateways:
-        return
+    mirror: bool = False,
+) -> dict[str, int]:
+    """从阿里云同步配额规则到本地 DB（幂等）。
+
+    mirror=False（隐式同步）：仅新增/更新。mirror=True（手动同步按钮）：
+    完整镜像语义，云端已删除的规则同步移除。
+    返回变更计数；云端调用失败时向上抛出。
+    """
+    counts = {"created": 0, "updated": 0, "removed": 0}
+    if not gateways or client is None:
+        return counts
     gateway = gateways[0]
 
-    try:
-        cloud_items = client.list_quota_rules(gateway.gateway_id)
-    except (AliyunApigError, RuntimeError):
-        return
+    cloud_items = client.list_quota_rules(gateway.gateway_id)
 
     existing = {
         row.external_rule_id: row
@@ -195,13 +249,16 @@ def _sync_quota_rules_to_local(
                 ApiKeyQuotaRule.tenant_id == tenant_id
             )
         ).all()
+        if row.external_rule_id
     }
 
     now = utc_now()
+    cloud_ids: set[str] = set()
     for item in cloud_items:
         rule_id = item.get("ruleId") or ""
         if not rule_id:
             continue
+        cloud_ids.add(rule_id)
 
         if rule_id in existing:
             row = existing[rule_id]
@@ -211,22 +268,33 @@ def _sync_quota_rules_to_local(
             row.period_type = item.get("periodType") or row.period_type
             row.status = item.get("ruleStatus") or row.status
             row.updated_at = now
+            counts["updated"] += 1
         else:
-            row = ApiKeyQuotaRule(
-                tenant_id=tenant_id,
-                name=item.get("ruleName") or "",
-                gateway_id=gateway.gateway_id,
-                gateway_name=gateway.name,
-                quota_dimension=item.get("quotaDimension") or "credit",
-                quota_limit=int(item.get("quotaLimit") or 0),
-                period_type=item.get("periodType") or "day",
-                external_rule_id=rule_id,
-                status=item.get("ruleStatus") or "enabled",
-                created_at=now,
-                updated_at=now,
+            db.add(
+                ApiKeyQuotaRule(
+                    tenant_id=tenant_id,
+                    name=item.get("ruleName") or "",
+                    gateway_id=gateway.gateway_id,
+                    gateway_name=gateway.name,
+                    quota_dimension=item.get("quotaDimension") or "credit",
+                    quota_limit=int(item.get("quotaLimit") or 0),
+                    period_type=item.get("periodType") or "day",
+                    external_rule_id=rule_id,
+                    status=item.get("ruleStatus") or "enabled",
+                    created_at=now,
+                    updated_at=now,
+                )
             )
-            db.add(row)
+            counts["created"] += 1
+
+    # 完整镜像模式：云端已删除的配额规则本地同步移除
+    if mirror:
+        for rule_id, row in existing.items():
+            if rule_id not in cloud_ids:
+                db.delete(row)
+                counts["removed"] += 1
     db.commit()
+    return counts
 
 
 def _cg_from_local(row: ApiKeyConsumerGroup) -> ApiKeyConsumerGroupRead:
@@ -439,6 +507,7 @@ class ApiKeyApplicationRead(BaseModel):
     quota_rule_name: str | None = None
     consumer_id: str | None = None
     consumer_name: str | None = None
+    consumer_status: str | None = None  # enabled / disabled / deleted(消费者已被删除) / None(未知)，异常时前端提示
     consumer_group_id: str | None = None
     consumer_group_name: str | None = None
     used_amount: int | None = None
@@ -493,7 +562,11 @@ class ApiKeyApplicationUsageRead(BaseModel):
     items: list[ApiKeyApplicationUsageItem]
 
 
-def _read(row: ApiKeyApplication, include_secret: bool = False) -> ApiKeyApplicationRead:
+def _read(
+    row: ApiKeyApplication,
+    include_secret: bool = False,
+    consumer_status: str | None = None,
+) -> ApiKeyApplicationRead:
     # 历史数据可能用旧 APP_SECRET 加密：容错解密，失败按「密钥失效」处理（masked 为空）
     plain_key = try_decrypt_secret(row.api_key_encrypted)
     return ApiKeyApplicationRead(
@@ -514,6 +587,7 @@ def _read(row: ApiKeyApplication, include_secret: bool = False) -> ApiKeyApplica
         quota_rule_name=row.quota_rule_name,
         consumer_id=row.consumer_id,
         consumer_name=row.consumer_name,
+        consumer_status=consumer_status,
         consumer_group_id=row.consumer_group_id,
         consumer_group_name=row.consumer_group_name,
         used_amount=row.used_amount,
@@ -526,7 +600,7 @@ def _read(row: ApiKeyApplication, include_secret: bool = False) -> ApiKeyApplica
 
 
 def _generate_api_key() -> str:
-    """系统生成强随机 API Key 明文(作为阿里云消费者自定义凭证)。"""
+    """系统生成强随机 API Key 明文（审批流程以 Custom 模式写入阿里云消费者）。"""
     return "sk-" + secrets.token_urlsafe(32)
 
 
@@ -556,7 +630,7 @@ def approval_stats(
     ).all()
     pending = sum(1 for r in rows if r.status == "pending")
     allocated = sum(1 for r in rows if r.status == "approved")
-    history = sum(1 for r in rows if r.status in ("rejected", "revoked"))
+    history = sum(1 for r in rows if r.status != "pending")
     return ApiKeyApprovalStats(pending=pending, allocated=allocated, history=history)
 
 
@@ -582,7 +656,7 @@ def list_consumer_groups(
     if gateways:
         try:
             client = get_apig_client()
-            _sync_consumer_groups_to_local(db, tenant_id, gateways)
+            _sync_consumer_groups_to_local(db, tenant_id, client, gateways)
         except (AliyunApigError, RuntimeError):
             pass
 
@@ -592,6 +666,47 @@ def list_consumer_groups(
         .order_by(ApiKeyConsumerGroup.name)
     ).all()
     return [_cg_from_local(row) for row in rows]
+
+
+class ApiKeyAliyunSyncRequest(BaseModel):
+    tenant_id: str
+
+
+class ApiKeyAliyunSyncResult(BaseModel):
+    synced_at: str
+    groups: dict[str, int]
+    consumers: dict[str, int]
+    quota_rules: dict[str, int]
+
+
+@router.post("/consumer-groups/sync", response_model=ApiKeyAliyunSyncResult)
+def sync_consumer_groups_from_aliyun(
+    request: ApiKeyAliyunSyncRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ApiKeyAliyunSyncResult:
+    """手动触发：从阿里云全量同步消费组/消费者/配额规则到本地（云端为准）。
+
+    用于处理在阿里云控制台手动操作（建组、删除、调整成员/规则）导致的本地数据漂移。
+    """
+    ensure_tenant_admin(request.tenant_id, current_user)
+    gateways = get_gateway_configs()
+    if not gateways:
+        raise HTTPException(status_code=400, detail="后端未配置网关（ALIYUN_APIG_GATEWAYS）")
+    client = _require_apig_client("同步阿里云数据")
+    try:
+        groups = _sync_consumer_groups_to_local(db, request.tenant_id, client, gateways, mirror=True)
+        consumers = _sync_consumers_to_local(db, request.tenant_id, client, gateways, mirror=True)
+        quota_rules = _sync_quota_rules_to_local(db, request.tenant_id, client, gateways, mirror=True)
+    except (AliyunApigError, RuntimeError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=f"阿里云 APIG 调用失败：{exc}") from exc
+    return ApiKeyAliyunSyncResult(
+        synced_at=utc_now().isoformat(),
+        groups=groups,
+        consumers=consumers,
+        quota_rules=quota_rules,
+    )
 
 # ============ 消费者端点 ============
 
@@ -924,13 +1039,26 @@ def create_application(
     current_user: User = Depends(get_current_user),
 ) -> ApiKeyApplicationRead:
     ensure_tenant(db, request.tenant_id)
-    active = db.exec(
+    active_rows = db.exec(
         select(ApiKeyApplication).where(
             ApiKeyApplication.tenant_id == request.tenant_id,
             ApiKeyApplication.user_id == current_user.id,
             ApiKeyApplication.status.in_(ACTIVE_STATUSES),
         )
     ).all()
+    # 上限口径 = 在用/申请中；approved 但关联消费者已被删除的记录不占名额
+    active_consumer_ids = {
+        c.external_consumer_id
+        for c in db.exec(
+            select(ApiKeyConsumer).where(ApiKeyConsumer.tenant_id == request.tenant_id)
+        ).all()
+        if c.external_consumer_id
+    }
+    active = [
+        r
+        for r in active_rows
+        if r.status == "pending" or (r.consumer_id and r.consumer_id in active_consumer_ids)
+    ]
     if len(active) >= MAX_APPLICATIONS_PER_USER:
         raise HTTPException(
             status_code=409,
@@ -964,7 +1092,33 @@ def list_my_applications(
         )
         .order_by(ApiKeyApplication.created_at.desc())
     ).all()
-    return [_read(row, include_secret=True) for row in rows]
+
+    # 联查关联消费者的启停状态（消费者被停用时前端提示用户联系管理员）
+    # 消费者行不存在（云端已删除并被 mirror 同步移除）时回带 deleted
+    consumer_status_map: dict[str, str] = {}
+    consumer_ids = {r.consumer_id for r in rows if r.consumer_id}
+    if consumer_ids:
+        consumer_rows = db.exec(
+            select(ApiKeyConsumer).where(ApiKeyConsumer.tenant_id == tenant_id)
+        ).all()
+        consumer_status_map = {
+            c.external_consumer_id: c.status
+            for c in consumer_rows
+            if c.external_consumer_id
+        }
+
+    return [
+        _read(
+            row,
+            include_secret=True,
+            consumer_status=(
+                consumer_status_map.get(row.consumer_id or "")
+                if row.consumer_id and row.consumer_id in consumer_status_map
+                else ("deleted" if row.status == "approved" and row.consumer_id else None)
+            ),
+        )
+        for row in rows
+    ]
 
 
 @router.get("/mine/usage", response_model=list[ApiKeyApplicationUsageItem])
@@ -1060,6 +1214,44 @@ def list_my_usage(
     return items
 
 
+@router.delete("/mine/{application_id}", status_code=204)
+def delete_my_application(
+    application_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    """用户删除自己名下的终止态申请记录（已驳回/已吊销，或消费者已被删除的批准记录）。
+
+    仅允许删除不再占用申请名额的记录：pending / 有效 approved（消费者仍在服务）
+    不可删——前者是流程中记录，后者代表可用的 API Key。
+    """
+    ensure_tenant(db, tenant_id)
+    row = db.get(ApiKeyApplication, application_id)
+    if not row or row.tenant_id != tenant_id or row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="申请记录不存在")
+    if row.status == "pending":
+        raise HTTPException(status_code=409, detail="待审批的申请不能删除")
+    if row.status == "approved":
+        # approved 仅当关联消费者已被删除（云端删除后同步移除）时才可清理；
+        # 消费者仍在（或未关联）视为有效 Key，需先吊销
+        consumer_alive = False
+        if row.consumer_id:
+            consumer_alive = (
+                db.exec(
+                    select(ApiKeyConsumer).where(
+                        ApiKeyConsumer.tenant_id == tenant_id,
+                        ApiKeyConsumer.external_consumer_id == row.consumer_id,
+                    )
+                ).first()
+                is not None
+            )
+        if consumer_alive or not row.consumer_id:
+            raise HTTPException(status_code=409, detail="该 API Key 仍在使用中，请先联系管理员吊销")
+    db.delete(row)
+    db.commit()
+
+
 @router.get("", response_model=list[ApiKeyApplicationRead])
 def list_applications(
     tenant_id: str = Query(...),
@@ -1071,7 +1263,28 @@ def list_applications(
         select(ApiKeyApplication).where(ApiKeyApplication.tenant_id == tenant_id)
     ).all()
     rows.sort(key=lambda r: (_STATUS_ORDER.get(r.status, 9), -r.created_at.timestamp()))
-    return [_read(row, include_secret=False) for row in rows]
+
+    # 回带消费者状态（enabled/disabled/deleted）——云端删除消费者并同步后，
+    # 本地行被移除，approved 申请需向管理员展示「消费者已删除」
+    consumer_status_map: dict[str, str] = {
+        c.external_consumer_id: c.status
+        for c in db.exec(
+            select(ApiKeyConsumer).where(ApiKeyConsumer.tenant_id == tenant_id)
+        ).all()
+        if c.external_consumer_id
+    }
+    return [
+        _read(
+            row,
+            include_secret=False,
+            consumer_status=(
+                consumer_status_map.get(row.consumer_id or "")
+                if row.consumer_id and row.consumer_id in consumer_status_map
+                else ("deleted" if row.status == "approved" and row.consumer_id else None)
+            ),
+        )
+        for row in rows
+    ]
 
 
 def _get_pending(db: Session, application_id: str, tenant_id: str) -> ApiKeyApplication:
@@ -1115,9 +1328,9 @@ def approve_application(
     quota_limit = int(rule_detail.get("quotaLimit") or 0)
     period_type = rule_detail.get("periodType") or "day"
 
-    # 2) 生成本系统强随机 API Key（作为"系统生成"），以 Custom 模式创建消费者。
-    #    实测（2026-09）：真实云端新建消费者无论 Auto/System/Custom，GetConsumer
-    #    均不回带 credentials 明文，因此必须由本系统生成并持有明文。
+    # 2) 服务端生成强随机 API Key，以 Custom 模式创建消费者
+    #    （凭证来源 Authorization: Bearer；实测云端 System 模式不回带明文，
+    #    需要在本系统内展示/管理明文的场景必须由服务端生成并持有）
     api_key = _generate_api_key()
     try:
         consumer_id = client.create_consumer(
@@ -1138,6 +1351,15 @@ def approve_application(
         )
     except (AliyunApigError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail=f"阿里云绑定失败：{exc}") from exc
+
+    # 3.5) 授权：组级授权对组内成员生效（实测 2026-09-03），组已有授权时
+    #      无需单独授权；仅组未授权目标 API 时才为消费者兜底建个人规则
+    try:
+        client.ensure_group_member_authorized(
+            consumer_id, request.consumer_group_id, gateway.gateway_id
+        )
+    except (AliyunApigError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=f"阿里云创建授权规则失败：{exc}") from exc
 
     # 4) 写透本地消费者表（供消费组页展示与启停管理）
     now = utc_now()
@@ -1216,10 +1438,20 @@ def reject_application(
     return _read(row, include_secret=False)
 
 
+def _consumer_exists(client: Any, consumer_id: str) -> bool:
+    """检查消费者在云端是否仍存在（GetConsumer，任何失败都按不存在处理）。"""
+    try:
+        client.get_consumer(consumer_id)
+    except (AliyunApigError, RuntimeError, ValueError):
+        return False
+    return True
+
+
 def _list_consumer_api_keys(client: Any, consumer_id: str) -> list[str]:
     """尽力拉取消费者名下的 API Key 明文列表（GetConsumer credentials）。
 
-    真实云端多数情况不回带凭证（返回空列表）；mock 模式回带。
+    实测（2026-09）：真实云端在凭证以正确结构写入后 GetConsumer 会回带明文
+    （credentials 挂在 apiKeyIdentityConfig 顶层）；mock 模式同样回带。
     """
     try:
         detail = client.get_consumer(consumer_id)
@@ -1227,6 +1459,12 @@ def _list_consumer_api_keys(client: Any, consumer_id: str) -> list[str]:
         return []
     identity = detail.get("apiKeyIdentityConfig") or detail.get("apikeyIdentityConfig") or {}
     keys: list[str] = []
+    # 新结构：credentials 挂在 apiKeyIdentityConfig 顶层（实测有效）
+    for cred in identity.get("credentials") or []:
+        ak = cred.get("apikey") or cred.get("apiKey")
+        if ak and ak not in keys:
+            keys.append(ak)
+    # 兼容旧结构：credentials 嵌在 apiKeySources[] 内
     for src in identity.get("apiKeySources", []) + identity.get("apikeySources", []):
         for cred in src.get("credentials") or []:
             ak = cred.get("apikey") or cred.get("apiKey")
@@ -1299,7 +1537,13 @@ def revoke_application(
     revoked_key = try_decrypt_secret(row.api_key_encrypted or "")
     client = get_apig_client()
 
-    if client and row.consumer_id:
+    # 消费者已在云端被删除（如管理员手动删除后同步）时跳过云端调用，
+    # 直接做本地落库——云端 UpdateConsumer 会 404 导致吊销卡死。
+    consumer_exists = (
+        bool(client) and bool(row.consumer_id) and _consumer_exists(client, row.consumer_id)
+    )
+
+    if client and row.consumer_id and consumer_exists:
         keys = _list_consumer_api_keys(client, row.consumer_id)
         try:
             if not keys:
@@ -1595,7 +1839,8 @@ def list_usage(
     high_count = 0
     low_count = 0
 
-    # 行主体 = 当前消费者列表 ∪ 快照中出现过的消费者（含已删除消费者，保留历史）
+    # 行主体 = 当前消费者列表（历史月份再并入快照中出现过的消费者，保留历史）
+    current_consumer_ids = {row.external_consumer_id or "" for row in consumer_rows}
     seen: set[str] = set()
     ordered_consumers: list[tuple[str, str | None, str | None, str | None]] = []
     for row in consumer_rows:
@@ -1603,13 +1848,14 @@ def list_usage(
         if cid not in seen:
             seen.add(cid)
             ordered_consumers.append((cid, row.name, row.gateway_name, row.gateway_id))
-    for m in merged_by_consumer:
-        cid = m["consumer_id"] or ""
-        if cid and cid not in seen:
-            seen.add(cid)
-            ordered_consumers.append(
-                (cid, m["consumer_name"], m["gateway_name"], m["gateway_id"])
-            )
+    if not is_current_month:
+        for m in merged_by_consumer:
+            cid = m["consumer_id"] or ""
+            if cid and cid not in seen:
+                seen.add(cid)
+                ordered_consumers.append(
+                    (cid, m["consumer_name"], m["gateway_name"], m["gateway_id"])
+                )
 
     for cid, name, gateway_name, gateway_id in ordered_consumers:
         m = merged_map.get(cid)

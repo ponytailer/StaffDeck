@@ -916,7 +916,7 @@ def _seed_mcp_servers(session: Session) -> None:
 def seed_demo_data(session: Session) -> None:
     settings = get_settings()
     if not session.get(Tenant, "tenant_demo"):
-        session.add(Tenant(id="tenant_demo", name="Demo Enterprise"))
+        session.add(Tenant(id="tenant_demo", name="FosunHoliday"))
 
     if not session.get(PersonaConfig, "tenant_demo"):
         session.add(PersonaConfig(tenant_id="tenant_demo", system_prompt=DEFAULT_PERSONA_PROMPT))

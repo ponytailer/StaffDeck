@@ -5,11 +5,13 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.api.auth import (
     LoginRequest,
     RegisterRequest,
+    UpdateProfileRequest,
     UserCreateRequest,
     UserUpdateRequest,
     create_user,
     login,
     register,
+    update_my_profile,
     update_user,
 )
 from app.db.models import Tenant, User
@@ -302,6 +304,28 @@ def test_update_user_changes_department() -> None:
             db,
         )
         assert cleared.department is None
+
+
+def test_update_my_profile_changes_own_display_name() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        member = User(
+            id="member",
+            tenant_id="tenant_demo",
+            username="member",
+            display_name="旧名字",
+            role="member",
+            password_hash=hash_password("secret"),
+        )
+        db.add(member)
+        db.commit()
+
+        updated = update_my_profile(UpdateProfileRequest(display_name="  新名字  "), member, db)
+        assert updated.display_name == "新名字"
+
+        # 置空串:回退为用户名(与管理员编辑同规则)
+        fallback = update_my_profile(UpdateProfileRequest(display_name="   "), member, db)
+        assert fallback.display_name == "member"
 
 
 def _test_session() -> Session:

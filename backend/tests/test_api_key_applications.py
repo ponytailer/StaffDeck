@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.db.models import ApiKeyConsumerGroup, ApiKeyQuotaRule, Tenant, User
+from app.db.models import ApiKeyApplication, ApiKeyConsumer, ApiKeyConsumerGroup, ApiKeyQuotaRule, Tenant, User
 from app.api import api_key_applications as apk
 from app.aliyun_aigw import config as aigw_config
 from app.aliyun_aigw import get_apig_client as real_get_apig_client
@@ -16,19 +16,18 @@ from app.api.api_key_applications import (
     ApiKeyApplicationCreate,
     ApiKeyApplicationReview,
     ApiKeyConsumerGroupCreate,
-    ApiKeyConsumerGroupUpdate,
     ApiKeyQuotaRuleCreate,
     ApiKeyQuotaUpdate,
+    approval_stats,
     approve_application,
     create_application,
-    create_consumer_group,
     create_quota_rule,
+    delete_my_application,
     list_applications,
     list_my_applications,
     list_usage,
     reject_application,
     revoke_application,
-    update_consumer_group,
     update_quota,
 )
 
@@ -70,13 +69,19 @@ class FakeApigClient:
         self.deleted_consumers = []
         self.deleted_rules = []
         self.meta_updates = []
+        self.group_adds = []
+        self.authz_rules = []
+        self.known_groups = {}
         # 云端资源视图（实时直读接口用）
         self.consumers = {}
         self.quota_rules = {}
+        # 云端消费组视图（ListConsumerGroups）+ 消费者组归属（GetConsumer.consumerGroups）
+        self.cloud_groups = {}
+        self.consumer_group_members = {}
 
     def create_consumer(self, name, api_key=None, description=None, gateway_type="AI"):
         self.created_consumers.append({"name": name, "api_key": api_key})
-        return f"consumer-{name}"
+        return f"consumer-{len(self.created_consumers):03d}"
 
     def get_consumer(self, consumer_id):
         return {
@@ -85,19 +90,50 @@ class FakeApigClient:
             "description": "",
             "gatewayType": "AI",
             "enable": True,
+            "consumerGroups": list(self.consumer_group_members.get(consumer_id, [])),
         }
 
     def list_consumers(self, gateway_type="AI"):
         return list(self.consumers.values())
 
+    def list_consumer_groups(self, gateway_type="AI"):
+        return list(self.cloud_groups.values())
+
     def list_quota_rules(self, gateway_id=None):
         return list(self.quota_rules.values())
 
+    def list_quota_rule_subjects(self, rule_id, gateway_id=None):
+        seen = []
+        for a in self.attached:
+            cid = a.get("consumer_id")
+            if cid and cid not in seen:
+                seen.append(cid)
+        return [{"id": cid, "usedAmount": 500} for cid in seen]
+
     def get_quota_rule(self, rule_id, gateway_id=None):
-        return self.quota_rules.get(
-            rule_id,
-            {"ruleId": rule_id, "ruleName": rule_id, "quotaDimension": "credit", "quotaLimit": 0, "periodType": "day"},
+        rule = self.quota_rules.get(rule_id)
+        if rule is None:
+            raise RuntimeError(f"quota rule {rule_id} not found")
+        return rule
+
+    def get_consumer_group(self, group_id):
+        info = self.known_groups.get(group_id)
+        if info is None:
+            raise RuntimeError(f"consumer group {group_id} not found")
+        return info
+
+    def add_consumers_to_group(self, group_id, consumer_ids):
+        self.group_adds.append({"group_id": group_id, "consumer_ids": list(consumer_ids)})
+        for cid in consumer_ids:
+            members = self.consumer_group_members.setdefault(cid, [])
+            if not any(g.get("consumerGroupId") == group_id for g in members):
+                members.append({"consumerGroupId": group_id, "name": group_id})
+
+    def ensure_group_member_authorized(self, consumer_id, group_id, gateway_id, api_id=None):
+        self.authz_rules.append(
+            {"consumer_id": consumer_id, "group_id": group_id, "gateway_id": gateway_id}
         )
+        return None
 
     def add_consumer_quota_rule(
         self,
@@ -212,12 +248,25 @@ def _make_group_rule(
     return group, rule
 
 
+def _register_cloud_refs(fake, group, rule):
+    """把本地消费组/配额规则注册进 fake 云端视图（get_consumer_group/get_quota_rule 可查）。"""
+    fake.known_groups[group.id] = {"consumerGroupId": group.id, "name": group.name}
+    fake.quota_rules[rule.id] = {
+        "ruleId": rule.id,
+        "ruleName": rule.name,
+        "quotaDimension": rule.quota_dimension,
+        "quotaLimit": rule.quota_limit,
+        "periodType": rule.period_type,
+    }
+
+
 def test_apply_and_admin_approve_flow():
     session = _make_session()
     admin = _admin(session)
     member = _member(session)
     fake = FakeApigClient()
     group, rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, rule)
 
     # 1) member applies for an API key
     created = create_application(
@@ -262,6 +311,7 @@ def test_apply_and_admin_approve_flow():
             pending.id,
             ApiKeyApplicationApprove(
                 tenant_id=TENANT,
+                consumer_name="demo-consumer",
                 consumer_group_id=group.id,
                 quota_rule_id=rule.id,
                 reviewer_note="ok",
@@ -271,26 +321,31 @@ def test_apply_and_admin_approve_flow():
         )
     assert approved.status == "approved"
     assert approved.api_key_masked
-    assert approved.api_url == "https://apigw.example.com/v1"
+    assert approved.api_url == "https://ai-gateway.folidaymall.com/v1/chat/completions"
     assert approved.gateway_name == "主力网关"
     assert approved.quota_limit == 100000
     assert approved.quota_period == "month"
-    assert approved.consumer_id == "consumer-demo"
+    assert approved.consumer_id == "consumer-001"
     assert approved.consumer_name == "demo-consumer"
     assert approved.consumer_group_name == "demo-consumer"
     assert approved.quota_rule_name == "default-token"
 
-    # 阿里云被调用: 追加凭证 + 纳入配额规则
-    assert len(fake.attached) == 2
-    assert fake.attached[0]["api_key"].startswith("sk-")
-    assert fake.attached[1]["consumer_id"] == "consumer-demo"
-    assert fake.attached[1]["rule_id"] == "rule-default"
+    # 阿里云被调用: 创建消费者(服务端生成 Key) + 入组 + 绑配额 + 授权规则
+    assert len(fake.created_consumers) == 1
+    assert fake.created_consumers[0]["api_key"].startswith("sk-")
+    assert fake.group_adds == [{"group_id": group.id, "consumer_ids": ["consumer-001"]}]
+    assert len(fake.attached) == 1
+    assert fake.attached[0]["consumer_id"] == "consumer-001"
+    assert fake.attached[0]["rule_id"] == rule.id
+    assert len(fake.authz_rules) == 1
+    assert fake.authz_rules[0]["consumer_id"] == "consumer-001"
+    assert fake.authz_rules[0]["group_id"] == group.id
 
     # 6) member now sees plaintext key + url on own approved application
     mine_after = list_my_applications(tenant_id=TENANT, db=session, current_user=member)
     approved_mine = next(item for item in mine_after if item.status == "approved")
     assert approved_mine.api_key and approved_mine.api_key.startswith("sk-")
-    assert approved_mine.api_url == "https://apigw.example.com/v1"
+    assert approved_mine.api_url == "https://ai-gateway.folidaymall.com/v1/chat/completions"
 
     # 7) approving a non-pending application fails
     already = False
@@ -299,7 +354,10 @@ def test_apply_and_admin_approve_flow():
             approve_application(
                 pending.id,
                 ApiKeyApplicationApprove(
-                    tenant_id=TENANT, consumer_group_id=group.id, quota_rule_id=rule.id
+                    tenant_id=TENANT,
+                    consumer_name="demo-consumer",
+                    consumer_group_id=group.id,
+                    quota_rule_id=rule.id,
                 ),
                 db=session,
                 current_user=admin,
@@ -321,6 +379,51 @@ def test_apply_and_admin_approve_flow():
     assert rejected.reviewer_note == "用途不明确"
 
 
+def test_approval_stats_history_includes_approved():
+    """审核历史口径 = 所有已处理（非 pending）的申请，含已批准。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, rule)
+
+    # 两个申请：一个批准、一个驳回
+    approved_app = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="批准用"),
+        db=session,
+        current_user=member,
+    )
+    rejected_app = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="驳回用"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approve_application(
+            approved_app.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="demo-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+    reject_application(
+        rejected_app.id,
+        ApiKeyApplicationReview(tenant_id=TENANT, reviewer_note="不通过"),
+        db=session,
+        current_user=admin,
+    )
+
+    stats = approval_stats(tenant_id=TENANT, db=session, current_user=admin)
+    assert stats.pending == 0
+    assert stats.allocated == 1
+    assert stats.history == 2  # 已批准 + 已驳回都计入审核历史
+
+
 def test_approve_unknown_group_400():
     session = _make_session()
     admin = _admin(session)
@@ -337,7 +440,10 @@ def test_approve_unknown_group_400():
             approve_application(
                 created.id,
                 ApiKeyApplicationApprove(
-                    tenant_id=TENANT, consumer_group_id="nope", quota_rule_id="nope"
+                    tenant_id=TENANT,
+                    consumer_name="demo-consumer",
+                    consumer_group_id="nope",
+                    quota_rule_id="nope",
                 ),
                 db=session,
                 current_user=admin,
@@ -377,6 +483,7 @@ def test_approve_mock_mode_success():
         created.id,
         ApiKeyApplicationApprove(
             tenant_id=TENANT,
+            consumer_name="demo-consumer",
             consumer_group_id="cs-mock-001",
             quota_rule_id="qr-mock-001",
         ),
@@ -384,11 +491,14 @@ def test_approve_mock_mode_success():
         current_user=admin,
     )
     assert approved.status == "approved"
-    assert approved.api_url == "https://apigw.example.com/v1"
-    assert approved.consumer_id == "cs-mock-001"
+    assert approved.api_url == "https://ai-gateway.folidaymall.com/v1/chat/completions"
+    # 新流程：审批创建全新消费者（mock 分支返回 cs-mock-xxx 新 ID）
+    assert approved.consumer_id.startswith("cs-mock-")
+    assert approved.consumer_name == "demo-consumer"
     assert approved.quota_rule_id == "qr-mock-001"
-    # 实时架构下 consumer_group_name 取云端消费者名（mock 分支无该消费者时回退 ID）
-    assert approved.consumer_group_name
+    assert approved.consumer_group_name  # mock GetConsumerGroup 分支返回组名
+    assert approved.quota_limit == 1000  # mock qr-mock-001 的限额
+    assert approved.quota_period == "day"
 
 
 def test_get_apig_client_none_in_production_without_ak(monkeypatch):
@@ -418,6 +528,7 @@ def test_approve_group_rule_gateway_mismatch_400():
                 created.id,
                 ApiKeyApplicationApprove(
                     tenant_id=TENANT,
+                    consumer_name="demo-consumer",
                     consumer_group_id="cs-missing",
                     quota_rule_id="qr-missing",
                 ),
@@ -435,6 +546,7 @@ def test_revoke_clears_key():
     member = _member(session)
     fake = FakeApigClient()
     group, rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, rule)
     created = create_application(
         ApiKeyApplicationCreate(tenant_id=TENANT, purpose="x"),
         db=session,
@@ -444,7 +556,10 @@ def test_revoke_clears_key():
         approve_application(
             created.id,
             ApiKeyApplicationApprove(
-                tenant_id=TENANT, consumer_group_id=group.id, quota_rule_id=rule.id
+                tenant_id=TENANT,
+                consumer_name="demo-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
             ),
             db=session,
             current_user=admin,
@@ -458,6 +573,50 @@ def test_revoke_clears_key():
     assert revoked.status == "revoked"
     assert revoked.api_key is None
     assert revoked.api_url is None
+
+
+def test_revoke_when_consumer_deleted_on_cloud():
+    """云端消费者已删除时吊销：跳过云端调用，本地正常落库为 revoked。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, rule)
+    created = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="x"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approve_application(
+            created.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="demo-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+
+    # 模拟云端消费者已被管理员手动删除：GetConsumer 抛错
+    def _raise(cid):
+        raise RuntimeError("consumer not found")
+
+    with patch.object(fake, "get_consumer", side_effect=_raise):
+        revoked = revoke_application(
+            created.id,
+            ApiKeyApplicationReview(tenant_id=TENANT, reviewer_note="云端已删除，清理记录"),
+            db=session,
+            current_user=admin,
+        )
+    assert revoked.status == "revoked"
+    assert revoked.api_key is None
+    assert revoked.api_url is None
+    # 未尝试云端更新
+    assert fake.detached == []
 
 
 def test_non_admin_cannot_list_all():
@@ -488,6 +647,7 @@ def test_usage_summary_and_items():
     member = _member(session)
     fake = FakeApigClient()
     group, rule = _make_group_rule(session, quota_limit=2000, period_type="day")
+    _register_cloud_refs(fake, group, rule)
 
     apps = []
     for purpose in ("业务 A", "业务 B"):
@@ -500,7 +660,10 @@ def test_usage_summary_and_items():
             approved = approve_application(
                 created.id,
                 ApiKeyApplicationApprove(
-                    tenant_id=TENANT, consumer_group_id=group.id, quota_rule_id=rule.id
+                    tenant_id=TENANT,
+                    consumer_name="demo-consumer",
+                    consumer_group_id=group.id,
+                    quota_rule_id=rule.id,
                 ),
                 db=session,
                 current_user=admin,
@@ -520,7 +683,336 @@ def test_usage_summary_and_items():
     assert usage.items[0].used_amount > 0
     assert usage.items[0].usage_rate > 0
     assert usage.items[0].suggestion in ("expand", "watch", "normal")
-    assert len(fake.usage_calls) == 2
+    # 新链路：用量经 list_quota_rule_subjects 一次性返回，不再逐消费者调 usage
+
+
+def test_usage_current_month_aligns_with_consumers():
+    """当月用量主体与消费者列表对齐：快照中已删除的消费者不再展示（历史月仍保留）。"""
+    from datetime import datetime, timezone
+
+    from app.db.models import ApiKeyUsageSnapshot
+
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+
+    # 本地仅 1 个在册消费者
+    session.add(
+        ApiKeyConsumer(
+            tenant_id=TENANT,
+            name="live-consumer",
+            gateway_id="gw-test123",
+            gateway_name="主力网关",
+            external_consumer_id="cs-live",
+            status="enabled",
+            enable=True,
+        )
+    )
+    now = datetime.now(timezone.utc)
+    month = now.strftime("%Y-%m")
+    # 当月快照含一个已在云端/本地删除的测试消费者
+    session.add(
+        ApiKeyUsageSnapshot(
+            tenant_id=TENANT,
+            month=month,
+            consumer_id="cs-removed-test",
+            consumer_name="testprobe",
+            gateway_id="gw-test123",
+            gateway_name="主力网关",
+            quota_rule_id=rule.external_rule_id or "",
+            quota_rule_name=rule.name,
+            quota_limit=2000,
+            quota_period="month",
+            used_amount=123,
+        )
+    )
+    # 历史月快照（同已删消费者）应保留
+    session.add(
+        ApiKeyUsageSnapshot(
+            tenant_id=TENANT,
+            month="2020-01",
+            consumer_id="cs-removed-test",
+            consumer_name="testprobe",
+            gateway_id="gw-test123",
+            gateway_name="主力网关",
+            quota_rule_id=rule.external_rule_id or "",
+            quota_rule_name=rule.name,
+            quota_limit=2000,
+            quota_period="month",
+            used_amount=456,
+        )
+    )
+    session.commit()
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        current = list_usage(tenant_id=TENANT, db=session, current_user=admin)
+        history = list_usage(tenant_id=TENANT, month="2020-01", db=session, current_user=admin)
+
+    # 当月：只显示在册消费者，已删测试消费者不出现，汇总不含其用量
+    assert [item.consumer_id for item in current.items] == ["cs-live"]
+    assert current.summary.allocated_users == 1
+    assert current.summary.total_used == 0
+    # 历史月：主体 = 当前消费者 ∪ 快照消费者（已删消费者保留）
+    assert [item.consumer_id for item in history.items] == ["cs-live", "cs-removed-test"]
+    assert history.items[1].used_amount == 456
+
+
+def test_mine_returns_consumer_status():
+    """/mine 回带关联消费者的启停状态：停用消费者对应申请返回 disabled。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+
+    created = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="x"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approved = approve_application(
+            created.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="demo-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+
+    # 审批后正常：consumer_status 为 enabled（来自本地消费者行）
+    mine = list_my_applications(tenant_id=TENANT, db=session, current_user=member)
+    target = next(r for r in mine if r.id == approved.id)
+    assert target.consumer_status == "enabled"
+
+    # 消费者被停用后：consumer_status 变为 disabled
+    consumer_row = session.exec(
+        select(ApiKeyConsumer).where(ApiKeyConsumer.external_consumer_id.is_not(None))
+    ).first()
+    assert consumer_row is not None
+    consumer_row.status = "disabled"
+    consumer_row.enable = False
+    session.add(consumer_row)
+    session.commit()
+
+    mine = list_my_applications(tenant_id=TENANT, db=session, current_user=member)
+    target = next(r for r in mine if r.id == approved.id)
+    assert target.consumer_status == "disabled"
+
+
+def test_mine_returns_consumer_deleted_after_row_removed():
+    """消费者行被删除（云端删除后 mirror 同步）时，approved 申请回带 deleted。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+
+    created = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="x"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approved = approve_application(
+            created.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="demo-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+
+    # 模拟 mirror 同步：云端消费者已删除 → 本地行被移除
+    consumer_row = session.exec(
+        select(ApiKeyConsumer).where(ApiKeyConsumer.external_consumer_id.is_not(None))
+    ).first()
+    assert consumer_row is not None
+    session.delete(consumer_row)
+    session.commit()
+
+    # /mine：approved 申请回带 deleted
+    mine = list_my_applications(tenant_id=TENANT, db=session, current_user=member)
+    target = next(r for r in mine if r.id == approved.id)
+    assert target.status == "approved"
+    assert target.consumer_status == "deleted"
+
+    # 管理员列表同样回带 deleted
+    rows = list_applications(tenant_id=TENANT, db=session, current_user=admin)
+    target_admin = next(r for r in rows if r.id == approved.id)
+    assert target_admin.consumer_status == "deleted"
+
+
+def test_delete_my_application():
+    """用户删除自己名下终止态记录：rejected/revoked/消费者已删除的 approved 可删，pending/有效 approved 不可删。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, rule)
+
+    # 场景1：pending 不可删
+    created = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="p1"),
+        db=session,
+        current_user=member,
+    )
+    blocked = False
+    try:
+        delete_my_application(
+            created.id, tenant_id=TENANT, db=session, current_user=member
+        )
+    except HTTPException as exc:
+        blocked = exc.status_code == 409
+    assert blocked
+
+    # 场景2：有效 approved（消费者仍存在）不可删
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approved = approve_application(
+            created.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="demo-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+    blocked = False
+    try:
+        delete_my_application(
+            approved.id, tenant_id=TENANT, db=session, current_user=member
+        )
+    except HTTPException as exc:
+        blocked = exc.status_code == 409
+    assert blocked
+
+    # 场景3：revoked 可删
+    revoked = revoke_application(
+        approved.id,
+        ApiKeyApplicationReview(tenant_id=TENANT, reviewer_note="回收"),
+        db=session,
+        current_user=admin,
+    )
+    delete_my_application(revoked.id, tenant_id=TENANT, db=session, current_user=member)
+    assert session.get(ApiKeyApplication, revoked.id) is None
+
+    # 场景4：rejected 可删
+    created2 = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="p2"),
+        db=session,
+        current_user=member,
+    )
+    rejected = reject_application(
+        created2.id,
+        ApiKeyApplicationReview(tenant_id=TENANT, reviewer_note="不合规"),
+        db=session,
+        current_user=admin,
+    )
+    delete_my_application(rejected.id, tenant_id=TENANT, db=session, current_user=member)
+    assert session.get(ApiKeyApplication, rejected.id) is None
+
+    # 场景5：approved 且消费者已被删除（deleted）→ 可删
+    created3 = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="p3"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approved3 = approve_application(
+            created3.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="demo-consumer-2",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+    consumer_row = session.exec(
+        select(ApiKeyConsumer).where(
+            ApiKeyConsumer.external_consumer_id == approved3.consumer_id
+        )
+    ).first()
+    assert consumer_row is not None
+    session.delete(consumer_row)
+    session.commit()
+    delete_my_application(approved3.id, tenant_id=TENANT, db=session, current_user=member)
+    assert session.get(ApiKeyApplication, approved3.id) is None
+
+
+def test_create_limit_ignores_deleted_consumer():
+    """上限口径：approved 但消费者已被删除的记录不占申请名额。"""
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session)
+    _register_cloud_refs(fake, group, rule)
+
+    # 造满 MAX_APPLICATIONS_PER_USER 个 approved
+    created_ids = []
+    for i in range(apk.MAX_APPLICATIONS_PER_USER):
+        c = create_application(
+            ApiKeyApplicationCreate(tenant_id=TENANT, purpose=f"limit-{i}"),
+            db=session,
+            current_user=member,
+        )
+        created_ids.append(c.id)
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        for cid in created_ids:
+            approve_application(
+                cid,
+                ApiKeyApplicationApprove(
+                    tenant_id=TENANT,
+                    consumer_name=f"limit-consumer-{cid[-4:]}",
+                    consumer_group_id=group.id,
+                    quota_rule_id=rule.id,
+                ),
+                db=session,
+                current_user=admin,
+            )
+
+    # 已达上限 → 409
+    blocked = False
+    try:
+        create_application(
+            ApiKeyApplicationCreate(tenant_id=TENANT, purpose="over"),
+            db=session,
+            current_user=member,
+        )
+    except HTTPException as exc:
+        blocked = exc.status_code == 409
+    assert blocked
+
+    # 删掉一个消费者的本地行（模拟云端删除+同步）→ 名额释放，可再申请
+    consumer_row = session.exec(
+        select(ApiKeyConsumer).where(
+            ApiKeyConsumer.external_consumer_id.is_not(None)
+        )
+    ).first()
+    session.delete(consumer_row)
+    session.commit()
+
+    row = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="after-release"),
+        db=session,
+        current_user=member,
+    )
+    assert row.status == "pending"
 
 
 def test_update_quota_admin_and_flow():
@@ -529,6 +1021,7 @@ def test_update_quota_admin_and_flow():
     member = _member(session)
     fake = FakeApigClient()
     group, rule = _make_group_rule(session, quota_limit=1000)
+    _register_cloud_refs(fake, group, rule)
 
     created = create_application(
         ApiKeyApplicationCreate(tenant_id=TENANT, purpose="x"),
@@ -539,7 +1032,10 @@ def test_update_quota_admin_and_flow():
         approve_application(
             created.id,
             ApiKeyApplicationApprove(
-                tenant_id=TENANT, consumer_group_id=group.id, quota_rule_id=rule.id
+                tenant_id=TENANT,
+                consumer_name="demo-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
             ),
             db=session,
             current_user=admin,
@@ -577,6 +1073,7 @@ def test_update_quota_validation():
     member = _member(session)
     fake = FakeApigClient()
     group, rule = _make_group_rule(session, quota_limit=1000)
+    _register_cloud_refs(fake, group, rule)
 
     created = create_application(
         ApiKeyApplicationCreate(tenant_id=TENANT, purpose="x"),
@@ -603,7 +1100,10 @@ def test_update_quota_validation():
         approve_application(
             created.id,
             ApiKeyApplicationApprove(
-                tenant_id=TENANT, consumer_group_id=group.id, quota_rule_id=rule.id
+                tenant_id=TENANT,
+                consumer_name="demo-consumer",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.id,
             ),
             db=session,
             current_user=admin,
@@ -622,49 +1122,6 @@ def test_update_quota_validation():
     assert bad
 
 
-def test_create_consumer_group_and_quota_rule():
-    """消费组与配额规则创建接口走 mock 客户端,落库 external id。"""
-    session = _make_session()
-    admin = _admin(session)
-    group = create_consumer_group(
-        ApiKeyConsumerGroupCreate(
-            tenant_id=TENANT, name="demo-consumer", description="演示", gateway_name="主力网关"
-        ),
-        db=session,
-        current_user=admin,
-    )
-    assert group.external_consumer_id and group.external_consumer_id.startswith("cs-mock-")
-    assert group.gateway_name == "主力网关"
-
-    rule = create_quota_rule(
-        ApiKeyQuotaRuleCreate(
-            tenant_id=TENANT, name="default-token", gateway_name="主力网关",
-            quota_dimension="token", quota_limit=1000, period_type="day",
-        ),
-        db=session,
-        current_user=admin,
-    )
-    assert rule.external_rule_id and rule.external_rule_id.startswith("qr-mock-")
-    assert rule.quota_limit == 1000
-    assert rule.period_type == "day"
-
-
-def test_create_consumer_group_with_owner():
-    """消费组创建支持业务「归属」字段（非阿里云字段），落库并回读。"""
-    session = _make_session()
-    admin = _admin(session)
-    group = create_consumer_group(
-        ApiKeyConsumerGroupCreate(
-            tenant_id=TENANT,
-            name="owner-demo",
-            description="归属演示",
-            owner="重庆项目",
-            gateway_name="主力网关",
-        ),
-        db=session,
-        current_user=admin,
-    )
-    assert group.owner == "重庆项目"
 
 
 def test_consumer_group_owners_from_config():
@@ -677,67 +1134,124 @@ def test_consumer_group_owners_from_config():
     assert "Club Med" in owners
 
 
-def test_update_consumer_group():
-    """消费组编辑:名称/描述/归属更新落库,描述变化时同步阿里云(mock)。"""
+def test_sync_from_aliyun_mirror_semantics():
+    """手动同步：云端为准镜像同步消费组/消费者/配额规则（含移除云端已删项、归属清空）。"""
     session = _make_session()
     admin = _admin(session)
-    group = create_consumer_group(
-        ApiKeyConsumerGroupCreate(
-            tenant_id=TENANT,
-            name="edit-demo",
-            description="旧描述",
-            owner="重庆项目",
-            gateway_name="主力网关",
-        ),
-        db=session,
-        current_user=admin,
-    )
-    assert group.external_consumer_id  # mock 客户端已创建消费者
+    fake = FakeApigClient()
 
-    updated = update_consumer_group(
-        group.external_consumer_id,  # 实时架构：路径参数即云端 consumerId
-        ApiKeyConsumerGroupUpdate(
-            tenant_id=TENANT,
-            name="edit-demo-renamed",
-            description="新描述",
-            owner="Club Med",
-        ),
-        db=session,
-        current_user=admin,
-    )
-    assert updated.name == "edit-demo-renamed"
-    assert updated.description == "新描述"
-    assert updated.owner == "Club Med"
+    # 云端视图：1 组 + 2 消费者（probe 已入组 / free 已被移出组）+ 1 配额规则
+    fake.cloud_groups["csg-new"] = {
+        "consumerGroupId": "csg-new",
+        "name": "AILab",
+        "consumerCount": 1,
+    }
+    fake.consumers["cs-new"] = {
+        "consumerId": "cs-new",
+        "name": "probe",
+        "description": "",
+        "gatewayType": "AI",
+        "enable": True,
+        "deployStatus": "Deployed",
+    }
+    fake.consumer_group_members["cs-new"] = [{"consumerGroupId": "csg-new", "name": "AILab"}]
+    fake.consumers["cs-free"] = {
+        "consumerId": "cs-free",
+        "name": "free",
+        "description": "",
+        "gatewayType": "AI",
+        "enable": True,
+    }
+    fake.quota_rules["qr-new"] = {
+        "ruleId": "qr-new",
+        "ruleName": "AILab_Credits",
+        "quotaDimension": "credit",
+        "quotaLimit": 6000,
+        "periodType": "month",
+        "ruleStatus": "enabled",
+    }
 
-    # 回读确认已落库
-    row = session.get(ApiKeyConsumerGroup, group.id)
-    assert row is not None
-    assert row.name == "edit-demo-renamed"
-    assert row.description == "新描述"
-    assert row.owner == "Club Med"
-
-
-def test_update_consumer_group_empty_name_rejected():
-    """编辑消费组时名称为空 → 400。"""
-    session = _make_session()
-    admin = _admin(session)
-    group = create_consumer_group(
-        ApiKeyConsumerGroupCreate(
-            tenant_id=TENANT,
-            name="blank-name-demo",
-            gateway_name="主力网关",
-        ),
-        db=session,
-        current_user=admin,
-    )
-    bad = False
-    try:
-        update_consumer_group(
-            group.id,
-            ApiKeyConsumerGroupUpdate(tenant_id=TENANT, name="   "),
-            db=session,
-            current_user=admin,
+    # 本地预置：过期组（云端已删）、纯本地组（无 external id）、
+    # 过期消费者（云端已删）、归属过期的消费者（云端已移出组）、过期规则
+    session.add(
+        ApiKeyConsumerGroup(
+            tenant_id=TENANT, name="stale-group", gateway_id="gw-test123",
+            gateway_name="主力网关", external_consumer_group_id="csg-old",
         )
-    except HTTPException as exc:
-        bad = exc.status_code == 400
-    assert bad
+    )
+    session.add(
+        ApiKeyConsumerGroup(
+            tenant_id=TENANT, name="manual-group", gateway_id="gw-test123", gateway_name="主力网关"
+        )
+    )
+    session.add(
+        ApiKeyConsumer(
+            tenant_id=TENANT, name="dead-consumer", gateway_id="gw-test123",
+            gateway_name="主力网关", external_consumer_id="cs-old",
+        )
+    )
+    session.add(
+        ApiKeyConsumer(
+            tenant_id=TENANT, name="free", gateway_id="gw-test123",
+            gateway_name="主力网关", external_consumer_id="cs-free",
+            external_consumer_group_id="csg-old", consumer_group_name="oldgroup",
+        )
+    )
+    session.add(
+        ApiKeyQuotaRule(
+            tenant_id=TENANT, name="stale-rule", gateway_id="gw-test123",
+            gateway_name="主力网关", quota_dimension="token", quota_limit=100,
+            period_type="month", external_rule_id="qr-old",
+        )
+    )
+    session.commit()
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        result = apk.sync_consumer_groups_from_aliyun(
+            apk.ApiKeyAliyunSyncRequest(tenant_id=TENANT), db=session, current_user=admin
+        )
+
+    assert result.synced_at
+    assert result.groups == {"created": 1, "updated": 0, "removed": 1}
+    assert result.consumers == {"created": 1, "updated": 1, "removed": 1}
+    assert result.quota_rules == {"created": 1, "updated": 0, "removed": 1}
+
+    # 组：云端新增 AILab、云端已删的 stale-group 移除、纯本地 manual-group 保留
+    groups = session.exec(
+        select(ApiKeyConsumerGroup).where(ApiKeyConsumerGroup.tenant_id == TENANT)
+    ).all()
+    by_name = {g.name: g for g in groups}
+    assert "stale-group" not in by_name
+    assert "manual-group" in by_name
+    assert by_name["AILab"].external_consumer_group_id == "csg-new"
+
+    # 消费者：probe 新增并带云端归属；free 归属被云端清空；dead-consumer 移除
+    consumers = session.exec(
+        select(ApiKeyConsumer).where(ApiKeyConsumer.tenant_id == TENANT)
+    ).all()
+    by_cname = {c.name: c for c in consumers}
+    assert set(by_cname) == {"probe", "free"}
+    assert by_cname["probe"].external_consumer_id == "cs-new"
+    assert by_cname["probe"].external_consumer_group_id == "csg-new"
+    assert by_cname["probe"].consumer_group_name == "AILab"
+    assert by_cname["free"].external_consumer_group_id is None
+    assert by_cname["free"].consumer_group_name is None
+
+    # 配额规则：云端新增 AILab_Credits、过期 stale-rule 移除
+    rules = session.exec(
+        select(ApiKeyQuotaRule).where(ApiKeyQuotaRule.tenant_id == TENANT)
+    ).all()
+    assert [r.name for r in rules] == ["AILab_Credits"]
+    assert int(rules[0].quota_limit) == 6000
+
+
+def test_sync_from_aliyun_requires_admin():
+    session = _make_session()
+    member = _member(session)
+    with pytest.raises(HTTPException):
+        apk.sync_consumer_groups_from_aliyun(
+            apk.ApiKeyAliyunSyncRequest(tenant_id=TENANT), db=session, current_user=member
+        )
+
+
+

@@ -61,4 +61,5 @@ def _request(
     except requests.HTTPError as exc:  # noqa: BLE001
         detail = exc.response.text if exc.response is not None else str(exc)
         raise RuntimeError(f"AI Gateway 请求失败 [{action}]: {detail}") from exc
-    return resp.json()
+    # 部分接口（如 DELETE）成功时响应体为空，json() 返回 None，统一回退空 dict
+    return resp.json() or {}
