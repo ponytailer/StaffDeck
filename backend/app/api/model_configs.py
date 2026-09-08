@@ -80,6 +80,9 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
     # 历史数据可能用旧 APP_SECRET 加密，解密失败时不抛异常，返回空掩码让前端提示重新配置
     api_key = try_decrypt_secret(row.api_key_encrypted)
     extra_body = row.extra_body_json if isinstance(row.extra_body_json, dict) else {}
+    custom_headers = (
+        row.custom_headers_json if isinstance(row.custom_headers_json, dict) else {}
+    )
     return ModelConfigRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -92,6 +95,7 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
         temperature=row.temperature,
         max_output_tokens=row.max_output_tokens,
         extra_body=dict(extra_body),
+        custom_headers=dict(custom_headers),
         protocol_options=current_protocol_options(
             row.protocol_options_json, ModelApiProtocol(row.api_protocol)
         ),
@@ -153,6 +157,7 @@ def create_model_config(
         temperature=request.temperature,
         max_output_tokens=request.max_output_tokens,
         extra_body_json=extra_body,
+        custom_headers_json=_request_custom_headers(request.custom_headers),
         protocol_options_json={protocol.value: options},
         is_default=False,
         is_intent_recognition=request.is_intent_recognition,
@@ -227,6 +232,12 @@ def update_model_config(
         requested_extra_body = _request_extra_body(request.extra_body, protocol)
         if requested_extra_body != dict(row.extra_body_json or {}):
             security_changed = True
+    requested_custom_headers = None
+    if request.custom_headers is not None:
+        requested_custom_headers = _request_custom_headers(request.custom_headers)
+        if requested_custom_headers != dict(row.custom_headers_json or {}):
+            # 自定义请求头会改变出站请求，与 base_url 同等安全等级
+            security_changed = True
 
     for field in ("name", "base_url", "model", "temperature", "max_output_tokens"):
         value = getattr(request, field)
@@ -243,6 +254,8 @@ def update_model_config(
         row.protocol_options_json = partitioned
     if requested_extra_body is not None:
         row.extra_body_json = requested_extra_body
+    if requested_custom_headers is not None:
+        row.custom_headers_json = requested_custom_headers
     if request.model_fields_set - {"tenant_id"}:
         row.config_revision += 1
     if security_changed:
@@ -670,6 +683,24 @@ def _request_extra_body(extra_body: dict | None, protocol: ModelApiProtocol) -> 
     if protocol is not ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
         raise HTTPException(status_code=422, detail="MODEL_EXTRA_BODY_UNSUPPORTED")
     return dict(extra_body)
+
+
+def _request_custom_headers(custom_headers: dict | None) -> dict:
+    """校验自定义请求头：必须是非空字符串键值对，且不允许覆盖认证类头。"""
+    if not custom_headers:
+        return {}
+    reserved = {"authorization", "x-api-key", "api-key", "cookie"}
+    for key, value in custom_headers.items():
+        name = str(key).strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="MODEL_CUSTOM_HEADERS_INVALID")
+        if name.lower() in reserved:
+            raise HTTPException(
+                status_code=422, detail="MODEL_CUSTOM_HEADERS_RESERVED_FIELD"
+            )
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            raise HTTPException(status_code=422, detail="MODEL_CUSTOM_HEADERS_INVALID")
+    return {str(key).strip(): str(value) for key, value in custom_headers.items()}
 
 
 def _validate_sampling(

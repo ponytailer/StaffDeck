@@ -28,6 +28,7 @@ class ResolvedModelConfig:
     max_output_tokens: int
     protocol_options: Mapping[str, Any]
     legacy_extra_body: Mapping[str, Any]
+    custom_headers: Mapping[str, str]
     config_revision: int
     security_revision: int
     purpose: Literal["runtime", "verification"]
@@ -96,6 +97,7 @@ def _snapshot(
         max_output_tokens=row.max_output_tokens,
         protocol_options=_freeze(options),
         legacy_extra_body=_freeze(legacy_extra_body),
+        custom_headers=_freeze(_sanitized_custom_headers(row)),
         config_revision=row.config_revision,
         security_revision=row.security_revision,
         purpose=purpose,
@@ -125,6 +127,27 @@ def _is_implicit_legacy_openai(row: ModelConfig, protocol: ModelApiProtocol) -> 
         and row.config_revision == 1
         and row.verification_attempt_status in {None, "idle"}
     )
+
+
+def _sanitized_custom_headers(model_config: Any) -> dict[str, str]:
+    """读取自定义请求头并归一化为 {str: str}，跳过认证类头与非法值。"""
+    raw = (
+        getattr(model_config, "custom_headers", None)
+        or getattr(model_config, "custom_headers_json", {})
+        or {}
+    )
+    if not isinstance(raw, dict):
+        return {}
+    reserved = {"authorization", "x-api-key", "api-key", "cookie"}
+    headers: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key).strip()
+        if not name or name.lower() in reserved:
+            continue
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            continue
+        headers[name] = str(value)
+    return headers
 
 
 def _freeze(value: dict[str, Any]) -> Mapping[str, Any]:
@@ -171,6 +194,7 @@ def snapshot_model_config(
                 or getattr(model_config, "extra_body_json", {})
             )
         ),
+        custom_headers=_freeze(_sanitized_custom_headers(model_config)),
         config_revision=getattr(model_config, "config_revision", 1),
         security_revision=getattr(model_config, "security_revision", 1),
         timeout_seconds=getattr(model_config, "timeout_seconds", None),

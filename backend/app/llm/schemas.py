@@ -16,6 +16,8 @@ class ModelConfigCreateRequest(BaseModel):
     temperature: float = 0.2
     max_output_tokens: int = 8192
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    # 自定义请求头：{"Header-Name": "value"}，append 到最终出站请求
+    custom_headers: Optional[dict[str, Any]] = None
     protocol_options: Optional[dict[str, Any]] = None
     is_default: bool = False
     is_intent_recognition: bool = False
@@ -33,6 +35,7 @@ class ModelConfigUpdateRequest(BaseModel):
     temperature: Optional[float] = None
     max_output_tokens: Optional[int] = None
     extra_body: Optional[dict[str, Any]] = None
+    custom_headers: Optional[dict[str, Any]] = None
     protocol_options: Optional[dict[str, Any]] = None
     is_default: Optional[bool] = None
     is_intent_recognition: Optional[bool] = None
@@ -51,6 +54,7 @@ class ModelConfigRead(BaseModel):
     temperature: float
     max_output_tokens: int
     extra_body: dict[str, Any]
+    custom_headers: dict[str, Any]
     protocol_options: dict[str, Any]
     legacy_unmapped_options: dict[str, Any]
     trust_status: str

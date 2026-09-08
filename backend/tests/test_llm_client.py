@@ -113,6 +113,84 @@ def test_llm_client_preserves_custom_openai_base_url(monkeypatch) -> None:
     assert captured["base_url"] == "https://custom-relay.example/llm"
 
 
+def test_llm_client_appends_custom_headers(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", lambda _value: "api-key")
+    monkeypatch.setattr(
+        "app.llm.client.OpenAI",
+        lambda **kwargs: captured.update(kwargs) or _FakeOpenAIClient(),
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: type("Settings", (), {"model_api_timeout_seconds": 30.0})(),
+    )
+    config = type(
+        "ModelConfig",
+        (),
+        {
+            "api_key_encrypted": "encrypted",
+            "base_url": "https://example.test/v1",
+            "model": "demo-model",
+            "temperature": 0.2,
+            "max_output_tokens": 128,
+            "extra_body_json": {},
+            "custom_headers_json": {
+                "X-Request-Source": "staffdeck",
+                "X-Trace-Id": "abc",
+            },
+        },
+    )()
+
+    client = LLMClient(config)
+    output = client.generate_text("sys", {"message": "ping"})
+
+    assert output == "ok"
+    # 自定义请求头以 default_headers 形式追加到 SDK 出站请求
+    assert captured["default_headers"] == {
+        "X-Request-Source": "staffdeck",
+        "X-Trace-Id": "abc",
+    }
+    # 快照透传（runtime/verification 快照同源）
+    from app.llm.model_config_resolver import snapshot_model_config
+
+    snap = snapshot_model_config(config)
+    assert dict(snap.custom_headers) == {
+        "X-Request-Source": "staffdeck",
+        "X-Trace-Id": "abc",
+    }
+
+
+def test_llm_client_without_custom_headers_keeps_legacy_behavior(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", lambda _value: "api-key")
+    monkeypatch.setattr(
+        "app.llm.client.OpenAI",
+        lambda **kwargs: captured.update(kwargs) or _FakeOpenAIClient(),
+    )
+    monkeypatch.setattr(
+        "app.llm.client.get_settings",
+        lambda: type("Settings", (), {"model_api_timeout_seconds": 30.0})(),
+    )
+    config = type(
+        "ModelConfig",
+        (),
+        {
+            "api_key_encrypted": "encrypted",
+            "base_url": "https://example.test/v1",
+            "model": "demo-model",
+            "temperature": 0.2,
+            "max_output_tokens": 128,
+            "extra_body_json": {},
+        },
+    )()
+
+    client = LLMClient(config)
+
+    # 未配置自定义头时不出现在构造参数里，保持旧行为
+    assert captured.get("default_headers") is None
+    assert client.custom_headers == {}
+
+
 def test_model_config_create_defaults_to_8192_output_tokens():
     request = ModelConfigCreateRequest(
         tenant_id="tenant_demo",

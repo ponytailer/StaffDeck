@@ -68,6 +68,7 @@ def init_db() -> None:
     _migrate_user_ldap_schema()
     _migrate_user_department_manual()
     _migrate_tenant_seed_fingerprint()
+    _migrate_model_custom_headers_schema()
     _purge_orphaned_chat_sessions()
 
 
@@ -3175,6 +3176,20 @@ def _migrate_tenant_seed_fingerprint() -> None:
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE tenants ADD COLUMN seed_fingerprint VARCHAR"))
+
+
+def _migrate_model_custom_headers_schema() -> None:
+    """model_configs 表补齐自定义请求头列(custom_headers_json)，SQLite 与 PostgreSQL 通用。"""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "model_configs" not in tables:
+        return
+    columns = {column["name"] for column in inspector.get_columns("model_configs")}
+    if "custom_headers_json" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE model_configs ADD COLUMN custom_headers_json JSON"))
+        conn.execute(text("UPDATE model_configs SET custom_headers_json = '{}'"))
 
 
 def _migrate_pg_api_key_schema() -> None:

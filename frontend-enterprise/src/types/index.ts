@@ -335,6 +335,7 @@ export type ModelConfigRead = {
   temperature: number;
   max_output_tokens: number;
   extra_body: Record<string, unknown>;
+  custom_headers: Record<string, unknown>;
   protocol_options: Record<string, unknown>;
   legacy_unmapped_options: Record<string, unknown>;
   trust_status: 'legacy_trusted' | 'unverified' | 'verified';

@@ -612,6 +612,8 @@ class ModelConfig(SQLModel, table=True):
     temperature: float = 0.2
     max_output_tokens: int = 8192
     extra_body_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # 自定义请求头：{"Header-Name": "value"}，逐请求 merge 进最终出站请求头
+    custom_headers_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     protocol_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     legacy_unmapped_options_json: dict[str, Any] = Field(
         default_factory=dict, sa_column=Column(JSON)

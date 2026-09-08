@@ -26,7 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
   Switch,
-  Textarea,
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
@@ -43,6 +42,7 @@ import IconMore from '../assets/icons/more.svg?react';
 import IconRefresh from '../assets/icons/refresh.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
 import { ApiKeyApplicationsPanel } from '@/components/ApiKeyApplicationsPanel';
+import { JsonTextarea } from '@/components/JsonTextarea';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { useClientPagination } from '../hooks/useClientPagination';
 import type { ModelConfigRead } from '../types';
@@ -60,6 +60,7 @@ type ModelForm = {
   temperature: string;
   max_output_tokens: string;
   extra_body: string;
+  custom_headers: string;
   is_default: boolean;
   is_intent_recognition: boolean;
   enabled: boolean;
@@ -93,6 +94,7 @@ const BLANK_MODEL_FORM: ModelForm = {
   temperature: '0.2',
   max_output_tokens: '131072',
   extra_body: '{}',
+  custom_headers: '{}',
   is_default: false,
   is_intent_recognition: false,
   enabled: true,
@@ -364,6 +366,7 @@ export default function ModelsPage({
       temperature: String(row.temperature),
       max_output_tokens: String(row.max_output_tokens),
       extra_body: JSON.stringify(row.extra_body || {}, null, 2),
+      custom_headers: JSON.stringify(row.custom_headers || {}, null, 2),
       is_default: row.is_default,
       is_intent_recognition: row.is_intent_recognition,
       enabled: row.enabled,
@@ -407,6 +410,17 @@ export default function ModelsPage({
       notify.error('额外参数必须是合法的 JSON 对象');
       return;
     }
+    let customHeaders: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(form.custom_headers.trim() || '{}') as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('not an object');
+      }
+      customHeaders = parsed as Record<string, unknown>;
+    } catch {
+      notify.error('自定义请求头必须是合法的 JSON 对象');
+      return;
+    }
     const payload = {
       tenant_id: TENANT_ID,
       name,
@@ -416,6 +430,7 @@ export default function ModelsPage({
       temperature,
       max_output_tokens: maxOutputTokens,
       extra_body: extraBody,
+      custom_headers: customHeaders,
       is_default: form.enabled && form.is_default,
       is_intent_recognition: form.is_intent_recognition,
       enabled: form.enabled,
@@ -830,17 +845,27 @@ export default function ModelsPage({
                   />
                 </LabeledField>
               </div>
-              {form.api_protocol === 'openai_chat_completions' && <div className="sm:col-span-2">
-                <LabeledField label="额外请求参数（extra_body JSON）">
-                  <Textarea
-                    rows={5}
-                    value={form.extra_body}
-                    placeholder={'{\n  "thinking": {\n    "type": "disabled"\n  }\n}'}
-                    className="min-h-[116px] resize-y font-mono text-[12px]"
-                    onChange={(event) => updateForm('extra_body', event.target.value)}
-                  />
-                </LabeledField>
-              </div>}
+              <div className="sm:col-span-2">
+                <JsonTextarea
+                  label="额外请求参数（extra_body JSON）"
+                  value={form.extra_body}
+                  placeholder={'{\n  "thinking": {\n    "type": "disabled"\n  }\n}'}
+                  rows={5}
+                  minHeight={116}
+                  onChange={(value) => updateForm('extra_body', value)}
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <JsonTextarea
+                  label="自定义请求头（JSON）"
+                  value={form.custom_headers}
+                  hint="配置后会附加到该模型的所有出站请求头中；Authorization、X-API-Key 等认证类头不可覆盖。"
+                  placeholder={'{\n  "X-Request-Source": "staffdeck",\n  "X-Trace-Id": "abc123"\n}'}
+                  rows={3}
+                  minHeight={80}
+                  onChange={(value) => updateForm('custom_headers', value)}
+                />
+              </div>
             </div>
             <div className="mt-[16px] flex flex-wrap items-center gap-[24px]">
               <label className="flex cursor-pointer items-center gap-[8px]">

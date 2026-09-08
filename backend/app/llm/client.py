@@ -126,6 +126,18 @@ class LLMClient:
             or DEFAULT_MODEL_API_TIMEOUT_SECONDS
         )
         self.base_url = str(model_config.base_url or "")
+        # 自定义请求头：配置在模型上、随出站请求 append（auth 类头在保存/读取两侧均已拦截）
+        # 注意 ResolvedModelConfig.custom_headers 是 MappingProxyType（frozen 快照），需按 Mapping 接受
+        raw_custom_headers = (
+            getattr(model_config, "custom_headers", None)
+            or getattr(model_config, "custom_headers_json", {})
+            or {}
+        )
+        self.custom_headers = {
+            str(key).strip(): str(value)
+            for key, value in raw_custom_headers.items()
+            if str(key).strip()
+        } if isinstance(raw_custom_headers, Mapping) else {}
         # SDK 延迟加载：openai/anthropic 顶层 import 需构建数百个 pydantic 模型类，
         # 弱机器上合计 ~14s（启动期大头）；仅在实际实例化 LLMClient 时加载。
         # 加载后写回模块属性，测试的 monkeypatch("app.llm.client.OpenAI") 依然生效
@@ -138,6 +150,7 @@ class LLMClient:
                 api_key=api_key,
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
+                default_headers=self.custom_headers or None,
             )
             self.driver = (
                 ChatCompletionsDriver(self.client)
@@ -163,10 +176,15 @@ class LLMClient:
                 elif sdk_path.endswith("/v1"):
                     sdk_base_url = sdk_base_url[:-3].rstrip("/")
                 kwargs["base_url"] = sdk_base_url
+            if self.custom_headers:
+                kwargs["default_headers"] = self.custom_headers
             self.client = anthropic_cls(**kwargs)
             self.driver = AnthropicMessagesDriver(self.client)
         elif protocol is ModelApiProtocol.GEMINI_GENERATE_CONTENT:
-            self.client = httpx.Client(timeout=self.timeout_seconds)
+            self.client = httpx.Client(
+                timeout=self.timeout_seconds,
+                headers=self.custom_headers or None,
+            )
             self.driver = GeminiGenerateContentDriver(
                 self.client,
                 self.base_url,
