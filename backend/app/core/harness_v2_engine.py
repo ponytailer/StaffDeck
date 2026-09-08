@@ -644,6 +644,11 @@ class HarnessV2Engine:
                     *self.store.referenced_session_results(row),
                 ],
                 remaining_turn_actions,
+                lightweight_model_config=(
+                    planner_model_config
+                    if planner_model_config is not model_config
+                    else None
+                ),
             )
             remaining_turn_actions = max(
                 0,
@@ -844,6 +849,7 @@ class HarnessV2Engine:
         memory_context: list[dict[str, object]],
         prior_frame_results: list[dict[str, Any]],
         max_actions: int,
+        lightweight_model_config: Any = None,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
         self.store.mark_running(row)
         agent_loop = self.store.ensure_agent_loop(row)
@@ -1022,6 +1028,7 @@ class HarnessV2Engine:
                 step_deadline_monotonic=step_deadline_monotonic,
                 step_timeout_seconds=step_timeout_seconds,
                 checkpoint=loop_checkpoint,
+                lightweight_model_config=lightweight_model_config,
             )
             deferred_continuation = False
             if frame.kind == "sop":

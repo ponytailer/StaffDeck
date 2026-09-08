@@ -30,6 +30,15 @@ ToolInvoker = Callable[[str, dict[str, Any]], dict[str, Any]]
 TraceSink = Callable[[str, dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
 
+# 轻量节点直通（P1-1）：结构简单的 SOP 节点（唯一必执行能力 + 唯一无条件转移 +
+# 无缺槽）的模型决策是低风险分类/编排任务，优先用意图识别轻量模型 + 一次性
+# 编排提示，减少主模型串行调用；模型输出仍走同一校验协议，失败自动回退主模型。
+LIGHTWEIGHT_DIRECTIVE = (
+    "当前节点结构简单：只需调用一个必执行能力，成功后用 finish(completed) 收尾，"
+    "并沿用唯一可用转移的 next_node_id。请直接输出 tool -> finish 动作序列，"
+    "不要展开多余检查或重复确认。"
+)
+
 
 class HarnessExecutionCancelled(RuntimeError):
     pass
@@ -67,6 +76,7 @@ class HarnessTaskAgent:
         step_deadline_monotonic: float | None = None,
         step_timeout_seconds: int | None = None,
         checkpoint: dict[str, Any] | None = None,
+        lightweight_model_config: ModelConfig | None = None,
     ) -> TaskExecutionResult:
         max_actions = max(1, min(int(max_actions), 100))
         checkpoint = dict(checkpoint or {})
@@ -195,20 +205,37 @@ class HarnessTaskAgent:
                         # Persist a stable link between this LLM span and the Harness
                         # iteration that consumes it.  Timing projections must not
                         # infer this relationship from overlapping wall-clock windows.
+                        # 轻量节点直通：首轮决策尝试用轻量模型 + 一次性编排提示；
+                        # 轻量输出协议校验失败时第二轮回退主模型重跑（不再带提示）。
+                        first_iteration = iteration == 1
+                        using_lightweight = (
+                            lightweight_model_config is not None
+                            and first_iteration
+                            and protocol_attempt == 0
+                        )
+                        decision_model = (
+                            lightweight_model_config if using_lightweight else model_config
+                        )
+                        directive_payload = (
+                            {**payload, "execution_directive": LIGHTWEIGHT_DIRECTIVE}
+                            if using_lightweight
+                            else payload
+                        )
                         with llm_operation(
                             "harness.task_action",
                             task_frame_id=requirement.task_frame_id,
                             iteration=iteration,
                             protocol_attempt=protocol_attempt + 1,
+                            lightweight_decision=using_lightweight,
                         ):
                             client = _deadline_llm_client(
-                                model_config,
+                                decision_model,
                                 step_deadline_monotonic,
                             )
                             raw = _generate_harness_action_json(
                                 client,
                                 system_prompt,
-                                payload,
+                                directive_payload,
                             )
                         try:
                             actions = _harness_actions_from_raw(raw)
@@ -221,6 +248,7 @@ class HarnessTaskAgent:
                                         "iteration": iteration,
                                         "action_count": len(actions),
                                         "actions": [item.action for item in actions],
+                                        "lightweight_decision": using_lightweight,
                                     },
                                 )
                         except (ValidationError, ValueError) as exc:

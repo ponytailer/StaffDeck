@@ -2,6 +2,7 @@
 
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '@/i18n';
 
 import type { TraceLine } from '../chatTypes';
 import ExecutionRecord from './ExecutionRecord';
@@ -18,13 +19,15 @@ function line(patch: Partial<TraceLine> = {}): TraceLine {
 
 function renderRecord(lines: TraceLine[]) {
   return render(
-    <ExecutionRecord
-      traceTurnId="turn-1"
-      summary={{ text: '执行记录', state: 'completed' }}
-      details={lines}
-      expanded
-      onToggle={vi.fn()}
-    />,
+    <I18nProvider>
+      <ExecutionRecord
+        traceTurnId="turn-1"
+        summary={{ text: '执行记录', state: 'completed' }}
+        details={lines}
+        expanded
+        onToggle={vi.fn()}
+      />
+    </I18nProvider>,
   );
 }
 

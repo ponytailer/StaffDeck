@@ -23,6 +23,7 @@ OpenAI: type | None = None
 Anthropic: type | None = None
 from app.llm.output_policy import (
     operation_empty_response_retries,
+    operation_json_repair_attempts,
     operation_output_tokens,
 )
 from app.llm.protocol_drivers import (
@@ -595,12 +596,18 @@ class LLMClient:
         next_payload = user_payload
         last_error: json.JSONDecodeError | None = None
         json_mode_supported = True
-        for attempt in range(JSON_REPAIR_ATTEMPTS + 1):
+        # repair 重试会全量重发 payload（大上下文场景每次都是完整一轮 LLM 调用）。
+        # 长上下文交互环节（Harness 决策/意图规划）按 output_policy 收紧为 1 次，
+        # 调用方自身有失败兜底；其他阶段维持默认 3 次。
+        json_repair_attempts = operation_json_repair_attempts(
+            current_llm_operation(), JSON_REPAIR_ATTEMPTS
+        )
+        for attempt in range(json_repair_attempts + 1):
             with llm_span_attributes(
                 response_mode="json",
                 json_attempt=attempt + 1,
                 json_retry_count=attempt,
-                json_max_attempts=JSON_REPAIR_ATTEMPTS + 1,
+                json_max_attempts=json_repair_attempts + 1,
             ):
                 previous_defer = getattr(self, "_defer_stage_recording", False)
                 self._defer_stage_recording = True
@@ -647,7 +654,7 @@ class LLMClient:
                         self, "_last_stage_request_user_content", None
                     ),
                 )
-                if attempt >= JSON_REPAIR_ATTEMPTS:
+                if attempt >= json_repair_attempts:
                     break
                 next_payload = copy.deepcopy(user_payload)
                 if isinstance(user_payload.get(STAGE_PROTOCOL_KEY), dict):
@@ -656,7 +663,7 @@ class LLMClient:
                     )
                 next_payload["_json_repair"] = {
                     "attempt": attempt + 1,
-                    "max_attempts": JSON_REPAIR_ATTEMPTS,
+                    "max_attempts": json_repair_attempts,
                     "previous_output": _preview(text),
                     "parser_error": str(exc),
                     "instruction": (
@@ -669,7 +676,7 @@ class LLMClient:
             for index, output in enumerate(outputs)
         )
         raise LLMError(
-            f"Model did not return valid JSON after {JSON_REPAIR_ATTEMPTS} repair attempts; {previews}"
+            f"Model did not return valid JSON after {json_repair_attempts} repair attempts; {previews}"
         ) from last_error
 
     def generate_json_sequence(
