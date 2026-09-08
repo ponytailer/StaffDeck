@@ -163,6 +163,27 @@ class HarnessCapabilityInvoker:
                 if name in self._descriptors
             }
         )
+        # 知识路由（document_route/bucket_route）是轻量分类任务，优先用
+        # 意图识别专用模型（flash），未配置时回退主模型。解析一次缓存。
+        self._routing_model_config = self._resolve_routing_model()
+
+    def _resolve_routing_model(self) -> ModelConfig | None:
+        """意图识别轻量模型用于知识路由；失败/未配置回退主模型（None=主模型）。"""
+        tenant_id = str(getattr(self.model_config, "tenant_id", "") or self.tenant_id)
+        try:
+            from app.agents.branching import model_for_agent
+
+            routing_model = model_for_agent(
+                self.db,
+                tenant_id,
+                self.agent_id,
+                "intent_recognition",
+            )
+            if routing_model is not None:
+                return routing_model
+        except Exception:
+            pass
+        return self.model_config
 
     def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self._raise_if_cancelled()
@@ -959,7 +980,7 @@ class HarnessCapabilityInvoker:
                     1, min(int(arguments.get("max_chunks") or 8), 12)
                 ),
             ),
-            self.model_config,
+            self._routing_model_config,
         )
         payload = response.model_dump(mode="json")
         result = {
