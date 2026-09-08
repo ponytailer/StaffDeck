@@ -62,8 +62,10 @@ from app.db.models import (
     Message,
     Skill,
     Team,
+    utc_now,
 )
 from app.knowledge.citations import compact_knowledge_citation_labels
+from app.llm.stage_protocol import stage_payload, unified_system_prompt
 from app.memory.service import memory_read
 from app.session.helpers import public_session
 from app.session.session_schema import (
@@ -137,6 +139,56 @@ def _intent_cache_key(
         return f"intent:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
     except Exception:
         return None
+
+
+def _direct_reply_answer(
+    message: str,
+    persona_prompt: str | None,
+    memory_context: list[dict[str, Any]],
+    conversation_context: dict[str, Any] | None,
+    answer_model_config: Any,
+) -> str:
+    """direct_reply 帧的轻量直出回复：一次 chat 调用，不走 Harness 决策循环。
+
+    问答模型（若配置）优先；未配置时由调用方传入本轮请求模型。任何异常都
+    抛给调用方降级到标准 Harness 路径，不劣于现状。
+    """
+
+    from app.core.response_generator import ResponseGenerator
+
+    stage_data: dict[str, Any] = {
+        "execution_directive": (
+            "用户消息是无需业务知识的社交性内容（问候/寒暄/道谢/告别）。"
+            "请以数字员工身份直接生成简短自然的回复，1~3 句话即可，"
+            "不要提问业务问题，不要展开任务。"
+        ),
+    }
+    if persona_prompt:
+        stage_data["employee_identity"] = persona_prompt.strip()
+    if memory_context:
+        stage_data["memory_context"] = [
+            item for item in memory_context if isinstance(item, dict)
+        ]
+    payload = stage_payload(
+        phase="Response Generator",
+        user_message=message,
+        conversation_context=(
+            conversation_context if isinstance(conversation_context, dict) else {}
+        ),
+        memory_context=None,
+        instructions=ResponseGenerator.PROMPT_PATH.read_text(encoding="utf-8"),
+        stage_data=stage_data,
+        output_contract=(
+            "只输出最终用户可见的 Markdown 正文，不输出 JSON 外壳、分析过程或内部状态；"
+            "除非用户明确请求代码，否则不要使用 Markdown 代码围栏。"
+        ),
+    )
+    from app.llm import LLMClient
+    from app.observability.spans import llm_operation
+
+    with llm_operation("response.direct_reply"):
+        text = LLMClient(answer_model_config).generate_text(unified_system_prompt(), payload)
+    return text.strip()
 
 
 def _apply_forced_sop_snapshot(
@@ -537,6 +589,15 @@ class HarnessV2Engine:
         )
         records = _dependency_order(records)
         known_record_ids = {row.task_id for row in records}
+        # execution_mode 仅存在于本轮 plan（不持久化）：deferred 恢复帧查不到
+        # 映射时回退 standard，安全降级到完整 Harness 路径。
+        direct_reply_frame_ids = {
+            frame.task_id
+            for frame in plan.task_frames
+            if frame.kind == "conversation"
+            and frame.execution_mode == "direct_reply"
+            and frame.task_id
+        }
         self.db.commit()
         self.db.refresh(session)
 
@@ -629,6 +690,39 @@ class HarnessV2Engine:
                     )
                 )
                 continue
+
+            # conversation 帧分级：direct_reply 走轻量直出，跳过完整 Harness
+            # 决策循环（43.6s 问题的主路径）。任何异常降级到标准路径。
+            if (
+                frame.kind == "conversation"
+                and row.task_id in direct_reply_frame_ids
+            ):
+                direct_result = self._run_direct_reply_frame(
+                    request,
+                    execution_request,
+                    session,
+                    row,
+                    frame,
+                    model_config,
+                    memory_context,
+                    conversation_context,
+                )
+                if direct_result is not None:
+                    remaining_turn_actions = max(
+                        0,
+                        remaining_turn_actions - max(1, direct_result.action_count),
+                    )
+                    execution_results.append(direct_result)
+                    execution_payloads.append(
+                        _response_task_payload(
+                            row,
+                            direct_result,
+                            None,
+                            StepAgentResult(reply=direct_result.reply_fragment),
+                        )
+                    )
+                    continue
+                # 直通失败（降级返回 None）→ 按标准 conversation 帧继续。
 
             last_skill = active_skill or last_skill
             combined, step_result = self._run_frame(
@@ -837,6 +931,109 @@ class HarnessV2Engine:
         except (HarnessSessionLeaseLost, TaskFrameClaimConflict) as exc:
             raise HarnessExecutionFenced(str(exc)) from exc
         self.db.commit()
+
+    def _run_direct_reply_frame(
+        self,
+        request: ChatTurnRequest,
+        execution_request: ChatTurnRequest,
+        session: ChatSession,
+        row: HarnessTaskFrameRecord,
+        frame: Any,
+        model_config: Any,
+        memory_context: list[dict[str, object]],
+        conversation_context: dict[str, Any] | None,
+    ) -> TaskExecutionResult | None:
+        """direct_reply 帧的轻量执行：一次问答模型调用直出最终回复。
+
+        返回 None 表示应降级到标准 Harness 路径。帧记录/trace 事件保持与
+        标准路径一致（task_frame_started/finished），前端零改动。
+        """
+
+        self.store.mark_running(row)
+        agent_loop = self.store.ensure_agent_loop(row)
+        self.active_frame_id = row.id
+        self.active_frame_lease_owner = row.lease_owner
+        self.active_frame_attempt_no = row.attempt_no
+        self.events.record(
+            request.tenant_id,
+            session.id,
+            "task_frame_started",
+            {
+                "task_frame_id": row.task_id,
+                "kind": row.kind,
+                "execution_mode": "direct_reply",
+                "agent_loop_id": agent_loop.id,
+                "agent_loop_kind": agent_loop.kind,
+                "execution_engine": "harness_v2",
+            },
+        )
+        try:
+            # 未单独配置问答模型时直接用本轮请求模型——相比标准路径仍省掉
+            # Harness 主模型决策 + ResponseGenerator 两次串行调用。
+            answer_model = model_config
+            persona_prompt = self.owner._get_persona_prompt(
+                request.tenant_id, session.agent_id
+            )
+            reply = _direct_reply_answer(
+                execution_request.message,
+                persona_prompt,
+                memory_context,
+                conversation_context,
+                answer_model,
+            )
+        except Exception as exc:  # noqa: BLE001 - 降级到标准路径
+            row.status = "queued"
+            row.updated_at = utc_now()
+            self.db.add(row)
+            self.db.commit()
+            self.events.record(
+                request.tenant_id,
+                session.id,
+                "task_frame_direct_reply_fallback",
+                {
+                    "task_frame_id": row.task_id,
+                    "reason": str(exc)[:500],
+                    "execution_engine": "harness_v2",
+                },
+            )
+            return None
+        result = TaskExecutionResult(
+            task_frame_id=row.task_id,
+            status="completed",
+            reply_fragment=reply,
+            task_summary=frame.user_intent or "社交性对话回复。",
+            action_count=1,
+        )
+        self.store.finish_frame(
+            row,
+            status="completed",
+            step_id=row.step_id,
+            slots=dict(row.slots_json or {}),
+            result=result.model_dump(mode="json"),
+        )
+        self.store.finish_agent_loop_for_frame(
+            row,
+            result_status="completed",
+            checkpoint={},
+            last_run_id=None,
+        )
+        self.events.record(
+            request.tenant_id,
+            session.id,
+            "task_frame_finished",
+            {
+                "task_frame_id": row.task_id,
+                "kind": row.kind,
+                "execution_mode": "direct_reply",
+                "status": result.status,
+                "action_count": result.action_count,
+                "agent_loop_id": agent_loop.id,
+                "agent_loop_status": "completed",
+                "execution_engine": "harness_v2",
+            },
+        )
+        self.db.commit()
+        return result
 
     def _run_frame(
         self,

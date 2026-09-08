@@ -150,6 +150,9 @@ class TurnPlanner:
         task_id_map: dict[str, str] = {}
         for raw_frame in plan.task_frames[:MAX_TASK_FRAMES_PER_TURN]:
             frame = raw_frame.model_copy(deep=True)
+            if frame.kind != "conversation":
+                # execution_mode 仅对 conversation 帧有意义；SOP 帧强制 standard。
+                frame.execution_mode = "standard"
             requested_task_id = str(frame.task_id or "").strip()
             known = known_frames.get(requested_task_id)
             if known and str(known.get("status") or "") not in {
@@ -196,10 +199,14 @@ class TurnPlanner:
                 frame.kind = "conversation"
                 frame.target_skill_id = None
                 frame.target_step_id = None
+                if frame.execution_mode not in {"standard", "direct_reply"}:
+                    frame.execution_mode = "standard"
                 if plan.decision == "handoff_human":
                     frame.decision = "handoff_human"
+                    frame.execution_mode = "standard"
                 elif frame.decision not in {"answer_only", "clarify"}:
                     frame.decision = "answer_only"
+                    frame.execution_mode = "standard"
             frame.task_id = _unique_task_id(frame.task_id, seen_ids)
             seen_ids.add(frame.task_id)
             frame.slot_hints = strip_router_generated_message_slots(frame.slot_hints)

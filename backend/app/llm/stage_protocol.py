@@ -75,6 +75,7 @@ TURN_PLANNER_OUTPUT_SCHEMA: dict[str, Any] = {
             "task_id": "string?",
             "kind": "sop | conversation",
             "decision": "continue_active | switch_to_pending | start_new_task | answer_only | clarify",
+            "execution_mode": "standard | direct_reply?",
             "target_skill_id": "string?",
             "target_step_id": "string?",
             "user_intent": "string?",

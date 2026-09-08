@@ -8,6 +8,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -342,6 +343,83 @@ def test_turn_planner_falls_back_to_an_isolated_conversation_frame() -> None:
     assert frame.source_message == "请解释退款规则"
     assert frame.target_skill_id is None
     assert frame.target_step_id is None
+    assert frame.execution_mode == "standard"
+
+
+def test_turn_planner_normalizes_execution_mode_defaults() -> None:
+    session = _chat_session()
+    # 模型可能输出非法 execution_mode：TurnPlan.model_validate 会拒绝并触发
+    # schema repair；这里用未类型化 dict 绕过构造校验，验证 _normalize 兜底。
+    plan = TurnPlan.model_validate({
+        "decision": "answer_only",
+        "user_intent": "你好",
+        "task_frames": [
+            {
+                "task_id": "greet",
+                "kind": "conversation",
+                "decision": "answer_only",
+                "user_intent": "用户打招呼",
+                "execution_mode": "direct_reply",
+            },
+            {
+                "task_id": "policy",
+                "kind": "conversation",
+                "decision": "answer_only",
+                "user_intent": "查询请假政策",
+                "execution_mode": "standard",
+            },
+        ],
+    })
+
+    normalized = TurnPlanner()._normalize(plan, "你好", session, available_skills=[])
+
+    assert len(normalized.task_frames) == 2
+    # 新帧 task_id 由服务端重新生成，按顺序对应 greet/policy。
+    modes = [frame.execution_mode for frame in normalized.task_frames]
+    assert modes == ["direct_reply", "standard"]
+
+
+def test_turn_plan_model_validate_rejects_unknown_execution_mode() -> None:
+    with pytest.raises(ValidationError):
+        TurnPlan.model_validate({
+            "decision": "answer_only",
+            "task_frames": [
+                {
+                    "task_id": "x",
+                    "kind": "conversation",
+                    "decision": "answer_only",
+                    "execution_mode": "unknown_mode",
+                },
+            ],
+        })
+
+
+def test_turn_planner_forces_sop_frames_to_standard_execution() -> None:
+    plan = TurnPlan(
+        decision="start_new_task",
+        user_intent="处理退款",
+        task_frames=[
+            PlannedTaskFrame(
+                task_id="refund",
+                kind="sop",
+                decision="start_new_task",
+                target_skill_id="refund",
+                execution_mode="direct_reply",
+            ),
+        ],
+    )
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "我要走退款流程",
+        _chat_session(),
+        available_skills=[_refund_skill()],
+    )
+
+    assert len(normalized.task_frames) == 1
+    frame = normalized.task_frames[0]
+    assert frame.kind == "sop"
+    assert frame.execution_mode == "standard"
 
 
 def test_turn_planner_keeps_team_delegation_as_separate_remote_frames() -> None:
