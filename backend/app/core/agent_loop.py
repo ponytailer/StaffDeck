@@ -805,7 +805,7 @@ class AgentLoop:
         """按通知渠道偏好解析投递 binding,给 assignee 登记渠道私聊通知。
 
         绑定解析规则:
-        - 偏好为具体渠道(如 feishu)时:优先会话所属 binding(渠道匹配且 active);
+        - 偏好为具体渠道时:优先会话所属 binding(渠道匹配且 active);
           会话无 binding 或渠道不匹配时,在租户内找该渠道的任一 active 员工绑定。
         - 偏好为 None(默认)时:用会话所属 binding(渠道支持私聊通知即可达)。
         - 偏好为 "web" 时:仅网页收件箱,直接返回。

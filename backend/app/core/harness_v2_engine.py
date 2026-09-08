@@ -1829,7 +1829,7 @@ def _inject_handoff_context(
             continue
         handoff_info: dict[str, Any] = {
             "handoff_id": handoff.id,
-            "notified_via_feishu": bool(notify_message_id),
+            "notified_via_channel": bool(notify_message_id),
         }
         if is_answered:
             handoff_info["human_reply"] = human_reply

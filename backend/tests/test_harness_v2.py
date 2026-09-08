@@ -559,7 +559,7 @@ def test_turn_planner_routes_handoff_human_to_sop_handoff_node() -> None:
     """When router decides handoff_human and an active SOP has a handoff node,
     the planner should create an SOP frame targeting that node instead of a
     conversation frame. This ensures harness executes the handoff node and
-    reads its assignee_user_id for Feishu notification."""
+    reads its assignee_user_id for channel notification."""
     skill = Skill(
         id="skill-repair",
         tenant_id="tenant-demo",

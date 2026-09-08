@@ -37,7 +37,7 @@ class ChannelBindingAgentsUpdate(BaseModel):
     # 渠道默认人工处理人:不传不动;传 None 清空,传 user_id 写入。
     # SOP 节点未指定 assignee 时回退到此值,再回退到数字员工负责人/管理员。
     default_handoff_assignee_user_id: str | None = "unchanged"
-    # 处理人通知渠道:不传不动;None/"web"=网页端收件箱;"feishu" 等绑定渠道=按该渠道转接。
+    # 处理人通知渠道:不传不动;None/"web"=网页端收件箱;其他绑定渠道=按该渠道转接。
     # 仅在 default_handoff_assignee_user_id 非 unchanged 时生效。
     default_handoff_assignee_channel: str | None = "unchanged"
     # 接入显示名(重命名):不传不动;传非空字符串则更新
@@ -77,7 +77,7 @@ class ChannelBindingRead(BaseModel):
     # 渠道默认人工处理人(SOP 节点未指定 assignee 时回退到此值)。
     default_handoff_assignee_user_id: Optional[str] = None
     default_handoff_assignee_name: Optional[str] = None
-    # 处理人通知渠道:None=默认投递;"web"=仅网页端;"feishu" 等绑定渠道=按该渠道转接。
+    # 处理人通知渠道:None=默认投递;"web"=仅网页端;其他绑定渠道=按该渠道转接。
     default_handoff_assignee_channel: Optional[str] = None
     identity_scope_key: Optional[str] = None
     # 当前请求者对该绑定的管理角色:admin/owner/collaborator;无管理关系时为 None
@@ -132,12 +132,6 @@ class WeComCredentialsRequest(BaseModel):
     secret: str
     # 企业 ID 是企微 userid 的真实唯一边界,首次激活即必须提供
     corp_id: str
-
-
-class FeishuCredentialsRequest(BaseModel):
-    tenant_id: str
-    app_id: str
-    app_secret: str
 
 
 class DingTalkCredentialsRequest(BaseModel):
@@ -307,14 +301,6 @@ def channel_binding_read(
     if binding.team_id:
         team = db.get(Team, binding.team_id)
         team_name = team.name if team else None
-    identity_scope_key = binding.identity_scope_key
-    if not identity_scope_key and binding.channel == "feishu":
-        app_id = str(config.get("app_id") or "").strip()
-        tenant_key = str(binding.provider_tenant_key or "").strip()
-        if app_id and tenant_key:
-            from app.channels.service_feishu_inbox import feishu_identity_scope
-
-            identity_scope_key = feishu_identity_scope(app_id, tenant_key)
     return ChannelBindingRead(
         id=binding.id,
         tenant_id=binding.tenant_id,
@@ -350,7 +336,7 @@ def channel_binding_read(
             if (binding.config_json or {}).get("default_handoff_assignee_user_id")
             else None
         ),
-        identity_scope_key=identity_scope_key,
+        identity_scope_key=binding.identity_scope_key,
         my_role=channel_binding_my_role(db, binding, current_user),
         created_at=binding.created_at.isoformat(),
         updated_at=binding.updated_at.isoformat(),

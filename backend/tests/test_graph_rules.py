@@ -264,18 +264,18 @@ def test_skill_graph_node_preserves_assignee_notify_channel() -> None:
         type="handoff",
         name="转人工",
         assignee_user_id="user_abc",
-        assignee_notify_channel="feishu",
+        assignee_notify_channel="wecom",
     )
     dumped = node.model_dump()
-    assert dumped["assignee_notify_channel"] == "feishu"
+    assert dumped["assignee_notify_channel"] == "wecom"
 
     node_empty = SkillGraphNode(node_id="collect", name="收集")
     assert node_empty.assignee_notify_channel is None
     assert node_empty.model_dump()["assignee_notify_channel"] is None
 
     assert GraphRules.node_as_step(
-        {"node_id": "handoff", "assignee_user_id": "user_abc", "assignee_notify_channel": "feishu"}
-    )["assignee_notify_channel"] == "feishu"
+        {"node_id": "handoff", "assignee_user_id": "user_abc", "assignee_notify_channel": "wecom"}
+    )["assignee_notify_channel"] == "wecom"
 
 
 def test_skill_card_round_trip_with_assignee_user_id() -> None:

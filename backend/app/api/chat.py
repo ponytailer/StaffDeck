@@ -484,9 +484,9 @@ def _apply_handoff_reply(
 ) -> None:
     """把一条 pending handoff 置为 answered 并触发 SOP 恢复。
 
-    供网页 API(reply_human_handoff)与飞书 intake 回复分支复用。
+    供网页 API(reply_human_handoff)与渠道 intake 回复分支复用。
     调用前需已完成权限校验与状态校验;本函数负责落库 + 事件 + 异步恢复。
-    source: "web" 或 "feishu",由调用方显式指定(不再靠 user_id 前缀推断)。
+    source: "web" 或渠道名,由调用方显式指定(不再靠 user_id 前缀推断)。
     """
     now = utc_now()
     row.status = "answered"

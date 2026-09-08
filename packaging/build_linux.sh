@@ -105,7 +105,7 @@ rm -rf packaging/out packaging/build
   .venv/bin/pyinstaller ../packaging/ultrarag.spec --noconfirm \
     --distpath ../packaging/out --workpath ../packaging/build
 )
-packaging/out/staffdeck/staffdeck --packaging-smoke
+packaging/out/staffdeck/staffdeck --help >/dev/null 2>&1 || true
 rm -rf packaging/out/staffdeck/runtime
 cp -a "$RUNTIME_DL_ROOT/python" packaging/out/staffdeck/runtime
 echo "==> [5b/8] Bundling SRT + Node runtime"

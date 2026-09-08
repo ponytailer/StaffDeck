@@ -14,7 +14,7 @@ describe('formatHandoffAssigneeValue', () => {
   });
 
   it('appends channel for channel delivery', () => {
-    expect(formatHandoffAssigneeValue('user_1', 'feishu')).toBe('user_1::feishu');
+    expect(formatHandoffAssigneeValue('user_1', 'wecom')).toBe('user_1::wecom');
   });
 });
 
@@ -29,21 +29,21 @@ describe('parseHandoffAssigneeValue', () => {
   });
 
   it('parses composite value into user and channel', () => {
-    expect(parseHandoffAssigneeValue('user_1::feishu')).toEqual({
+    expect(parseHandoffAssigneeValue('user_1::wecom')).toEqual({
       userId: 'user_1',
-      channel: 'feishu',
+      channel: 'wecom',
     });
   });
 
   it('falls back to web when channel segment is malformed', () => {
     expect(parseHandoffAssigneeValue('user_1::')).toEqual({ userId: 'user_1::', channel: 'web' });
-    expect(parseHandoffAssigneeValue('::feishu')).toEqual({ userId: '::feishu', channel: 'web' });
+    expect(parseHandoffAssigneeValue('::wecom')).toEqual({ userId: '::wecom', channel: 'web' });
   });
 
   it('round-trips with formatHandoffAssigneeValue', () => {
-    expect(parseHandoffAssigneeValue(formatHandoffAssigneeValue('user_1', 'feishu'))).toEqual({
+    expect(parseHandoffAssigneeValue(formatHandoffAssigneeValue('user_1', 'wecom'))).toEqual({
       userId: 'user_1',
-      channel: 'feishu',
+      channel: 'wecom',
     });
     expect(parseHandoffAssigneeValue(formatHandoffAssigneeValue('user_1', null))).toEqual({
       userId: 'user_1',

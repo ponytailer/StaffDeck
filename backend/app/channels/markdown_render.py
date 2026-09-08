@@ -1,8 +1,8 @@
-"""Markdown 子集解析器 + 飞书 post 富文本渲染。
+"""Markdown 子集解析器 + 渠道富文本支撑。
 
-设计目标（见 channel-render-plan-feishu-dingtalk.md §3.2）：
+设计目标：
 - 零新增依赖，手写解析器覆盖受控子集；
-- 输出通用块模型供飞书渲染器消费（钉钉原生 markdown 直接透传，不走块模型）；
+- 输出通用块模型（钉钉原生 markdown 直接透传，不走块模型）；
 - `has_markdown(text)` 做语法检测，纯文本返回 False 以走原 text 路径，避免回归。
 
 覆盖子集：标题 / 粗体 / 斜体 / 行内代码 / 围栏代码块 / 链接 / 有序无序列表 / 引用 / 分隔线。
@@ -425,111 +425,8 @@ def _restore_code(text: str, code_segments: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 飞书 post 富文本渲染
+# 分片与围栏修复
 # ---------------------------------------------------------------------------
-
-def render_feishu_post(blocks: list[Block]) -> dict:
-    """把块模型渲染为飞书 post 消息的 content 结构（zh_cn 包裹）。
-
-    返回形如：
-        {"zh_cn": {"title": "", "content": [[{tag...}, ...], ...]}}
-
-    每个块对应 content 数组中的一个"行"（tag 数组）。
-    """
-    content_rows: list[list[dict]] = []
-    for block in blocks:
-        row = _block_to_feishu_row(block)
-        if row is not None:
-            content_rows.append(row)
-    return {"zh_cn": {"title": "", "content": content_rows}}
-
-
-def _span_to_feishu_tag(span: Span) -> dict:
-    styles = span.styles
-    style_flags = []
-    if "bold" in styles:
-        style_flags.append("bold")
-    if "italic" in styles:
-        style_flags.append("italic")
-    if span.href:
-        tag: dict = {"tag": "a", "text": span.text, "href": span.href}
-    elif "code" in styles:
-        tag = {"tag": "text", "text": span.text, "un_escape": False, "style": ["code"]}
-        return tag
-    else:
-        tag = {"tag": "text", "text": span.text, "un_escape": False}
-    if style_flags:
-        tag["style"] = style_flags
-    return tag
-
-
-def _spans_to_feishu_tags(spans: list[Span]) -> list[dict]:
-    tags: list[dict] = []
-    for span in spans:
-        if not span.text and not span.href:
-            continue
-        tags.append(_span_to_feishu_tag(span))
-    return tags
-
-
-def _block_to_feishu_row(block: Block) -> list[dict] | None:
-    if isinstance(block, Heading):
-        tags = _spans_to_feishu_tags(block.spans)
-        for tag in tags:
-            existing = tag.get("style") or []
-            tag["style"] = list(dict.fromkeys(["bold", *existing]))
-        return tags or [{"tag": "text", "text": "", "un_escape": False}]
-    if isinstance(block, Paragraph):
-        tags = _spans_to_feishu_tags(block.spans)
-        if not tags:
-            return [{"tag": "text", "text": "", "un_escape": False}]
-        # 段落内若含换行（多行合并），拆成多行
-        return _split_paragraph_newlines(tags)
-    if isinstance(block, Quote):
-        tags = _spans_to_feishu_tags(block.spans)
-        for tag in tags:
-            tag["text"] = f"｜{tag.get('text', '')}"
-        return tags or [{"tag": "text", "text": "｜", "un_escape": False}]
-    if isinstance(block, ListItem):
-        prefix = f"{block.index}. " if block.ordered else "• "
-        tags = _spans_to_feishu_tags(block.spans)
-        if tags:
-            first = tags[0]
-            first["text"] = f"{prefix}{first.get('text', '')}"
-        else:
-            tags = [{"tag": "text", "text": prefix, "un_escape": False}]
-        return tags
-    if isinstance(block, CodeBlock):
-        return [
-            {
-                "tag": "code_block",
-                "language": block.language or "",
-                "text": block.text,
-            }
-        ]
-    if isinstance(block, ThematicBreak):
-        return [{"tag": "text", "text": "———", "un_escape": False}]
-    if isinstance(block, TableBlock):
-        # 表格降级为纯文本行
-        return [{"tag": "text", "text": "\n".join(block.lines), "un_escape": False}]
-    return None
-
-
-def _split_paragraph_newlines(tags: list[dict]) -> list[dict]:
-    """段落 spans 内若含 \n，拆成多行 tag（飞书 post 一行内不渲染换行）。"""
-    out: list[dict] = []
-    for tag in tags:
-        text = tag.get("text", "")
-        if "\n" not in text:
-            out.append(tag)
-            continue
-        parts = text.split("\n")
-        for part in parts:
-            new_tag = dict(tag)
-            new_tag["text"] = part
-            out.append(new_tag)
-    return out if out else [{"tag": "text", "text": "", "un_escape": False}]
-
 
 def _detect_fence(line: str) -> tuple[str, str] | None:
     """若 line 是围栏起始/闭合行，返回 (fence_marker, language)；否则返回 None。

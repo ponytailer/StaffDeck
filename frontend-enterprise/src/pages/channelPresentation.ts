@@ -23,13 +23,6 @@ const BUILT_IN_CHANNELS: Record<string, ChannelPresentation> = {
     blurb: '填入企业微信智能机器人的凭证完成接入。',
     disconnectDescription: '断开后企业微信接入将停止服务，需要重新配置凭证才能恢复；对话记录保留。确定断开接入吗？',
   },
-  feishu: {
-    name: '飞书',
-    identifierLabel: 'App ID',
-    userLabel: '飞书用户',
-    blurb: '填入飞书应用凭证，通过长连接接入数字员工。',
-    disconnectDescription: '断开后飞书接入将停止服务，需要重新配置应用凭证才能恢复；对话记录保留。确定断开接入吗？',
-  },
   dingtalk: {
     name: '钉钉',
     identifierLabel: 'Client ID',

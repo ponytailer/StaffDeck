@@ -25,9 +25,9 @@ import { Button as UIButton } from '@/components/ui/button';
 
 import { api, TENANT_ID } from '../api/client';
 
-const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
-// 渠道转接通知运行时已支持飞书/企微私聊;钉钉/微信适配器只能回会话内消息,不在此列。
-const HANDOFF_NOTIFY_CHANNELS = new Set(['feishu', 'wecom']);
+const _CHANNEL_LABELS: Record<string, string> = { dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
+// 渠道转接通知运行时已支持企微私聊;钉钉/微信适配器只能回会话内消息,不在此列。
+const HANDOFF_NOTIFY_CHANNELS = new Set(['wecom']);
 import IconAdd from '../assets/icons/add.svg?react';
 import IconAlignJustify from '../assets/icons/align-justify.svg?react';
 import IconChat from '../assets/icons/chat.svg?react';
@@ -56,10 +56,8 @@ import type {
   TeamRead,
 } from '../types';
 import { formatHandoffAssigneeValue, parseHandoffAssigneeValue } from '../lib/handoff-assignee';
-import { feishuAppIdFromIdentityScope } from '../lib/identity-scope';
 import WechatSetup from './channels/WechatSetup';
 import WecomSetup from './channels/WecomSetup';
-import FeishuSetup from './channels/FeishuSetup';
 import DingTalkSetup from './channels/DingTalkSetup';
 import BindingManagers from './channels/BindingManagers';
 import {
@@ -106,7 +104,7 @@ const CHANNEL_COMMANDS: Array<{ command: string; description: string }> = [
 
 const BINDING_NAME_MAX_LENGTH = 50;
 
-// 接入默认名:渠道名 + YYYYMMDDHHMM,如「飞书202608250910」
+// 接入默认名:渠道名 + YYYYMMDDHHMM,如「钉钉202608250910」
 function defaultBindingName(channelLabel: string): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -296,7 +294,7 @@ export default function ChannelsPage({
 
   const binding = bindings.find((item) => item.id === selectedId) || null;
   const navigate = useNavigate();
-  // 身份绑定属于具体渠道账号 scope；同一用户可以分别绑定多个飞书应用。
+  // 身份绑定属于具体渠道账号 scope；同一用户可以分别绑定多个渠道应用。
   const channelIdentities = identityBindings.filter(
     (item) =>
       item.channel === binding?.channel &&
@@ -448,10 +446,6 @@ export default function ChannelsPage({
     const scope = identity.external_account_scope || '';
     if (!scope) return channelName(identity.channel);
     if (binding?.corp_id && scope === binding.corp_id) return `企业： ${scope}`;
-    // 飞书 scope 是"app:{长度}:{appId}:tenant:{长度}:{tenantKey}"技术键,
-    // 解析出 appId 展示,避免把整段内部键暴露给用户。
-    const feishuAppId = feishuAppIdFromIdentityScope(scope);
-    if (feishuAppId) return `飞书应用： ${feishuAppId}`;
     return `Bot: ${scope}`;
   }
 
@@ -1069,17 +1063,7 @@ export default function ChannelsPage({
         {binding.status === 'expired' && setupKindFor(binding.channel) !== 'qrcode' && (
           <span className="text-[12px] text-[#d20b0b]">当前未连接，请检查凭证或网络</span>
         )}
-        {binding.channel === 'feishu' ? (
-          <FeishuSetup
-            key={binding.id}
-            binding={binding}
-            onChanged={(updated) =>
-              setBindings((current) =>
-                current.map((item) => (item.id === updated.id ? updated : item)),
-              )
-            }
-          />
-        ) : binding.channel === 'dingtalk' ? (
+        {binding.channel === 'dingtalk' ? (
           <DingTalkSetup
             key={binding.id}
             binding={binding}
@@ -1118,7 +1102,7 @@ export default function ChannelsPage({
           <div className="flex min-w-0 flex-col gap-[4px]">
             <span className="text-[13px] font-semibold text-[#18181a]">默认人工处理人</span>
             <span className="text-[12px] leading-[1.6] text-[#858b9c]">
-              SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接（当前支持飞书/企业微信）。未配置时回退到数字员工负责人或管理员。
+              SOP 人工节点未指定处理人时，转交给此用户；选择带渠道标注的选项会通过对应渠道转接（当前支持企业微信）。未配置时回退到数字员工负责人或管理员。
             </span>
           </div>
           <div className="flex items-center gap-[8px]">
@@ -1147,7 +1131,7 @@ export default function ChannelsPage({
                 <SelectItem value="__none__">未配置</SelectItem>
                 {tenantUsers.filter((user) => !user.source || user.source === 'web').flatMap((user) => {
                   const name = user.display_name || user.username || user.id;
-                  // 渠道转接通知运行时已支持飞书/企微私聊,渠道标注选项对支持
+                  // 渠道转接通知运行时已支持企微私聊,渠道标注选项对支持
                   // 私聊通知的绑定渠道生成(后端同样拒绝其他渠道)。
                   const channelVariantAvailable = HANDOFF_NOTIFY_CHANNELS.has(binding.channel);
                   const scope = binding.identity_scope_key || '';
@@ -1225,51 +1209,6 @@ export default function ChannelsPage({
               >
                 {`绑定我的${channelName(binding.channel)}`}
               </UIButton>
-            </div>
-          )}
-          {canManageBinding(binding) && binding.channel === 'feishu' && (
-            <div className="mt-[4px] flex flex-col gap-[10px] border-t border-[#eef0f4] pt-[12px]">
-              <div className="flex flex-col gap-[3px]">
-                <span className="text-[12px] font-medium text-[#18181a]">邀请成员绑定飞书身份</span>
-                <span className="text-[11px] leading-[1.6] text-[#858b9c]">
-                  每位成员需用自己的飞书账号向当前机器人发送一次性绑定指令。
-                </span>
-              </div>
-              {identityBoundUsers.length > 0 && (
-                <div className="flex flex-wrap gap-[6px]">
-                  {identityBoundUsers.map((user) => (
-                    <StatusBadge key={user.id} tone="green">
-                      {`${user.display_name || user.username} 已绑定`}
-                    </StatusBadge>
-                  ))}
-                </div>
-              )}
-              {identityUnboundUsers.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-[8px]">
-                  <SearchableSelect
-                    value={identityInviteUserId}
-                    onValueChange={setIdentityInviteUserId}
-                    options={identityUnboundUsers.map((user) => ({
-                      value: user.id,
-                      label: user.display_name || user.username || user.id,
-                      keywords: [user.username],
-                    }))}
-                    placeholder="选择内部成员"
-                    searchPlaceholder="搜索成员"
-                    emptyText="无匹配成员"
-                  />
-                  <UIButton
-                    variant="outline"
-                    disabled={!identityInviteUserId || bindCodeLoading}
-                    onClick={() => void openBindCode(identityInviteUserId)}
-                    className={OUTLINE_BUTTON_CLASS}
-                  >
-                    生成绑定指令
-                  </UIButton>
-                </div>
-              ) : (
-                <span className="text-[11px] text-[#858b9c]">所有内部成员均已绑定当前飞书应用</span>
-              )}
             </div>
           )}
         </div>

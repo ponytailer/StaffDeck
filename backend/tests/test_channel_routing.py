@@ -319,7 +319,7 @@ def test_run_command_help() -> None:
 
 @pytest.mark.parametrize(
     ("channel", "label"),
-    [("wechat", "微信"), ("wecom", "企业微信"), ("feishu", "飞书")],
+    [("wechat", "微信"), ("wecom", "企业微信"), ("dingtalk", "钉钉")],
 )
 def test_help_text_uses_actual_channel_name(channel: str, label: str) -> None:
     text = help_text(channel)

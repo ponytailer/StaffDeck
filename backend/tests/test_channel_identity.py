@@ -29,7 +29,7 @@ def _seed_tenant(db: Session) -> None:
 def test_channel_labels_use_canonical_names() -> None:
     assert channel_label("wechat") == "微信"
     assert channel_label("wecom") == "企业微信"
-    assert channel_label("feishu") == "飞书"
+    assert channel_label("dingtalk") == "钉钉"
 
 
 def test_external_identity_for_p2p_and_group() -> None:

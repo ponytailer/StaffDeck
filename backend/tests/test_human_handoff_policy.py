@@ -226,8 +226,8 @@ def test_handoff_assignee_does_not_fall_back_to_channel_customer():
         customer = User(
             id="channel_customer",
             tenant_id="tenant_demo",
-            username="feishu_customer",
-            source="feishu",
+            username="channel_customer",
+            source="wecom",
             password_hash="x",
         )
         db.add(customer)

@@ -57,19 +57,9 @@ class Settings(BaseSettings):
     # 钉钉 emotion 接口的表情常量与所需权限尚未真机验证，验证通过前默认关闭：
     # 否则常量失效或权限未开时，每条入站消息都会留下一条失败的 reaction 投递。
     channel_dingtalk_reaction_enabled: bool = False
-    # 出站富文本渲染开关：开启时飞书走 post 富文本、钉钉走 markdown 消息；
-    # 关闭时两者回退为纯 text 消息，用于快速回退。
+    # 出站富文本渲染开关：开启时钉钉走 markdown 消息；
+    # 关闭时回退为纯 text 消息，用于快速回退。
     channel_rich_render_enabled: bool = True
-    # 飞书渠道实时执行步骤卡片开关：开启后飞书对话在执行过程中创建并实时更新
-    # 一张独立卡片展示智能体每一步（SOP/工具/知识检索），与正文回复互不影响。
-    # 仅影响飞书渠道；关闭时退化为仅发最终回复。
-    channel_feishu_trace_enabled: bool = True
-    # 飞书 trace 卡片 SOP 紧凑展示开关：开启后匹配 SOP（判断意图/进入流程）之后的
-    # 中间步骤不再逐行展示，仅显示"翻书动画 + 正在推进SOP"，等待用户补充信息时
-    # 定格为"📖 流程已暂停"，SOP 结束时定格为"✅ 流程已结束"。设为 False 可整体
-    # 回滚为逐行展示的旧样式；binding 的 config_json.compact_trace=false 可对单个
-    # 绑定回滚。
-    channel_feishu_trace_compact_sop: bool = True
     # ---- LDAP / AD 域登录 ----
     # 开启后登录优先走域认证：先用服务账号检索用户 DN，再用该 DN + 用户口令 bind 校验，
     # 成功后把域账号信息（显示名/邮箱/部门）同步到本地 users 表（无则新建、有则更新）。

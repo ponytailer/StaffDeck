@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
+from typing import Any
 
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -17,7 +18,6 @@ from app.api.chat import (
     list_chat_session_spans,
     message_read,
 )
-from app.channels.feishu_trace import _SinkEvent
 import app.core.cancellation as cancellation_module
 from app.core.cancellation import is_chat_turn_cancelled
 from app.db.models import (
@@ -30,6 +30,23 @@ from app.db.models import (
     User,
 )
 from app.observability.event_log import EventLog
+
+
+class _SinkEvent:
+    """轻量 AgentEvent 替身，仅供 _event_trace_lines 渲染使用。
+
+    EventLog.record 的 sink 收到的是 (event_type, payload_dict)，而
+    _event_trace_lines 读取 event.event_type / event.payload_json / event.id /
+    event.created_at 四个字段。这里用一个最小对象补齐，避免构造完整 ORM 行。
+    """
+
+    __slots__ = ("created_at", "event_type", "id", "payload_json")
+
+    def __init__(self, event_type: str, payload: dict[str, Any]) -> None:
+        self.event_type = event_type
+        self.payload_json = payload
+        self.id = str(payload.get("turn_id") or payload.get("user_message_id") or "")
+        self.created_at = datetime.now(tz=dt_timezone.utc)
 
 
 def test_task_frame_finished_keeps_switched_sop_name_while_awaiting_user() -> None:

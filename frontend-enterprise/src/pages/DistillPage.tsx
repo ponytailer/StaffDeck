@@ -492,11 +492,11 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
   },
 ];
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
-const _CHANNEL_LABELS: Record<string, string> = { feishu: '飞书', dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
+const _CHANNEL_LABELS: Record<string, string> = { dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
 const UNASSIGNED_USER_VALUE = '__unassigned__';
-// 渠道转接通知运行时已支持飞书/企微私聊,处理人选项提供对应渠道标注
+// 渠道转接通知运行时已支持企微私聊,处理人选项提供对应渠道标注
 // (后端同样拒绝其他渠道)。钉钉/微信适配器只能回会话内消息,不在此列。
-const HANDOFF_NOTIFY_CHANNELS = new Set(['feishu', 'wecom']);
+const HANDOFF_NOTIFY_CHANNELS = new Set(['wecom']);
 
 type HandoffAssigneeUser = {
   id: string;

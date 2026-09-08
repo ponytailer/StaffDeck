@@ -71,7 +71,7 @@ def _auth(user: User) -> dict[str, str]:
 def _seed_binding(
     engine,
     *,
-    channel: str = "feishu",
+    channel: str = "dingtalk",
     created_by: str = "user_owner",
     status: str = "active",
 ) -> str:
@@ -101,15 +101,15 @@ def _add_collaborator(engine, binding_id: str, user_id: str, *, granted_by: str 
         db.commit()
 
 
-def test_collaborator_can_save_feishu_credentials(monkeypatch) -> None:
+def test_collaborator_can_save_dingtalk_credentials(monkeypatch) -> None:
     engine = _engine()
     users = _seed(engine)
     client = _client(engine)
     monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
     monkeypatch.setattr(
         channels_api,
-        "validate_feishu_credentials",
-        lambda app_id, secret: {"bot_open_id": "ou_bot", "bot_name": "StaffDeck Bot"},
+        "validate_dingtalk_credentials",
+        lambda client_id, client_secret: None,
     )
     binding_id = _seed_binding(engine, status="pending")
     client.post(
@@ -119,8 +119,8 @@ def test_collaborator_can_save_feishu_credentials(monkeypatch) -> None:
         headers=_auth(users["owner"]),
     )
     resp = client.post(
-        f"/api/enterprise/channels/{binding_id}/feishu/credentials",
-        json={"tenant_id": "tenant_demo", "app_id": "cli_1", "app_secret": "sec"},
+        f"/api/enterprise/channels/{binding_id}/dingtalk/credentials",
+        json={"tenant_id": "tenant_demo", "client_id": "cli_1", "client_secret": "sec"},
         headers=_auth(users["other"]),
     )
     assert resp.status_code == 200, resp.text
@@ -174,7 +174,7 @@ def test_manager_can_invite_internal_user_to_bind_identity() -> None:
     binding_id = _seed_binding(engine)
     with Session(engine) as db:
         binding = db.get(ChannelBinding, binding_id)
-        binding.identity_scope_key = "cli_feishu:tenant_a"
+        binding.identity_scope_key = "cli_dingtalk:tenant_a"
         binding.credentials_enc = "encrypted-secret"
         db.add(binding)
         db.commit()

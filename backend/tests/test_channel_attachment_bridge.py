@@ -5,9 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-# 触发 feishu/钉钉适配器注册到全局 _adapters,便于测试中保存/恢复 previous
+# 触发钉钉适配器注册到全局 _adapters,便于测试中保存/恢复 previous
 import app.channels.adapters.dingtalk
-import app.channels.adapters.feishu  # noqa: F401
 
 # 通过 app.api.chat 完整加载 app.core / app.session 依赖链,
 # 之后才能正常 import app.session.attachment_store / app.session.attachments
@@ -48,7 +47,7 @@ def _binding() -> ChannelBinding:
         id="chan_test",
         tenant_id="tenant_a",
         agent_id="agent_a",
-        channel="feishu",
+        channel="dingtalk",
         status="active",
         config_json={"app_id": "cli_app"},
         credentials_enc=encrypt_channel_secret("secret"),
@@ -58,7 +57,7 @@ def _binding() -> ChannelBinding:
 
 def _inbound(attachments: list[ChannelInboundAttachment]) -> ChannelInbound:
     return ChannelInbound(
-        channel="feishu",
+        channel="dingtalk",
         event_id="evt_1",
         from_user_id="ou_sender",
         to_user_id="ou_bot",
@@ -87,7 +86,7 @@ def _staged_attachment(filename: str = "img.jpg", content_type: str = "image/jpe
 
 def test_channel_inbound_attachments_defaults_to_empty_list() -> None:
     inbound = ChannelInbound(
-        channel="feishu",
+        channel="dingtalk",
         event_id="e",
         from_user_id="u",
         to_user_id="b",
@@ -101,7 +100,7 @@ def test_channel_inbound_attachments_defaults_to_empty_list() -> None:
     assert inbound.attachments == []
     # 独立实例,不共享默认值
     assert inbound.attachments is not ChannelInbound(
-        channel="feishu",
+        channel="dingtalk",
         event_id="e2",
         from_user_id="u",
         to_user_id="b",
@@ -138,8 +137,8 @@ def test_channel_inbound_attachment_construction() -> None:
 def test_bridge_returns_empty_when_adapter_has_no_download_media() -> None:
     """适配器未实现 download_media 时返回空列表,不阻塞。"""
     adapter = SimpleNamespace()  # 没有 download_media 属性
-    previous = get_channel_adapter("feishu")
-    register_channel_adapter("feishu", adapter)
+    previous = get_channel_adapter("dingtalk")
+    register_channel_adapter("dingtalk", adapter)
     try:
         inbound = _inbound([ChannelInboundAttachment(media_id="m", kind="image")])
         result = inbound_attachments_to_chat(
@@ -151,15 +150,15 @@ def test_bridge_returns_empty_when_adapter_has_no_download_media() -> None:
         )
         assert result == []
     finally:
-        register_channel_adapter("feishu", previous)
+        register_channel_adapter("dingtalk", previous)
 
 
 def test_bridge_downloads_and_stages_attachments() -> None:
     """完整链路:download_media -> parse_chat_attachment -> stage_chat_attachment。"""
     image = b"\x89PNG\r\n\x1a\nimage-data"
     fake_adapter = _FakeAdapter(image)
-    previous = get_channel_adapter("feishu")
-    register_channel_adapter("feishu", fake_adapter)
+    previous = get_channel_adapter("dingtalk")
+    register_channel_adapter("dingtalk", fake_adapter)
     try:
         attachment = ChannelInboundAttachment(
             media_id="img_v3_001",
@@ -205,13 +204,13 @@ def test_bridge_downloads_and_stages_attachments() -> None:
         assert stage_kwargs["tenant_id"] == "tenant_a"
         assert stage_kwargs["user_id"] == "user_1"
     finally:
-        register_channel_adapter("feishu", previous)
+        register_channel_adapter("dingtalk", previous)
 
 
 def test_bridge_skips_empty_download_result() -> None:
     fake_adapter = _FakeAdapter(b"")
-    previous = get_channel_adapter("feishu")
-    register_channel_adapter("feishu", fake_adapter)
+    previous = get_channel_adapter("dingtalk")
+    register_channel_adapter("dingtalk", fake_adapter)
     try:
         inbound = _inbound([ChannelInboundAttachment(media_id="m", kind="image")])
         results = inbound_attachments_to_chat(
@@ -219,7 +218,7 @@ def test_bridge_skips_empty_download_result() -> None:
         )
         assert results == []
     finally:
-        register_channel_adapter("feishu", previous)
+        register_channel_adapter("dingtalk", previous)
 
 
 def test_bridge_skips_oversized_attachment() -> None:
@@ -233,8 +232,8 @@ def test_bridge_skips_oversized_attachment() -> None:
             return oversized
 
     fake_adapter = OversizedAdapter()
-    previous = get_channel_adapter("feishu")
-    register_channel_adapter("feishu", fake_adapter)
+    previous = get_channel_adapter("dingtalk")
+    register_channel_adapter("dingtalk", fake_adapter)
     try:
         inbound = _inbound([ChannelInboundAttachment(media_id="big", kind="file")])
         results = inbound_attachments_to_chat(
@@ -242,7 +241,7 @@ def test_bridge_skips_oversized_attachment() -> None:
         )
         assert results == []
     finally:
-        register_channel_adapter("feishu", previous)
+        register_channel_adapter("dingtalk", previous)
 
 
 def test_bridge_continues_on_single_attachment_failure() -> None:
@@ -257,8 +256,8 @@ def test_bridge_continues_on_single_attachment_failure() -> None:
                 raise RuntimeError("network down")
             return good
 
-    previous = get_channel_adapter("feishu")
-    register_channel_adapter("feishu", MixedAdapter())
+    previous = get_channel_adapter("dingtalk")
+    register_channel_adapter("dingtalk", MixedAdapter())
     try:
         inbound = _inbound([
             ChannelInboundAttachment(media_id="bad", kind="image"),
@@ -282,14 +281,14 @@ def test_bridge_continues_on_single_attachment_failure() -> None:
         assert len(results) == 1
         assert call_count["n"] == 2
     finally:
-        register_channel_adapter("feishu", previous)
+        register_channel_adapter("dingtalk", previous)
 
 
 def test_bridge_passes_empty_content_type_as_none() -> None:
     """att.content_type 为空字符串时传 None 给 parse_chat_attachment(让其自动推断)。"""
     fake_adapter = _FakeAdapter(b"some bytes")
-    previous = get_channel_adapter("feishu")
-    register_channel_adapter("feishu", fake_adapter)
+    previous = get_channel_adapter("dingtalk")
+    register_channel_adapter("dingtalk", fake_adapter)
     try:
         inbound = _inbound([
             ChannelInboundAttachment(
@@ -316,7 +315,7 @@ def test_bridge_passes_empty_content_type_as_none() -> None:
         assert args[1] is None
         assert args[2] == b"some bytes"
     finally:
-        register_channel_adapter("feishu", previous)
+        register_channel_adapter("dingtalk", previous)
 
 
 def test_detect_image_media_type_recognizes_common_formats() -> None:

@@ -1862,8 +1862,8 @@ def _handoff_skill_card(
 
 def _scope_binding(
     *,
-    binding_id: str = "binding_feishu",
-    channel: str = "feishu",
+    binding_id: str = "binding_wecom",
+    channel: str = "wecom",
     scope: str = "",
 ) -> ChannelBinding:
     return ChannelBinding(
@@ -1885,7 +1885,7 @@ def test_validate_handoff_assignees_accepts_internal_and_bound_channel_variants(
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
-                channel="feishu",
+                channel="wecom",
                 external_account_scope="app:cli_a:tenant:t_a",
                 external_user_id="ou_owner",
                 staffdeck_user_id="user_owner",
@@ -1895,7 +1895,7 @@ def test_validate_handoff_assignees_accepts_internal_and_bound_channel_variants(
 
         _validate_handoff_assignees(db, _handoff_skill_card("user_owner"), "tenant_demo")
         _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "web"), "tenant_demo")
-        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo")
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "wecom"), "tenant_demo")
 
 
 def test_validate_handoff_assignees_rejects_unbound_channel_variant() -> None:
@@ -1907,7 +1907,7 @@ def test_validate_handoff_assignees_rejects_unbound_channel_variant() -> None:
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
-                channel="feishu",
+                channel="wecom",
                 external_account_scope="app:cli_a:tenant:t_a",
                 external_user_id="group:chat_1",
                 staffdeck_user_id="user_owner",
@@ -1917,7 +1917,7 @@ def test_validate_handoff_assignees_rejects_unbound_channel_variant() -> None:
 
         with pytest.raises(HTTPException) as exc_info:
             _validate_handoff_assignees(
-                db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo"
+                db, _handoff_skill_card("user_owner", "wecom"), "tenant_demo"
             )
         assert exc_info.value.status_code == 400
 
@@ -1937,7 +1937,7 @@ def test_validate_handoff_assignees_scope_level_reachability() -> None:
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
-                channel="feishu",
+                channel="wecom",
                 external_account_scope="app:cli_b:tenant:t_b",
                 external_user_id="ou_other_org",
                 staffdeck_user_id="user_owner",
@@ -1947,15 +1947,15 @@ def test_validate_handoff_assignees_scope_level_reachability() -> None:
 
         with pytest.raises(HTTPException) as exc_info:
             _validate_handoff_assignees(
-                db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo"
+                db, _handoff_skill_card("user_owner", "wecom"), "tenant_demo"
             )
         assert exc_info.value.status_code == 400
         assert "未绑定渠道身份" in exc_info.value.detail
 
         # 多绑定任一可达即可:再挂一个企业 B 的 active 绑定后通过
-        db.add(_scope_binding(binding_id="binding_feishu_b", scope="app:cli_b:tenant:t_b"))
+        db.add(_scope_binding(binding_id="binding_wecom_b", scope="app:cli_b:tenant:t_b"))
         db.commit()
-        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo")
+        _validate_handoff_assignees(db, _handoff_skill_card("user_owner", "wecom"), "tenant_demo")
 
 
 def test_validate_handoff_assignees_ignores_team_and_inactive_bindings() -> None:
@@ -1972,7 +1972,7 @@ def test_validate_handoff_assignees_ignores_team_and_inactive_bindings() -> None
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
-                channel="feishu",
+                channel="wecom",
                 external_account_scope="app:cli_team:tenant:t",
                 external_user_id="ou_team",
                 staffdeck_user_id="user_owner",
@@ -1982,7 +1982,7 @@ def test_validate_handoff_assignees_ignores_team_and_inactive_bindings() -> None
 
         with pytest.raises(HTTPException) as exc_info:
             _validate_handoff_assignees(
-                db, _handoff_skill_card("user_owner", "feishu"), "tenant_demo"
+                db, _handoff_skill_card("user_owner", "wecom"), "tenant_demo"
             )
         assert exc_info.value.status_code == 400
 
@@ -2014,8 +2014,8 @@ def test_validate_handoff_assignees_rejects_channel_customer() -> None:
             User(
                 id="user_channel",
                 tenant_id="tenant_demo",
-                username="feishu_customer",
-                source="feishu",
+                username="channel_customer",
+                source="wecom",
                 password_hash="x",
             )
         )

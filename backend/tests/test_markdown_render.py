@@ -14,7 +14,6 @@ from app.channels.markdown_render import (
     extract_dingtalk_title,
     has_markdown,
     parse_markdown,
-    render_feishu_post,
     split_markdown_by_lines,
 )
 
@@ -280,75 +279,6 @@ def test_bold_italic_combined():
     blocks = parse_markdown("**_粗斜_**")
     spans = blocks[0].spans
     assert any(set(s.styles) == {"bold", "italic"} for s in spans)
-
-
-# ---------------------------------------------------------------------------
-# render_feishu_post
-# ---------------------------------------------------------------------------
-
-
-def test_render_post_heading_bold_style():
-    blocks = parse_markdown("## 标题")
-    post = render_feishu_post(blocks)
-    assert post["zh_cn"]["title"] == ""
-    row = post["zh_cn"]["content"][0]
-    assert row[0]["tag"] == "text"
-    assert "bold" in (row[0].get("style") or [])
-
-
-def test_render_post_link_tag():
-    blocks = parse_markdown("[点这里](https://x.com)")
-    post = render_feishu_post(blocks)
-    tag = post["zh_cn"]["content"][0][0]
-    assert tag["tag"] == "a"
-    assert tag["text"] == "点这里"
-    assert tag["href"] == "https://x.com"
-
-
-def test_render_post_code_block_tag():
-    blocks = parse_markdown("```js\nfoo()\n```")
-    post = render_feishu_post(blocks)
-    tag = post["zh_cn"]["content"][0][0]
-    assert tag["tag"] == "code_block"
-    assert tag["language"] == "js"
-    assert tag["text"] == "foo()"
-
-
-def test_render_post_bold_style_flag():
-    blocks = parse_markdown("**粗体**")
-    post = render_feishu_post(blocks)
-    tag = post["zh_cn"]["content"][0][0]
-    assert tag["style"] == ["bold"]
-
-
-def test_render_post_list_item_prefix():
-    blocks = parse_markdown("- 项")
-    post = render_feishu_post(blocks)
-    tag = post["zh_cn"]["content"][0][0]
-    assert tag["text"].startswith("• ")
-    assert "项" in tag["text"]
-
-
-def test_render_post_ordered_list_prefix():
-    blocks = parse_markdown("3. 第三")
-    post = render_feishu_post(blocks)
-    tag = post["zh_cn"]["content"][0][0]
-    assert tag["text"].startswith("3. ")
-
-
-def test_render_post_quote_prefix():
-    blocks = parse_markdown("> 引用")
-    post = render_feishu_post(blocks)
-    tag = post["zh_cn"]["content"][0][0]
-    assert "引用" in tag["text"]
-
-
-def test_render_post_script_stays_text():
-    blocks = parse_markdown("<script>x</script>")
-    post = render_feishu_post(blocks)
-    tag = post["zh_cn"]["content"][0][0]
-    assert tag["tag"] == "text"
-    assert "<script>" in tag["text"]
 
 
 # ---------------------------------------------------------------------------

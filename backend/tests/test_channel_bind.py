@@ -281,7 +281,7 @@ def test_list_users_hides_channel_accounts_by_default() -> None:
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
-                channel="feishu",
+                channel="wecom",
                 external_account_scope="app_1",
                 external_user_id="ou_member",
                 staffdeck_user_id=member.id,
@@ -291,7 +291,7 @@ def test_list_users_hides_channel_accounts_by_default() -> None:
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
-                channel="feishu",
+                channel="wecom",
                 external_account_scope="app_1",
                 external_user_id="group:chat_1",
                 staffdeck_user_id=member.id,
@@ -1330,7 +1330,7 @@ def test_my_identity_bindings_heals_stale_display_name() -> None:
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
-                channel="feishu",
+                channel="wecom",
                 external_account_scope="app:20:cli_aaf3d15c5138dbe5:tenant:16:1a0aaaa3801ddcbc",
                 external_user_id="ou_admin",
                 staffdeck_user_id=users["web"].id,

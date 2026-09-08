@@ -48,7 +48,7 @@ _USER_SOURCE_BACKFILL_MIGRATION_ID = "20260718_user_source_wechat_backfill"
 _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
 _CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
-_FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
+_CHANNEL_INBOX_SCHEMA_MIGRATION_ID = "20260724_channel_inbox_schema_v1"
 _CAPABILITY_SCOPE_TABLES = (
     "general_skills",
     "tools",
@@ -147,7 +147,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_channel_scope_rebuild(conn, inspector, tables)
         _migrate_channel_bindings_multi(conn, inspector, tables)
         _migrate_channel_account_key_schema(conn, tables)
-        _migrate_feishu_channel_schema(conn, tables)
+        _migrate_channel_inbox_schema(conn, tables)
         _migrate_channel_inbound_run_schema(conn, tables)
         _migrate_channel_bind_code_constraints(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
@@ -1286,8 +1286,8 @@ def _migrate_channel_inbound_run_schema(conn, tables: set[str]) -> None:
     )
 
 
-def _migrate_feishu_channel_schema(conn, tables: set[str]) -> None:
-    """Add the durable-inbox and provider-scope columns required by Feishu.
+def _migrate_channel_inbox_schema(conn, tables: set[str]) -> None:
+    """Add the durable-inbox and provider-scope columns used by channel bindings.
 
     Column presence is authoritative rather than the marker alone so an interrupted
     or manually modified database is repaired on the next startup.
@@ -1371,7 +1371,7 @@ def _migrate_feishu_channel_schema(conn, tables: set[str]) -> None:
         text(
             "INSERT OR IGNORE INTO app_data_migrations (id) VALUES (:id)"
         ),
-        {"id": _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID},
+        {"id": _CHANNEL_INBOX_SCHEMA_MIGRATION_ID},
     )
 
 

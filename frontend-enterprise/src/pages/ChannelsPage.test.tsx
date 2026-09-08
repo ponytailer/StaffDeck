@@ -211,8 +211,8 @@ describe('ChannelsPage', () => {
     const namedBinding: ChannelBindingRead = {
       ...teamBinding,
       id: 'binding-1',
-      channel: 'feishu',
-      name: '飞书客服',
+      channel: 'dingtalk',
+      name: '钉钉客服',
       team_id: null,
       team_name: null,
       my_role: 'owner',
@@ -223,15 +223,15 @@ describe('ChannelsPage', () => {
 
     renderPage();
     // 列表卡片展示自定义名称
-    expect(await screen.findByText('飞书客服')).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: /飞书客服/ }));
+    expect(await screen.findByText('钉钉客服')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /钉钉客服/ }));
 
     await user.click(await screen.findByRole('button', { name: '重命名' }));
     const input = (await screen.findByLabelText('接入名称')) as HTMLInputElement;
     // 预填当前名称
-    expect(input.value).toBe('飞书客服');
+    expect(input.value).toBe('钉钉客服');
     await user.clear(input);
-    await user.type(input, '售前飞书群');
+    await user.type(input, '售前钉钉群');
     await user.click(screen.getByRole('button', { name: '保存' }));
 
     await waitFor(() => {
@@ -243,11 +243,11 @@ describe('ChannelsPage', () => {
       expect(call).toBeTruthy();
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({
         tenant_id: 'tenant_demo',
-        name: '售前飞书群',
+        name: '售前钉钉群',
       });
     });
     // 详情标题同步更新为新名称
-    expect(await screen.findByText('售前飞书群')).toBeTruthy();
+    expect(await screen.findByText('售前钉钉群')).toBeTruthy();
   });
 
   it('renames a binding directly from the list card without entering the detail view', async () => {
@@ -255,8 +255,8 @@ describe('ChannelsPage', () => {
     const namedBinding: ChannelBindingRead = {
       ...teamBinding,
       id: 'binding-1',
-      channel: 'feishu',
-      name: '飞书客服',
+      channel: 'dingtalk',
+      name: '钉钉客服',
       team_id: null,
       team_name: null,
       my_role: 'owner',
@@ -266,13 +266,13 @@ describe('ChannelsPage', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     renderPage();
-    expect(await screen.findByText('飞书客服')).toBeTruthy();
+    expect(await screen.findByText('钉钉客服')).toBeTruthy();
     // 列表卡片上的重命名按钮
     await user.click(screen.getByRole('button', { name: '重命名' }));
     const input = (await screen.findByLabelText('接入名称')) as HTMLInputElement;
-    expect(input.value).toBe('飞书客服');
+    expect(input.value).toBe('钉钉客服');
     await user.clear(input);
-    await user.type(input, '售后飞书群');
+    await user.type(input, '售后钉钉群');
     await user.click(screen.getByRole('button', { name: '保存' }));
 
     await waitFor(() => {
@@ -284,11 +284,11 @@ describe('ChannelsPage', () => {
       expect(call).toBeTruthy();
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({
         tenant_id: 'tenant_demo',
-        name: '售后飞书群',
+        name: '售后钉钉群',
       });
     });
     // 仍停留在列表页,卡片标题已更新
-    expect(await screen.findByText('售后飞书群')).toBeTruthy();
+    expect(await screen.findByText('售后钉钉群')).toBeTruthy();
     expect(screen.queryByText('选择绑定对象')).toBeNull();
   });
 

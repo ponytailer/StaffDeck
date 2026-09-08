@@ -11,7 +11,7 @@ describe('channel presentation', () => {
   it.each([
     ['wechat', '微信', '微信用户', '机器人 ID'],
     ['wecom', '企业微信', '企业微信用户', '机器人 ID'],
-    ['feishu', '飞书', '飞书用户', 'App ID'],
+    ['dingtalk', '钉钉', '钉钉用户', 'Client ID'],
   ])('%s uses its actual channel labels', (channel, name, userLabel, identifierLabel) => {
     const presentation = getChannelPresentation(channel);
     expect(presentation.name).toBe(name);

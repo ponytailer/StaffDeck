@@ -141,12 +141,12 @@ def test_create_binding_generates_default_name() -> None:
 
     response = client.post(
         "/api/enterprise/channels",
-        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "feishu"},
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "dingtalk"},
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 200
-    # 默认名:渠道名 + YYYYMMDDHHMM,如「飞书202608250910」
-    assert re.fullmatch(r"飞书\d{12}", response.json()["name"])
+    # 默认名:渠道名 + YYYYMMDDHHMM,如「钉钉202608250910」
+    assert re.fullmatch(r"钉钉\d{12}", response.json()["name"])
 
 
 def test_create_binding_with_custom_name() -> None:
@@ -159,17 +159,17 @@ def test_create_binding_with_custom_name() -> None:
         json={
             "tenant_id": "tenant_demo",
             "agent_id": "agent_1",
-            "channel": "feishu",
-            "name": "  客服飞书专用  ",
+            "channel": "dingtalk",
+            "name": "  客服钉钉专用  ",
         },
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 200
     # 名称去首尾空白后落库
-    assert response.json()["name"] == "客服飞书专用"
+    assert response.json()["name"] == "客服钉钉专用"
     with Session(engine) as db:
         rows = db.exec(select(ChannelBinding)).all()
-        assert rows[0].name == "客服飞书专用"
+        assert rows[0].name == "客服钉钉专用"
 
 
 def test_create_binding_blank_name_falls_back_to_default() -> None:
@@ -1394,8 +1394,8 @@ def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None
             User(
                 id="user_channel_customer",
                 tenant_id="tenant_demo",
-                username="feishu_customer",
-                source="feishu",
+                username="channel_customer",
+                source="wechat",
                 password_hash="x",
             )
         )
@@ -1411,17 +1411,17 @@ def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None
     assert response.status_code == 400
 
 
-def test_put_feishu_default_handoff_assignee_channel_variant_requires_bound_identity() -> None:
-    """飞书绑定:网页端选项不要求绑定;渠道选项要求当前 scope 下的非群聊身份。"""
+def test_put_wecom_scope_bound_default_handoff_assignee_channel_requires_bound_identity() -> None:
+    """企微绑定:网页端选项不要求绑定;渠道选项要求当前 scope 下的非群聊身份。"""
     engine = _test_engine()
     users = _seed_users(engine)
     with Session(engine) as db:
         binding = ChannelBinding(
             tenant_id="tenant_demo",
             agent_id="agent_1",
-            channel="feishu",
+            channel="wecom",
             status="active",
-            identity_scope_key="cli_feishu:tenant_a",
+            identity_scope_key="corp_scope_a",
             created_by_user_id="user_owner",
         )
         db.add(binding)
@@ -1439,12 +1439,12 @@ def test_put_feishu_default_handoff_assignee_channel_variant_requires_bound_iden
     assert web_variant.status_code == 200
     assert web_variant.json()["default_handoff_assignee_channel"] is None
 
-    # 渠道选项:未绑定当前飞书账号 → 400
+    # 渠道选项:未绑定当前企微账号 → 400
     unbound_channel = client.put(
         f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
         json={
             "default_handoff_assignee_user_id": "user_owner",
-            "default_handoff_assignee_channel": "feishu",
+            "default_handoff_assignee_channel": "wecom",
         },
         headers=_auth(users["owner"]),
     )
@@ -1465,9 +1465,9 @@ def test_put_feishu_default_handoff_assignee_channel_variant_requires_bound_iden
         db.add(
             ChannelIdentity(
                 tenant_id="tenant_demo",
-                channel="feishu",
-                external_account_scope="cli_feishu:tenant_a",
-                external_user_id="ou_owner",
+                channel="wecom",
+                external_account_scope="corp_scope_a",
+                external_user_id="staff_owner",
                 display_name="Owner",
                 staffdeck_user_id="user_owner",
             )
@@ -1479,17 +1479,17 @@ def test_put_feishu_default_handoff_assignee_channel_variant_requires_bound_iden
         f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
         json={
             "default_handoff_assignee_user_id": "user_owner",
-            "default_handoff_assignee_channel": "feishu",
+            "default_handoff_assignee_channel": "wecom",
         },
         headers=_auth(users["owner"]),
     )
     assert reachable.status_code == 200
     payload = reachable.json()
     assert payload["default_handoff_assignee_user_id"] == "user_owner"
-    assert payload["default_handoff_assignee_channel"] == "feishu"
+    assert payload["default_handoff_assignee_channel"] == "wecom"
     with Session(engine) as db:
         config = db.get(ChannelBinding, binding_id).config_json or {}
-        assert config["default_handoff_assignee_channel"] == "feishu"
+        assert config["default_handoff_assignee_channel"] == "wecom"
 
     # 清空处理人时同步清空渠道
     cleared = client.put(
@@ -1553,7 +1553,7 @@ def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
     assert payload["default_handoff_assignee_user_id"] == "user_owner"
 
 
-def test_put_non_feishu_default_handoff_assignee_channel_rejected() -> None:
+def test_put_non_wecom_default_handoff_assignee_channel_rejected() -> None:
     """渠道转接通知要求渠道支持私聊:钉钉绑定即使处理人已绑定钉钉身份也拒绝保存。"""
     engine = _test_engine()
     users = _seed_users(engine)
