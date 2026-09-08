@@ -11,12 +11,16 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from openai import OpenAI
-from anthropic import Anthropic
 
 from app.config import get_settings
 from app.db.models import ModelConfig
 from app.llm.model_protocols import ModelApiProtocol
+
+# SDK 延迟加载占位：openai/anthropic 顶层 import 需构建数百个 pydantic 模型类，
+# 弱机器上合计 ~14s（启动期大头）。声明 None 占位，首次实例化 LLMClient 时
+# 由 _module_attr_or_import 真正 import 并写回；测试 monkeypatch 打桩可正常覆盖。
+OpenAI: type | None = None
+Anthropic: type | None = None
 from app.llm.output_policy import (
     operation_empty_response_retries,
     operation_output_tokens,
@@ -37,6 +41,21 @@ from app.llm.stage_protocol import (
 )
 from app.observability.spans import current_llm_operation, llm_span_attributes, start_llm_call
 from app.security.encryption import try_decrypt_secret
+
+
+def _module_attr_or_import(attr_name: str, module_name: str) -> type:
+    """取模块级 SDK 类属性；不存在（延迟加载）时 import 并写回。
+
+    保证测试通过 monkeypatch("app.llm.client.OpenAI") 打桩依然生效——
+    打桩后属性存在（非 None）则直接使用，跳过真实 SDK import。
+    """
+    existing = globals().get(attr_name)
+    if existing is not None:
+        return existing
+    module = __import__(module_name, fromlist=[attr_name])
+    cls = getattr(module, attr_name)
+    globals()[attr_name] = cls
+    return cls
 
 
 class LLMError(Exception):
@@ -107,21 +126,26 @@ class LLMClient:
             or DEFAULT_MODEL_API_TIMEOUT_SECONDS
         )
         self.base_url = str(model_config.base_url or "")
-        if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS:
-            self.client = OpenAI(
+        # SDK 延迟加载：openai/anthropic 顶层 import 需构建数百个 pydantic 模型类，
+        # 弱机器上合计 ~14s（启动期大头）；仅在实际实例化 LLMClient 时加载。
+        # 加载后写回模块属性，测试的 monkeypatch("app.llm.client.OpenAI") 依然生效
+        if protocol in (
+            ModelApiProtocol.OPENAI_CHAT_COMPLETIONS,
+            ModelApiProtocol.OPENAI_RESPONSES,
+        ):
+            sdk_cls: type = _module_attr_or_import("OpenAI", "openai")
+            self.client = sdk_cls(
                 api_key=api_key,
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
             )
-            self.driver = ChatCompletionsDriver(self.client)
-        elif protocol is ModelApiProtocol.OPENAI_RESPONSES:
-            self.client = OpenAI(
-                api_key=api_key,
-                base_url=self.base_url,
-                timeout=self.timeout_seconds,
+            self.driver = (
+                ChatCompletionsDriver(self.client)
+                if protocol is ModelApiProtocol.OPENAI_CHAT_COMPLETIONS
+                else OpenAIResponsesDriver(self.client)
             )
-            self.driver = OpenAIResponsesDriver(self.client)
         elif protocol is ModelApiProtocol.ANTHROPIC_MESSAGES:
+            anthropic_cls: type = _module_attr_or_import("Anthropic", "anthropic")
             kwargs: dict[str, Any] = {
                 "api_key": api_key,
                 "timeout": self.timeout_seconds,
@@ -139,7 +163,7 @@ class LLMClient:
                 elif sdk_path.endswith("/v1"):
                     sdk_base_url = sdk_base_url[:-3].rstrip("/")
                 kwargs["base_url"] = sdk_base_url
-            self.client = Anthropic(**kwargs)
+            self.client = anthropic_cls(**kwargs)
             self.driver = AnthropicMessagesDriver(self.client)
         elif protocol is ModelApiProtocol.GEMINI_GENERATE_CONTENT:
             self.client = httpx.Client(timeout=self.timeout_seconds)
