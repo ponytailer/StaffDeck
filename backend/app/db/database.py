@@ -67,6 +67,7 @@ def init_db() -> None:
     _migrate_pg_api_key_schema()
     _migrate_user_ldap_schema()
     _migrate_user_department_manual()
+    _migrate_tenant_seed_fingerprint()
     _purge_orphaned_chat_sessions()
 
 
@@ -79,8 +80,14 @@ def _purge_orphaned_chat_sessions() -> None:
     )
 
     with Session(engine) as db:
+        # 只取判定孤儿所需的 4 列(全量 ORM 实体对远程 PG 是启动期数秒级开销)
         referenced = db.exec(
-            select(ChatSession).where(
+            select(
+                ChatSession.id,
+                ChatSession.tenant_id,
+                ChatSession.team_id,
+                ChatSession.agent_id,
+            ).where(
                 ChatSession.team_id.is_not(None) | ChatSession.agent_id.is_not(None)
             )
         ).all()
@@ -96,8 +103,13 @@ def _purge_orphaned_chat_sessions() -> None:
         ]
         if not orphaned:
             return
-        workspace_keys = [(session.tenant_id, session.id) for session in orphaned]
-        for session in orphaned:
+        orphaned_ids = [row.id for row in orphaned]
+        workspace_keys = [(row.tenant_id, row.id) for row in orphaned]
+        # 按主键重新加载完整实体再删除(上面只查了 4 列的轻量行)
+        full_sessions = db.exec(
+            select(ChatSession).where(ChatSession.id.in_(orphaned_ids))
+        ).all()
+        for session in full_sessions:
             purge_chat_session_records(db, session)
         db.commit()
         for tenant_id, session_id in workspace_keys:
@@ -3150,6 +3162,19 @@ def _migrate_user_department_manual() -> None:
                 "BOOLEAN NOT NULL DEFAULT FALSE"
             )
         )
+
+
+def _migrate_tenant_seed_fingerprint() -> None:
+    """tenants 表补齐种子指纹列(seed_fingerprint)，SQLite 与 PostgreSQL 通用。"""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "tenants" not in tables:
+        return
+    columns = {column["name"] for column in inspector.get_columns("tenants")}
+    if "seed_fingerprint" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE tenants ADD COLUMN seed_fingerprint VARCHAR"))
 
 
 def _migrate_pg_api_key_schema() -> None:

@@ -21,6 +21,8 @@ class Tenant(SQLModel, table=True):
 
     id: str = Field(primary_key=True)
     name: str
+    # 种子数据指纹:画廊 fixture 内容未变化时跳过启动时的全量重播(启动提速)
+    seed_fingerprint: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
