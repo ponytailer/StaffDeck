@@ -4,6 +4,8 @@
 - ``REDIS_HOST`` 留空 = 完全禁用，所有使用方必须能优雅回退到现状行为；
 - 连接失败时同样返回 None 并缓存结果，避免每个请求都重试拖慢响应
   （重新启用需要重启进程，属预期行为）；
+- 成功连接的 client 同样缓存为进程级单例（redis-py 自带连接池，复用实例
+  避免每次调用重建连接）；
 - 使用方一律通过 :func:`get_redis` 取客户端，返回 None 表示「Redis 不可用」。
 """
 
@@ -16,16 +18,20 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# 全局禁用标记（未配置时避免重复构造）
+# 全局单例：_disabled = 未配置/连接失败；_client = 已连接的共享实例
+# （redis-py 实例自带连接池，进程内复用同一个实例即可，重复构造会丢弃连接池）
 _disabled = False
+_client: Any | None = None
 
 
 def get_redis() -> Any | None:
     """返回共享的 redis.Redis 实例；未配置或连不上时返回 None。"""
 
-    global _disabled
+    global _disabled, _client
     if _disabled:
         return None
+    if _client is not None:
+        return _client
 
     settings = get_settings()
     if not settings.redis_host:
@@ -58,4 +64,5 @@ def get_redis() -> Any | None:
 
     logger.info("Redis 已连接：%s:%s db=%s", settings.redis_host, settings.redis_port,
                 settings.redis_db)
-    return client
+    _client = client
+    return _client

@@ -91,6 +91,34 @@ def test_staffdeck_seed_requires_every_bundled_fixture(tmp_path) -> None:
         staffdeck_seed._load_seed_fixtures((tmp_path / "missing-fixture.json",))
 
 
+def test_seed_fingerprint_short_circuits_unchanged_fixture() -> None:
+    """fixture 未变化时种子重播被指纹短路；变化后自动重播并刷新指纹。"""
+    with _seeded_session() as db:
+        tenant = db.get(Tenant, "tenant_demo")
+        assert tenant is not None and tenant.seed_fingerprint, "首次种子后应写入指纹"
+
+        data = staffdeck_seed._load_seed_fixtures(
+            (staffdeck_seed.FIXTURE_PATH, staffdeck_seed.EXPANDED_FIXTURE_PATH)
+        )
+        assert staffdeck_seed._seed_fingerprint(data) == tenant.seed_fingerprint
+
+        # 模拟 fixture 内容变化（不落盘，直接换数据源打桩）
+        data["knowledge_bases"] = [dict(data["knowledge_bases"][0], description="changed")]
+        assert staffdeck_seed._seed_fingerprint(data) != tenant.seed_fingerprint
+
+        monkeypatch_data = lambda *paths: data
+        # 重播会原地规范化 data 行，期望指纹必须在调用前计算
+        expected_fp = staffdeck_seed._seed_fingerprint(data)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(staffdeck_seed, "_load_seed_fixtures", monkeypatch_data)
+            # 全量重播应正常执行且把指纹刷新为新值
+            staffdeck_seed.seed_staffdeck_admin_gallery(db)
+        db.commit()
+        refreshed = db.get(Tenant, "tenant_demo")
+        assert refreshed is not None
+        assert refreshed.seed_fingerprint == expected_fp
+
+
 def test_expanded_staffdeck_skills_match_runtime_schema() -> None:
     data = json.loads(staffdeck_seed.EXPANDED_FIXTURE_PATH.read_text(encoding="utf-8"))
 

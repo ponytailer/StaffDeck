@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from datetime import datetime
@@ -32,6 +33,7 @@ from app.db.models import (
     Skill,
     SkillVersion,
     Tool,
+    Tenant,
     User,
     utc_now,
 )
@@ -70,12 +72,51 @@ JsonDict = dict[str, Any]
 ModelT = TypeVar("ModelT", bound=SQLModel)
 
 
+def _seed_fingerprint(data: JsonDict) -> str:
+    """对画廊种子数据算内容指纹(仅取会被重播的键)，fixture 未变则跳过全量重播。"""
+    relevant = {
+        key: data.get(key)
+        for key in (
+            "agent_profiles",
+            "agent_resource_bindings",
+            "skills",
+            "skill_versions",
+            "general_skills",
+            "tools",
+            "knowledge_bases",
+            "knowledge_base_versions",
+            "knowledge_documents",
+            "knowledge_buckets",
+            "knowledge_chunks",
+            "knowledge_concepts",
+            "knowledge_discovery_suggestions",
+            "knowledge_ingest_jobs",
+            "agent_skill_branches",
+            "agent_skill_branch_versions",
+        )
+    }
+    serialized = json.dumps(relevant, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def seed_staffdeck_admin_gallery(session: Session) -> None:
     """Seed the curated StaffDeck gallery package as admin-owned resources."""
 
     data = _load_seed_fixtures((FIXTURE_PATH, EXPANDED_FIXTURE_PATH))
     if not data:
         return
+    # 指纹短路:fixture 内容与上次重播一致时直接跳过(2700+ 次逐行幂等查询,
+    # 对远程 PG 是启动期主要耗时);fixture 变化或本地手工改过种子资源时自动全量重播
+    # session 不支持 get(如测试桩)时降级为全量重播
+    get_tenant = getattr(session, "get", None)
+    tenant = get_tenant(Tenant, TENANT_ID) if callable(get_tenant) else None
+    fingerprint = _seed_fingerprint(data)
+    if tenant is not None and tenant.seed_fingerprint == fingerprint:
+        return
+    if tenant is not None:
+        tenant.seed_fingerprint = fingerprint
+        session.add(tenant)
+
     id_maps: dict[str, dict[str, str]] = {
         "agent": {},
         "skill": {},
