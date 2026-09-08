@@ -56,8 +56,10 @@ class PlannedTaskFrame(BaseModel):
     # conversation 帧分级执行模式（仅 kind=conversation 时有意义）：
     # - standard：完整 Harness 决策循环（缺省，行为与历史一致）
     # - direct_reply：问候/寒暄等简单对话，用问答模型直出回复，跳过 Harness
+    # - capability_intro：能力咨询（你能做什么/介绍下自己），注入能力清单摘要
+    #   + 人设后单次模型调用直出回复，跳过 Harness
     # 缺省/非法值一律回退 standard，不劣于现状。
-    execution_mode: Literal["standard", "direct_reply"] = "standard"
+    execution_mode: Literal["standard", "direct_reply", "capability_intro"] = "standard"
     target_skill_id: Optional[str] = None
     target_step_id: Optional[str] = None
     user_intent: Optional[str] = None

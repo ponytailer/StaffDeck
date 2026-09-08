@@ -106,6 +106,10 @@ def _turn_planner_message(
 # 复用同一 TurnPlan，省一次轻量模型调用（省钱 + 降低首字延迟）。
 INTENT_CACHE_TTL_SECONDS = 600
 
+# conversation 帧（标准路径兜底时）的动作预算上限：问答/闲聊类帧不需要
+# 完整 32 轮工具循环，6 轮足够收敛，避免「正在思考 43s」式的预算空转。
+CONVERSATION_FRAME_MAX_ACTIONS = 6
+
 
 def _intent_cache_key(
     session: ChatSession,
@@ -141,14 +145,59 @@ def _intent_cache_key(
         return None
 
 
+def _capability_summary_text(
+    db: Any,
+    tenant_id: str,
+    agent_id: str | None,
+) -> str:
+    """capability_intro 帧的能力清单摘要：从可见的 GeneralSkill / 知识库 /
+    Tool 提取 name + description，拼成给直通模型的简洁清单。
+
+    只做展示性摘要（每项截断到 ~120 字），不做授权判定——真正的能力授权
+    仍以 CapabilityManifestBuilder 为准，直通回复只是「介绍」，不执行任何能力。
+    任何异常由调用方捕获后降级到标准路径。
+    """
+
+    from app.core.capability_manifest import CapabilityManifestBuilder
+    from app.core.capability_discovery import project_capability_manifest
+
+    manifest = CapabilityManifestBuilder(db).build(
+        tenant_id,
+        agent_id,
+        skill=None,
+        step_id=None,
+    )
+    projected = project_capability_manifest(manifest, budget_chars=2_000)
+    entries = projected.catalog or []
+    lines: list[str] = []
+    for entry in entries:
+        description = str(entry.description or "").strip()
+        if len(description) > 120:
+            description = description[:117] + "..."
+        name = str(entry.name or "").strip()
+        kind_label = {
+            "general_skill": "技能",
+            "knowledge": "知识库检索",
+            "tool": "工具",
+            "file": "文件处理",
+            "internal": "内部",
+        }.get(entry.kind, entry.kind)
+        lines.append(f"- [{kind_label}] {name}：{description}" if description else f"- [{kind_label}] {name}")
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
+
 def _direct_reply_answer(
     message: str,
     persona_prompt: str | None,
     memory_context: list[dict[str, Any]],
     conversation_context: dict[str, Any] | None,
     answer_model_config: Any,
+    capability_summary: str | None = None,
 ) -> str:
-    """direct_reply 帧的轻量直出回复：一次 chat 调用，不走 Harness 决策循环。
+    """direct_reply / capability_intro 帧的轻量直出回复：一次 chat 调用，不走
+    Harness 决策循环。
 
     问答模型（若配置）优先；未配置时由调用方传入本轮请求模型。任何异常都
     抛给调用方降级到标准 Harness 路径，不劣于现状。
@@ -156,13 +205,26 @@ def _direct_reply_answer(
 
     from app.core.response_generator import ResponseGenerator
 
-    stage_data: dict[str, Any] = {
-        "execution_directive": (
+    if capability_summary:
+        execution_directive = (
+            "用户消息是在询问你（数字员工）自身的能力/职责/用途。"
+            "请结合下方提供的当前能力清单，以数字员工身份直接生成一份简短、"
+            "自然、有条理的能力介绍，帮助用户了解你可以帮他做什么。"
+            "只介绍能力清单中真实存在的能力，不要虚构；能力清单为空时，"
+            "请坦率说明当前暂无可用能力并引导用户提出具体问题。"
+        )
+    else:
+        execution_directive = (
             "用户消息是无需业务知识的社交性内容（问候/寒暄/道谢/告别）。"
             "请以数字员工身份直接生成简短自然的回复，1~3 句话即可，"
             "不要提问业务问题，不要展开任务。"
-        ),
+        )
+
+    stage_data: dict[str, Any] = {
+        "execution_directive": execution_directive,
     }
+    if capability_summary:
+        stage_data["capability_summary"] = capability_summary
     if persona_prompt:
         stage_data["employee_identity"] = persona_prompt.strip()
     if memory_context:
@@ -465,17 +527,27 @@ class HarnessV2Engine:
                     except Exception:  # noqa: BLE001 - 缓存损坏按未命中处理
                         plan = None
             if plan is None:
-                plan = self.planner.plan(
-                    _turn_planner_message(request),
-                    session,
-                    routing_skills,
-                    planner_model_config,
-                    deepcopy(conversation_context),
-                    memory_context,
-                    planner_state,
-                    interaction_mode=request.interaction_mode,
-                    team_context=team_context,
-                )
+                # planner 是在 user_message_received 事件转发到 stream worker
+                # 之前执行的，其 LLM span 若不显式携带 turn_id，诊断脚本就无法
+                # 把 planner 慢调用归因到具体 turn（观测缺口）。ContextVar
+                # 属性合并机制允许这里直接注入。
+                from app.observability.spans import llm_span_attributes
+
+                with llm_span_attributes(
+                    turn_id=self.user_message_id,
+                    user_message_id=self.user_message_id,
+                ):
+                    plan = self.planner.plan(
+                        _turn_planner_message(request),
+                        session,
+                        routing_skills,
+                        planner_model_config,
+                        deepcopy(conversation_context),
+                        memory_context,
+                        planner_state,
+                        interaction_mode=request.interaction_mode,
+                        team_context=team_context,
+                    )
                 if intent_cache_key:
                     set_json(
                         intent_cache_key,
@@ -591,11 +663,11 @@ class HarnessV2Engine:
         known_record_ids = {row.task_id for row in records}
         # execution_mode 仅存在于本轮 plan（不持久化）：deferred 恢复帧查不到
         # 映射时回退 standard，安全降级到完整 Harness 路径。
-        direct_reply_frame_ids = {
-            frame.task_id
+        light_execution_mode_by_frame_id: dict[str, str] = {
+            frame.task_id: frame.execution_mode
             for frame in plan.task_frames
             if frame.kind == "conversation"
-            and frame.execution_mode == "direct_reply"
+            and frame.execution_mode in {"direct_reply", "capability_intro"}
             and frame.task_id
         }
         self.db.commit()
@@ -691,12 +763,11 @@ class HarnessV2Engine:
                 )
                 continue
 
-            # conversation 帧分级：direct_reply 走轻量直出，跳过完整 Harness
-            # 决策循环（43.6s 问题的主路径）。任何异常降级到标准路径。
-            if (
-                frame.kind == "conversation"
-                and row.task_id in direct_reply_frame_ids
-            ):
+            # conversation 帧分级：direct_reply / capability_intro 走轻量直出，
+            # 跳过完整 Harness 决策循环（43.6s 问题的主路径）。任何异常降级
+            # 到标准路径。
+            light_mode = light_execution_mode_by_frame_id.get(row.task_id)
+            if frame.kind == "conversation" and light_mode:
                 direct_result = self._run_direct_reply_frame(
                     request,
                     execution_request,
@@ -706,6 +777,7 @@ class HarnessV2Engine:
                     model_config,
                     memory_context,
                     conversation_context,
+                    execution_mode=light_mode,
                 )
                 if direct_result is not None:
                     remaining_turn_actions = max(
@@ -942,8 +1014,10 @@ class HarnessV2Engine:
         model_config: Any,
         memory_context: list[dict[str, object]],
         conversation_context: dict[str, Any] | None,
+        execution_mode: str = "direct_reply",
     ) -> TaskExecutionResult | None:
-        """direct_reply 帧的轻量执行：一次问答模型调用直出最终回复。
+        """direct_reply / capability_intro 帧的轻量执行：一次问答模型调用直出
+        最终回复。
 
         返回 None 表示应降级到标准 Harness 路径。帧记录/trace 事件保持与
         标准路径一致（task_frame_started/finished），前端零改动。
@@ -961,7 +1035,7 @@ class HarnessV2Engine:
             {
                 "task_frame_id": row.task_id,
                 "kind": row.kind,
-                "execution_mode": "direct_reply",
+                "execution_mode": execution_mode,
                 "agent_loop_id": agent_loop.id,
                 "agent_loop_kind": agent_loop.kind,
                 "execution_engine": "harness_v2",
@@ -974,12 +1048,22 @@ class HarnessV2Engine:
             persona_prompt = self.owner._get_persona_prompt(
                 request.tenant_id, session.agent_id
             )
+            capability_summary: str | None = None
+            if execution_mode == "capability_intro":
+                capability_summary = _capability_summary_text(
+                    self.db, request.tenant_id, session.agent_id
+                )
+                if not capability_summary:
+                    # 没有任何可介绍的能力：仍可直出（提示语会引导模型坦率说明），
+                    # 但传 None 会走问候分支，因此显式给一个空清单说明。
+                    capability_summary = "（当前该数字员工暂无可介绍的业务能力。）"
             reply = _direct_reply_answer(
                 execution_request.message,
                 persona_prompt,
                 memory_context,
                 conversation_context,
                 answer_model,
+                capability_summary=capability_summary,
             )
         except Exception as exc:  # noqa: BLE001 - 降级到标准路径
             row.status = "queued"
@@ -1001,7 +1085,9 @@ class HarnessV2Engine:
             task_frame_id=row.task_id,
             status="completed",
             reply_fragment=reply,
-            task_summary=frame.user_intent or "社交性对话回复。",
+            task_summary=frame.user_intent or (
+                "能力介绍回复。" if execution_mode == "capability_intro" else "社交性对话回复。"
+            ),
             action_count=1,
         )
         self.store.finish_frame(
@@ -1024,7 +1110,7 @@ class HarnessV2Engine:
             {
                 "task_frame_id": row.task_id,
                 "kind": row.kind,
-                "execution_mode": "direct_reply",
+                "execution_mode": execution_mode,
                 "status": result.status,
                 "action_count": result.action_count,
                 "agent_loop_id": agent_loop.id,
@@ -1048,6 +1134,10 @@ class HarnessV2Engine:
         max_actions: int,
         lightweight_model_config: Any = None,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
+        # conversation 帧动作预算降档：此类帧（问答/闲聊）无需 32 轮工具循环，
+        # 4~6 轮足够。降档只影响本轮预算，不改变标准路径行为结构。
+        if frame.kind == "conversation":
+            max_actions = min(max_actions, CONVERSATION_FRAME_MAX_ACTIONS)
         self.store.mark_running(row)
         agent_loop = self.store.ensure_agent_loop(row)
         loop_checkpoint = dict(agent_loop.checkpoint_json or {})

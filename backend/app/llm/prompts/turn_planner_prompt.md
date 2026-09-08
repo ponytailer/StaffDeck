@@ -25,9 +25,14 @@
   - `direct_reply`：仅当用户消息是问候、寒暄、道谢、告别等无需任何业务知识、
     知识库检索或工具即可回答的社交性内容（如「你好」「在吗」「谢谢」「晚安」）。
     此类消息由后续问答模型直接生成回复，跳过完整执行流程。
+  - `capability_intro`：仅当用户消息是在询问数字员工自身的能力/职责/用途，
+    期望得到一份能力介绍或自我介绍（如「你能做什么」「你会什么」「介绍下你自己」
+    「你能帮我做什么」）。此类消息由服务端注入能力清单摘要后直接生成回复，
+    跳过完整执行流程。若用户询问的是某个具体业务问题（即使以「能不能」开头），
+    不属于此类，用 `standard`。
   - `standard`：一切需要业务知识、知识库检索、工具、计算、文件处理等实质性
     内容的咨询或请求（如「请假政策是什么」「帮我算一下」）。不确定时一律用
-    `standard`，宁可走完整流程也不要误判为 `direct_reply`。
+    `standard`，宁可走完整流程也不要误判为 `direct_reply` 或 `capability_intro`。
 - 用户同时补充当前 SOP 信息并提出其他要求时，将相关附加要求并入当前
   SOP frame 的 requirements；真正独立且不属于任何 SOP 的要求可建立兄弟
   conversation frame。
@@ -42,7 +47,7 @@
 - 有 active SOP 且当前消息明显是在回答上一轮问题时，优先 continue_active。
 - `clarify` 只用于用户明确想办理 SOP、但多个 SOP 无法区分；缺 slot 不属于 clarify。
 - `answer_only` 对应 conversation frame，不表示跳过 Harness；是否轻量直出由
-  `execution_mode` 决定。
+  `execution_mode`（direct_reply / capability_intro）决定。
 - 不输出 `source_message`；服务端以数据库中的用户消息为事实源。
 - 不要输出能力可用性、GeneralSkill、知识库或 Tool 选择。
 - 默认 `execution_target=self`、`assignee_agent_id=null`、`activation_condition={}`。

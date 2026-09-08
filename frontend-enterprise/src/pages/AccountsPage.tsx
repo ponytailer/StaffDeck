@@ -29,7 +29,6 @@ import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_ITEM_DANGER_CLASS, MOBILE_CAR
 
 import { api, TENANT_ID } from '../api/client';
 import IconAccounts from '../assets/icons/sys-accounts.svg?react';
-import IconAdd from '../assets/icons/add.svg?react';
 import IconClear from '../assets/icons/field-clear.svg?react';
 import IconEdit from '../assets/icons/edit.svg?react';
 import IconMore from '../assets/icons/more.svg?react';
@@ -52,14 +51,6 @@ type EmployeeAccount = {
 };
 
 type AccountDraft = {
-  displayName: string;
-  department: string;
-  password: string;
-  role: 'admin' | 'member';
-};
-
-type AccountCreateDraft = {
-  username: string;
   displayName: string;
   department: string;
   password: string;
@@ -89,15 +80,6 @@ export default function AccountsPage({
   const [editing, setEditing] = useState<EmployeeAccount | null>(null);
   const [draft, setDraft] = useState<AccountDraft>({ displayName: '', department: '', password: '', role: 'member' });
   const [saving, setSaving] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createDraft, setCreateDraft] = useState<AccountCreateDraft>({
-    username: '',
-    displayName: '',
-    department: '',
-    password: '',
-    role: 'member',
-  });
-  const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<EmployeeAccount | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -131,38 +113,6 @@ export default function AccountsPage({
   function openEdit(row: EmployeeAccount) {
     setEditing(row);
     setDraft({ displayName: row.display_name || row.username, department: row.department || '', password: '', role: row.role });
-  }
-
-  function openCreate() {
-    setCreateDraft({ username: '', displayName: '', department: '', password: '', role: 'member' });
-    setCreateOpen(true);
-  }
-
-  async function saveCreate() {
-    const username = createDraft.username.trim();
-    const password = createDraft.password.trim();
-    if (!username || !password) {
-      notify.error('请填写账号和密码');
-      return;
-    }
-    setCreating(true);
-    try {
-      await api.post('/api/auth/users', {
-        tenant_id: TENANT_ID,
-        username,
-        password,
-        display_name: createDraft.displayName.trim() || username,
-        department: createDraft.department.trim() || undefined,
-        role: createDraft.role,
-      });
-      notify.success('账号已创建');
-      setCreateOpen(false);
-      await load();
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '创建账号失败');
-    } finally {
-      setCreating(false);
-    }
   }
 
   async function saveEdit() {
@@ -323,13 +273,6 @@ export default function AccountsPage({
           <IconRefresh className={cn('size-[14px]', loading && 'animate-spin')} />
           刷新
         </UIButton>
-        <UIButton
-          onClick={openCreate}
-          className="h-[34px] gap-[4px] rounded-[10px] bg-[#18181a] px-[20px] text-[12px] font-normal text-white hover:bg-[#303030]"
-        >
-          <IconAdd className="size-[14px]" />
-          新建账号
-        </UIButton>
       </div>
 
       <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
@@ -395,30 +338,10 @@ export default function AccountsPage({
       </div>
 
       <AccountDialog
-        open={createOpen}
-        title="新建账号"
-        loading={creating}
-        submitText="创建"
-        username={{ value: createDraft.username, onChange: (value) => setCreateDraft((prev) => ({ ...prev, username: value })) }}
-        displayName={createDraft.displayName}
-        onDisplayNameChange={(value) => setCreateDraft((prev) => ({ ...prev, displayName: value }))}
-        department={createDraft.department}
-        onDepartmentChange={(value) => setCreateDraft((prev) => ({ ...prev, department: value }))}
-        password={createDraft.password}
-        onPasswordChange={(value) => setCreateDraft((prev) => ({ ...prev, password: value }))}
-        role={createDraft.role}
-        onRoleChange={(value) => setCreateDraft((prev) => ({ ...prev, role: value }))}
-        passwordLabel="初始密码"
-        onClose={() => setCreateOpen(false)}
-        onSubmit={() => void saveCreate()}
-      />
-
-      <AccountDialog
         open={Boolean(editing)}
         title={editing ? `编辑账号：${editing.username}` : '编辑账号'}
         loading={saving}
         submitText="保存"
-        username={null}
         displayName={draft.displayName}
         onDisplayNameChange={(value) => setDraft((prev) => ({ ...prev, displayName: value }))}
         department={draft.department}
@@ -452,7 +375,6 @@ function AccountDialog({
   title,
   loading,
   submitText,
-  username,
   displayName,
   onDisplayNameChange,
   department,
@@ -471,7 +393,6 @@ function AccountDialog({
   title: string;
   loading: boolean;
   submitText: string;
-  username: { value: string; onChange: (value: string) => void } | null;
   displayName: string;
   onDisplayNameChange: (value: string) => void;
   department: string;
@@ -500,15 +421,6 @@ function AccountDialog({
         </div>
 
         <div className="flex flex-col gap-[14px] px-[12px]">
-          {username && (
-            <LabeledField label="用户名">
-              <Input
-                value={username.value}
-                placeholder="例如 zhang_san"
-                onChange={(event) => username.onChange(event.target.value)}
-              />
-            </LabeledField>
-          )}
           <LabeledField label="显示名">
             <Input
               value={displayName}

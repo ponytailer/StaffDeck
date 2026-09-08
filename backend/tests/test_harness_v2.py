@@ -362,6 +362,13 @@ def test_turn_planner_normalizes_execution_mode_defaults() -> None:
                 "execution_mode": "direct_reply",
             },
             {
+                "task_id": "intro",
+                "kind": "conversation",
+                "decision": "answer_only",
+                "user_intent": "询问能力介绍",
+                "execution_mode": "capability_intro",
+            },
+            {
                 "task_id": "policy",
                 "kind": "conversation",
                 "decision": "answer_only",
@@ -373,10 +380,10 @@ def test_turn_planner_normalizes_execution_mode_defaults() -> None:
 
     normalized = TurnPlanner()._normalize(plan, "你好", session, available_skills=[])
 
-    assert len(normalized.task_frames) == 2
-    # 新帧 task_id 由服务端重新生成，按顺序对应 greet/policy。
+    assert len(normalized.task_frames) == 3
+    # 新帧 task_id 由服务端重新生成，按顺序对应 greet/intro/policy。
     modes = [frame.execution_mode for frame in normalized.task_frames]
-    assert modes == ["direct_reply", "standard"]
+    assert modes == ["direct_reply", "capability_intro", "standard"]
 
 
 def test_turn_plan_model_validate_rejects_unknown_execution_mode() -> None:
@@ -419,6 +426,61 @@ def test_turn_planner_forces_sop_frames_to_standard_execution() -> None:
     assert len(normalized.task_frames) == 1
     frame = normalized.task_frames[0]
     assert frame.kind == "sop"
+    assert frame.execution_mode == "standard"
+
+
+def test_turn_planner_keeps_capability_intro_mode_on_conversation_frame() -> None:
+    plan = TurnPlan(
+        decision="answer_only",
+        user_intent="询问数字员工能做什么",
+        task_frames=[
+            PlannedTaskFrame(
+                task_id="intro",
+                kind="conversation",
+                decision="answer_only",
+                user_intent="询问能力介绍",
+                execution_mode="capability_intro",
+            ),
+        ],
+    )
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "你能做什么",
+        _chat_session(),
+        available_skills=[],
+    )
+
+    assert len(normalized.task_frames) == 1
+    frame = normalized.task_frames[0]
+    assert frame.kind == "conversation"
+    assert frame.execution_mode == "capability_intro"
+
+
+def test_turn_planner_forces_handoff_frame_to_standard_execution() -> None:
+    plan = TurnPlan.model_validate({
+        "decision": "handoff_human",
+        "user_intent": "用户要求转人工",
+        "task_frames": [
+            {
+                "task_id": "handoff",
+                "kind": "conversation",
+                "decision": "handoff_human",
+                "user_intent": "转人工",
+                "execution_mode": "capability_intro",
+            },
+        ],
+    })
+
+    normalized = TurnPlanner()._normalize(
+        plan,
+        "我要转人工",
+        _chat_session(),
+        available_skills=[],
+    )
+
+    assert len(normalized.task_frames) == 1
+    frame = normalized.task_frames[0]
     assert frame.execution_mode == "standard"
 
 

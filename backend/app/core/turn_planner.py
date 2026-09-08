@@ -199,7 +199,11 @@ class TurnPlanner:
                 frame.kind = "conversation"
                 frame.target_skill_id = None
                 frame.target_step_id = None
-                if frame.execution_mode not in {"standard", "direct_reply"}:
+                if frame.execution_mode not in {
+                    "standard",
+                    "direct_reply",
+                    "capability_intro",
+                }:
                     frame.execution_mode = "standard"
                 if plan.decision == "handoff_human":
                     frame.decision = "handoff_human"

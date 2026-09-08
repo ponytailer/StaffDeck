@@ -5,9 +5,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.api.auth import (
     LoginRequest,
     UpdateProfileRequest,
-    UserCreateRequest,
     UserUpdateRequest,
-    create_user,
     login,
     update_my_profile,
     update_user,
@@ -49,13 +47,22 @@ def test_database_role_controls_account_management() -> None:
             role="admin",
             password_hash=hash_password("secret"),
         )
+        member = User(
+            id="user_member",
+            tenant_id="tenant_demo",
+            username="member",
+            role="member",
+            password_hash=hash_password("secret"),
+        )
         db.add(member_named_admin)
         db.add(role_admin)
+        db.add(member)
         db.commit()
 
         try:
-            create_user(
-                UserCreateRequest(tenant_id="tenant_demo", username="blocked", password="secret"),
+            update_user(
+                member.id,
+                UserUpdateRequest(tenant_id="tenant_demo", role="admin"),
                 member_named_admin,
                 db,
             )
@@ -64,25 +71,21 @@ def test_database_role_controls_account_management() -> None:
         else:
             raise AssertionError("an admin-looking username must not grant administrator access")
 
-        created = create_user(
-            UserCreateRequest(
-                tenant_id="tenant_demo",
-                username="created_admin",
-                password="secret",
-                role="admin",
-            ),
+        updated = update_user(
+            member.id,
+            UserUpdateRequest(tenant_id="tenant_demo", role="admin"),
             role_admin,
             db,
         )
-        assert created.role == "admin"
+        assert updated.role == "admin"
 
-        updated = update_user(
-            created.id,
+        downgraded = update_user(
+            member.id,
             UserUpdateRequest(tenant_id="tenant_demo", role="member"),
             role_admin,
             db,
         )
-        assert updated.role == "member"
+        assert downgraded.role == "member"
 
 
 def test_admin_password_update_allows_login_with_account() -> None:
@@ -167,33 +170,6 @@ def test_display_name_cannot_be_used_to_login() -> None:
             assert error.detail == "Invalid username or password"
         else:
             raise AssertionError("an ambiguous display name must not authenticate any account")
-
-
-def test_create_user_persists_department() -> None:
-    with _test_session() as db:
-        db.add(Tenant(id="tenant_demo", name="Demo"))
-        admin = User(
-            id="admin",
-            tenant_id="tenant_demo",
-            username="admin",
-            role="admin",
-            password_hash=hash_password("secret"),
-        )
-        db.add(admin)
-        db.commit()
-
-        created = create_user(
-            UserCreateRequest(
-                tenant_id="tenant_demo",
-                username="li_si",
-                password="secret",
-                display_name="李四",
-                department="市场部",
-            ),
-            admin,
-            db,
-        )
-        assert created.department == "市场部"
 
 
 def test_update_user_changes_department() -> None:
