@@ -98,6 +98,7 @@ def _check_route_cache_support() -> None:
     slim_spans = 0
     total_bucket_routes = 0
     planner_chars: list[tuple[str, int]] = []
+    task_action_chars: list[tuple[str, int, float]] = []
     try:
         # 每段查询独立开连接：第一条查询若失败会把连接置为 invalid，
         # 复用同一连接的后续查询会报 "This Connection is closed"
@@ -127,6 +128,10 @@ def _check_route_cache_support() -> None:
                     payload_chars_seen.append((bj_hms(as_datetime(row[1])), int(chars)))
             if op == "turn_planner.plan" and isinstance(chars, (int, float)):
                 planner_chars.append((bj_hms(as_datetime(row[1])), int(chars)))
+            if op == "harness.task_action" and isinstance(chars, (int, float)):
+                task_action_chars.append(
+                    (bj_hms(as_datetime(row[1])), int(chars), float(payload.get("duration_ms") or 0))
+                )
             trace_json = json.dumps(payload, ensure_ascii=False)
             if "route_cache_hit" in trace_json:
                 route_cache_hits += 1
@@ -159,6 +164,7 @@ def _check_route_cache_support() -> None:
     ks_hits = ks_stores = ks_fast = 0
     ks_count = 0
     ks_old_style = 0
+    ks_detail: list[tuple[str, str, list[str]]] = []
     try:
         with engine.connect() as conn:
             ks_rows = conn.execute(
@@ -181,10 +187,12 @@ def _check_route_cache_support() -> None:
             # 优先：新版事件 result.route_phases（轻量列表，精确计数）
             nested = payload.get("result") if isinstance(payload.get("result"), dict) else {}
             phases = nested.get("route_phases")
+            query = str(payload.get("query") or "")[:60]
             if isinstance(phases, list):
-                ks_hits += sum(1 for p in phases if p == "route_cache_hit")
-                ks_stores += sum(1 for p in phases if p == "route_cache_stored")
-                ks_fast += sum(1 for p in phases if str(p).endswith("lexical_fast_path"))
+                phase_names = [str(p) for p in phases]
+                ks_hits += sum(1 for p in phase_names if p == "route_cache_hit")
+                ks_stores += sum(1 for p in phase_names if p == "route_cache_stored")
+                ks_fast += sum(1 for p in phase_names if p.endswith("lexical_fast_path"))
             else:
                 # 旧事件（无 route_phases）：result.data 可能还带完整 payload，
                 # 字符串匹配做兜底，可能含 chunk 正文噪声
@@ -193,11 +201,15 @@ def _check_route_cache_support() -> None:
                 ks_hits += trace_json.count("route_cache_hit")
                 ks_stores += trace_json.count("route_cache_stored")
                 ks_fast += trace_json.count("lexical_fast_path")
+                phase_names = []
+            ks_detail.append((bj_hms(as_datetime(row[1])), query or "(旧事件无 query 字段)", phase_names))
         print(
             f"  知识检索事件：最近 {ks_count} 条（route_phases 精确 {ks_count - ks_old_style} /"
             f" 旧事件兜底 {ks_old_style}）→ route_cache_hit ×{ks_hits}，"
             f"route_cache_stored ×{ks_stores}，词法快速路径 ×{ks_fast}"
         )
+        for ts, query, phase_names in ks_detail[:6]:
+            print(f"    [{ts}] query={query!r} phases={phase_names}")
         if ks_count == 0:
             print("  [i] 最近无 knowledge_search 调用事件；有检索但无事件 → 确认 trace_sink 配置")
         if ks_hits > 0:
@@ -226,6 +238,69 @@ def _check_route_cache_support() -> None:
             print("  planner 瘦身：最近 planner span 无 payload_chars → planner 瘦身代码未部署")
     except Exception as exc:  # noqa: BLE001
         print(f"  [!] planner 观测失败：{exc}")
+
+    # task_action payload 观测（独立段）：响应生成链实测 91-187s，需体量佐证
+    try:
+        if task_action_chars:
+            print(
+                f"  task_action payload：最近 {len(task_action_chars)} 条带 payload_chars"
+                "（新观测；响应生成链 91-187s 瓶颈拆解用）"
+            )
+            for ts, chars, dur in task_action_chars[:5]:
+                flag = "  ← 大 payload" if chars > 50_000 else ""
+                print(f"    [{ts}] payload_chars={chars} dur={dur / 1000:.1f}s{flag}")
+        else:
+            print("  task_action payload：无 payload_chars → 观测代码未部署")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [!] task_action 观测失败：{exc}")
+
+    # SOP 确定性执行器（P1）生效率观测（独立段）
+    try:
+        with engine.connect() as conn:
+            prefill_rows = conn.execute(
+                text(
+                    """
+                    SELECT payload_json, created_at
+                    FROM agent_events
+                    WHERE event_type = 'sop_prefill_planned'
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                    """
+                )
+            ).fetchall()
+        scenes: dict[str, int] = {}
+        prefill_detail: list[tuple[str, str, str]] = []
+        for row in prefill_rows:
+            payload = as_payload(row[0])
+            scene = str(payload.get("scene") or "?")
+            scenes[scene] = scenes.get(scene, 0) + 1
+            prefill_detail.append(
+                (
+                    bj_hms(as_datetime(row[1])),
+                    scene,
+                    str(
+                        payload.get("query")
+                        or payload.get("next_node_id")
+                        or "、".join(str(s) for s in payload.get("required_slots") or [])
+                        or ""
+                    )[:40],
+                )
+            )
+        if prefill_rows:
+            summary = "，".join(f"{k} ×{v}" for k, v in sorted(scenes.items()))
+            print(
+                f"  SOP 确定性执行器（P1）：sop_prefill_planned ×{len(prefill_rows)}"
+                f"（{summary}）——这些节点跳过了 LLM 决策轮"
+            )
+            for ts, scene, detail in prefill_detail[:5]:
+                print(f"    [{ts}] {scene} {detail}")
+        else:
+            print(
+                "  SOP 确定性执行器（P1）：无 sop_prefill_planned 事件"
+                "（未部署 / 未触发 / 观测代码未部署）"
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [!] P1 生效率观测失败：{exc}")
     print()
 
 

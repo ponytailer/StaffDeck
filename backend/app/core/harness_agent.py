@@ -22,6 +22,7 @@ from app.core.task_request_compiler import (
 from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation
+from app.core.sop_step_executor import plan_sop_prefill_actions
 from app.session.slot_policy import strip_router_generated_message_slots
 
 PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "harness_agent_prompt.md"
@@ -123,6 +124,18 @@ class HarnessTaskAgent:
         allowed_names = requirement.capability_manifest.allowed_names()
         system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
         pending_actions: list[HarnessAction] = []
+        # SOP 确定性执行器（P1）：预检索/纯流转/缺槽询问三类场景由代码直接判定，
+        # 预填动作序列跳过首轮 task_action LLM 决策；不可判定返回空，走现有链路。
+        prefill_actions = plan_sop_prefill_actions(
+            requirement,
+            same_step=same_step,
+            satisfied_required_knowledge_ids=set(satisfied_required_knowledge_ids),
+            trace_sink=trace_sink,
+        )
+        if prefill_actions:
+            pending_actions.extend(
+                HarnessAction.model_validate(item) for item in prefill_actions
+            )
 
         def finish(result: TaskExecutionResult) -> TaskExecutionResult:
             summary = " ".join(
@@ -227,6 +240,12 @@ class HarnessTaskAgent:
                             iteration=iteration,
                             protocol_attempt=protocol_attempt + 1,
                             lightweight_decision=using_lightweight,
+                            # 响应生成链观测：单次 task_action 实测 91-187s，
+                            # 需 payload 体量佐证是否上下文过大
+                            payload_chars=(
+                                len(json.dumps(directive_payload, ensure_ascii=False, default=str))
+                                + len(system_prompt or "")
+                            ),
                         ):
                             client = _deadline_llm_client(
                                 decision_model,
@@ -546,18 +565,25 @@ class HarnessTaskAgent:
             else:
                 _extend_dict_list(citations, result.get("citations"))
             if trace_sink:
+                trace_payload = {
+                    "iteration": iteration,
+                    "tool_name": tool_name,
+                    "success": bool(result.get("success")),
+                    "error": result.get("error"),
+                    "result": _trace_capability_result(
+                        tool_name,
+                        result,
+                    ),
+                }
+                if tool_name == "knowledge_search":
+                    # 检索词透传：ks 的 query 是模型改写后的检索词（非用户原话），
+                    # 路由缓存按它建 key——观测 hit 具体是哪个问法命中必须带上它
+                    trace_payload["query"] = str(
+                        (action.arguments or {}).get("query") or ""
+                    )[:120]
                 trace_sink(
                     "harness_tool_completed",
-                    {
-                        "iteration": iteration,
-                        "tool_name": tool_name,
-                        "success": bool(result.get("success")),
-                        "error": result.get("error"),
-                        "result": _trace_capability_result(
-                            tool_name,
-                            result,
-                        ),
-                    },
+                    trace_payload,
                 )
         return finish(TaskExecutionResult(
             task_frame_id=requirement.task_frame_id,
