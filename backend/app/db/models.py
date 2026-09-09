@@ -758,8 +758,11 @@ class ApiKeyQuotaRule(SQLModel, table=True):
 class ApiKeyUsageSnapshot(SQLModel, table=True):
     """配额用量快照（按 消费者 × 配额规则 × 自然月 落库）。
 
-    当月每次查询用量时把实时值 upsert 进快照（取较大值）；历史月份直接读快照，
+    当月每次查询用量时把实时值 upsert 进快照；历史月份直接读快照，
     不再回源阿里云。中途更换配额规则时按规则维度叠加，换规则不丢当月已用量。
+    写入语义按规则周期区分（_upsert_usage_snapshot）：
+    - month 粒度：used_amount 取较大值（月内单调递增，防回退）；
+    - day / week 粒度：直接采用云端值（云端周期重置即回落）。
     """
 
     __tablename__ = "api_key_usage_snapshots"

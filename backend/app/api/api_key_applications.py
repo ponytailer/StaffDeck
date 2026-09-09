@@ -1901,9 +1901,19 @@ def _upsert_usage_snapshot(
     quota_period: str | None,
     used_amount: int,
 ) -> None:
-    """把一次实时用量写入快照表（幂等 upsert，used_amount 取较大值）。"""
+    """把一次实时用量写入快照表（幂等 upsert）。
+
+    写入语义按规则周期区分：
+    - month 粒度（含周期缺失的存量行）：used_amount 取较大值（月内用量单调
+      递增，防云端偶发低值/查询失败回退导致快照回退）；
+    - day / week 粒度：云端周期会重置（日清零/周清零），used_amount 直接采用
+      云端新值，否则重置后的真实低值会被 max 护栏永久挡在快照外（表现为
+      「阿里云数据已重置，配额页还显示旧用量」）。
+    """
     if not consumer_id or not quota_rule_id:
         return
+    period = (quota_period or "").lower()
+    monotonic = period not in ("day", "week")
     row = db.exec(
         select(ApiKeyUsageSnapshot).where(
             ApiKeyUsageSnapshot.tenant_id == tenant_id,
@@ -1929,8 +1939,9 @@ def _upsert_usage_snapshot(
             )
         )
     else:
-        # 取较大值防止云端周期重置导致快照回退（月内用量单调递增）
-        row.used_amount = max(int(row.used_amount or 0), int(used_amount or 0))
+        new_used = int(used_amount or 0)
+        # month 粒度取较大值防回退；day/week 粒度以云端为准（周期重置即回落）
+        row.used_amount = max(int(row.used_amount or 0), new_used) if monotonic else new_used
         row.consumer_name = consumer_name or row.consumer_name
         row.quota_rule_name = quota_rule_name or row.quota_rule_name
         row.quota_limit = int(quota_limit or row.quota_limit or 0)

@@ -1700,3 +1700,130 @@ def test_list_quota_rule_subjects_endpoint():
         )
     assert data["groups"] == [group.id]
     assert data["consumer_count"] == 1
+
+
+def _snapshot(session, month, consumer_id, rule, used, period="month"):
+    """构造一条已存在的快照行。"""
+    from app.db.models import ApiKeyUsageSnapshot
+
+    row = ApiKeyUsageSnapshot(
+        tenant_id=TENANT,
+        month=month,
+        consumer_id=consumer_id,
+        consumer_name="c",
+        gateway_id="gw-test123",
+        gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "",
+        quota_rule_name=rule.name,
+        quota_limit=int(rule.quota_limit or 0),
+        quota_period=period,
+        used_amount=used,
+    )
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_snapshot_month_period_keeps_monotonic_guard():
+    """month 粒度：云端偶发低值不回退快照（月内单调递增语义保持）。"""
+    session = _make_session()
+    _, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
+    month = "2026-09"
+    _snapshot(session, month, "cs-a", rule, used=800, period="month")
+
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-a",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=2000, quota_period="month", used_amount=50,
+    )
+    session.commit()
+    row = session.exec(
+        select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-a")
+    ).first()
+    assert row.used_amount == 800
+
+
+def test_snapshot_day_period_accepts_cloud_reset():
+    """day 粒度：云端周期重置（usedAmount 回落）后快照必须采用云端新值。
+
+    回归：此前 max 护栏对日/周规则把重置后的真实低值永久挡在快照外，
+    表现为「阿里云数据已重置，配额页仍显示旧用量」。
+    """
+    session = _make_session()
+    _, rule = _make_group_rule(session, quota_limit=500, period_type="day")
+    month = "2026-09"
+    _snapshot(session, month, "cs-b", rule, used=480, period="day")
+
+    # 次日云端重置：usedAmount 从 480 → 60
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-b",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=500, quota_period="day", used_amount=60,
+    )
+    session.commit()
+    row = session.exec(
+        select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-b")
+    ).first()
+    assert row.used_amount == 60
+
+
+def test_snapshot_week_period_accepts_cloud_reset():
+    """week 粒度同 day：重置后直接采用云端值。"""
+    session = _make_session()
+    _, rule = _make_group_rule(session, quota_limit=1000, period_type="week")
+    month = "2026-09"
+    _snapshot(session, month, "cs-c", rule, used=900, period="week")
+
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-c",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=1000, quota_period="week", used_amount=30,
+    )
+    session.commit()
+    row = session.exec(
+        select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-c")
+    ).first()
+    assert row.used_amount == 30
+
+
+def test_snapshot_day_period_still_advances_when_cloud_grows():
+    """day 粒度正常递增场景：云端值增长时快照跟随。"""
+    session = _make_session()
+    _, rule = _make_group_rule(session, quota_limit=500, period_type="day")
+    month = "2026-09"
+    _snapshot(session, month, "cs-d", rule, used=60, period="day")
+
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-d",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=500, quota_period="day", used_amount=120,
+    )
+    session.commit()
+    row = session.exec(
+        select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-d")
+    ).first()
+    assert row.used_amount == 120
+
+
+def test_snapshot_missing_period_defaults_to_monotonic():
+    """quota_period 缺失时保守取较大值（与旧行为一致，避免误清零）。"""
+    session = _make_session()
+    _, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
+    month = "2026-09"
+    _snapshot(session, month, "cs-e", rule, used=800, period=None)
+
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-e",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=2000, quota_period=None, used_amount=10,
+    )
+    session.commit()
+    row = session.exec(
+        select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-e")
+    ).first()
+    assert row.used_amount == 800
