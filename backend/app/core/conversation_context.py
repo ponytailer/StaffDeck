@@ -30,18 +30,44 @@ class ConversationContextSettings:
     medium_summary_prefix: str = MEDIUM_SUMMARY_PREFIX
 
     def normalized(self) -> ConversationContextSettings:
-        token_budget = max(1, min(int(self.token_budget), 262_144))
-        long_budget = max(1, min(int(self.long_summary_token_budget), token_budget))
-        medium_budget = max(1, min(int(self.medium_summary_token_budget), token_budget))
+        # 预算 ≤0（历史脏数据/未配置）视为无效：回退默认值。曾在线上出现
+        # budget=0 → clamp 成 1 token → 每轮对话都触发压缩、每轮多花 2 次
+        # LLM 调用（~30s）的事故；这里在入口处兜底。
+        raw_budget = int(self.token_budget)
+        token_budget = (
+            DEFAULT_CONTEXT_TOKEN_BUDGET
+            if raw_budget <= 0
+            else min(raw_budget, 262_144)
+        )
+        raw_long_budget = int(self.long_summary_token_budget)
+        long_budget = (
+            min(4_000, token_budget)
+            if raw_long_budget <= 0
+            else min(raw_long_budget, token_budget)
+        )
+        raw_medium_budget = int(self.medium_summary_token_budget)
+        medium_budget = (
+            min(4_000, token_budget)
+            if raw_medium_budget <= 0
+            else min(raw_medium_budget, token_budget)
+        )
+        # 触发比例 ≤0 同样视为未配置：回退默认 0.70。
+        raw_ratio = float(self.compaction_trigger_ratio)
+        compaction_trigger_ratio = (
+            COMPACTION_TRIGGER_RATIO
+            if raw_ratio <= 0
+            else max(0.10, min(raw_ratio, 0.95))
+        )
+        raw_recent = int(self.recent_round_limit)
+        recent_round_limit = (
+            RECENT_ROUND_LIMIT if raw_recent <= 0 else min(raw_recent, 50)
+        )
         allowed_roles = frozenset(self.allowed_roles).intersection(ALLOWED_CONTEXT_ROLES)
         return replace(
             self,
             token_budget=token_budget,
-            compaction_trigger_ratio=max(
-                0.10,
-                min(float(self.compaction_trigger_ratio), 0.95),
-            ),
-            recent_round_limit=max(1, min(int(self.recent_round_limit), 50)),
+            compaction_trigger_ratio=compaction_trigger_ratio,
+            recent_round_limit=recent_round_limit,
             long_summary_token_budget=long_budget,
             medium_summary_token_budget=medium_budget,
             allowed_roles=allowed_roles or frozenset(ALLOWED_CONTEXT_ROLES),

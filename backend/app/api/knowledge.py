@@ -39,6 +39,7 @@ from app.db.models import (
     utc_now,
 )
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
+from app.knowledge.route_cache import invalidate_knowledge_base
 from app.knowledge.schema import (
     KnowledgeBucketRead,
     KnowledgeChunkRead,
@@ -223,6 +224,8 @@ def import_okf_bundle(
     create_concept_evidence_rows(
         db, request.tenant_id, knowledge_base.id, version.id, document, concept_rows
     )
+    # 同步导入新增 concept/bucket，失效路由缓存
+    invalidate_knowledge_base(request.tenant_id, knowledge_base.id)
     return {
         "status": "imported",
         "knowledge_base_id": knowledge_base.id,
@@ -505,6 +508,8 @@ def update_document(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # 正文重建会改变 buckets/chunks，路由缓存立即失效
+        invalidate_knowledge_base(request.tenant_id, row.knowledge_base_id)
         return document_read(row)
 
     metadata = dict(row.metadata_json or {})
@@ -525,6 +530,8 @@ def update_document(
     db.commit()
     db.refresh(row)
     _refresh_document_okf_concepts(db, row)
+    # 标题/状态变更影响路由候选卡，失效路由缓存
+    invalidate_knowledge_base(request.tenant_id, row.knowledge_base_id)
     return document_read(row)
 
 
@@ -607,6 +614,8 @@ def update_bucket(
     document = db.get(KnowledgeDocument, row.document_id)
     if document:
         _refresh_document_okf_concepts(db, document)
+    # 标题/摘要变更影响路由候选卡，失效路由缓存
+    invalidate_knowledge_base(request.tenant_id, row.knowledge_base_id)
     chunk_count = db.exec(
         select(func.count(KnowledgeChunk.id)).where(
             KnowledgeChunk.tenant_id == request.tenant_id,
@@ -667,6 +676,8 @@ def update_chunk(
         document = db.get(KnowledgeDocument, bucket.document_id)
         if document:
             _refresh_document_okf_concepts(db, document)
+    # chunk 内容/摘要变更影响路由候选与词法验证，失效路由缓存
+    invalidate_knowledge_base(request.tenant_id, row.knowledge_base_id)
     return chunk_read(row)
 
 
@@ -785,6 +796,8 @@ def confirm_discovery(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except KnowledgeDiscoveryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # discovery 确认可能写入知识内容，失效路由缓存
+    invalidate_knowledge_base(tenant_id, row.knowledge_base_id)
     return {"status": "confirmed", "result": result}
 
 

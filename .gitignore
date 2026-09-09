@@ -54,3 +54,4 @@ packaging/assets/staffdeck.iconset/
 overview.md
 *.dmg
 db-export/
+*.db

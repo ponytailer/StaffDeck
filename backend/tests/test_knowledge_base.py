@@ -48,8 +48,12 @@ from app.knowledge.service import (
     _chunk_text_related_groups,
     _document_card_for_route,
     _expand_related_chunks,
+    _lexical_fast_path_top,
     _route_candidates,
     _score_documents,
+    _score_buckets,
+    _score_documents_with_scores,
+    _score_buckets_with_scores,
     _score_text,
     _select_diverse_chunk_hits,
     validate_discovered_skill,
@@ -564,21 +568,33 @@ def test_knowledge_search_without_model_uses_relevance_rank_order() -> None:
 
 
 def test_model_driven_document_route_does_not_fall_back_to_lexical_matching(monkeypatch) -> None:
+    """LLM 明确返回空列表（判定无相关文档）时尊重模型决策，不回退词法。
+
+    快速路径已在词法显著命中时提前返回，所以本测试用同分双文档（分数糊）
+    确保走到 LLM 路由分支——专测「LLM 空列表 ≠ 词法回退」这条语义。
+    """
+
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
-        db.add(
-            KnowledgeDocument(
-                id="kdoc_frontend",
-                tenant_id="tenant_demo",
-                knowledge_base_id="kb_demo",
-                filename="frontend.md",
-                file_type="md",
-                title="前端规范资料",
-                status="ready",
-                metadata_json={"document_card": {"title": "前端规范资料", "summary": "前端编码规范。"}},
+        for index in range(2):
+            db.add(
+                KnowledgeDocument(
+                    id=f"kdoc_ambiguous_{index}",
+                    tenant_id="tenant_demo",
+                    knowledge_base_id="kb_demo",
+                    filename=f"doc{index}.md",
+                    file_type="md",
+                    title="员工手册" if index == 0 else "员工手册附录",
+                    status="ready",
+                    metadata_json={
+                        "document_card": {
+                            "title": "员工手册" if index == 0 else "员工手册附录",
+                            "summary": "入职流程与考勤规则说明" if index == 0 else "考勤与假期规则补充",
+                        }
+                    },
+                )
             )
-        )
         db.commit()
         monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", lambda *args, **kwargs: [])
 
@@ -586,7 +602,7 @@ def test_model_driven_document_route_does_not_fall_back_to_lexical_matching(monk
             KnowledgeSearchRequest(
                 tenant_id="tenant_demo",
                 knowledge_base_ids=["kb_demo"],
-                query="前端规范有哪些？",
+                query="员工手册",
                 mode="chat",
             ),
             ModelConfig(id="model_route", tenant_id="tenant_demo", name="Route", model="route"),
@@ -652,7 +668,268 @@ def test_model_route_failure_falls_back_to_lexical_matching(monkeypatch) -> None
         phases = {item.get("phase") for item in response.route_trace}
         assert response.chunks
         assert "document_route_lexical_fallback" in phases
-        assert "bucket_route_lexical_fallback" in phases
+        # bucket 唯一候选词法 25.7 分 → 先被快速路径接住（不再走到 LLM 失败兜底），
+        # 两种路径结果等价，此处断言"快速路径或 LLM 兜底二选一"
+        assert (
+            "bucket_route_lexical_fast_path" in phases
+            or "bucket_route_lexical_fallback" in phases
+        )
+
+
+def test_model_route_failure_document_fallback_when_no_decisive_match(monkeypatch) -> None:
+    """词法分数不显著时 LLM 失败仍走 lexical_fallback（快速路径不误吞兜底语义）。"""
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        for index, (title, summary) in enumerate(
+            [
+                ("员工手册", "入职流程与考勤规则说明"),
+                ("员工手册附录", "考勤与假期规则补充"),
+            ]
+        ):
+            db.add(
+                KnowledgeDocument(
+                    id=f"kdoc_{index}",
+                    tenant_id="tenant_demo",
+                    knowledge_base_id="kb_demo",
+                    filename=f"doc{index}.md",
+                    file_type="md",
+                    title=title,
+                    status="ready",
+                    metadata_json={"document_card": {"title": title, "summary": summary}},
+                )
+            )
+        db.commit()
+        monkeypatch.setattr(
+            KnowledgeService, "_select_documents_with_llm", lambda *args, **kwargs: None
+        )
+
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="员工手册",
+                mode="chat",
+            ),
+            ModelConfig(id="model_route", tenant_id="tenant_demo", name="Route", model="route"),
+        )
+
+    phases = {item.get("phase") for item in response.route_trace}
+    assert "document_route_lexical_fallback" in phases
+    assert "document_route_lexical_fast_path" not in phases
+
+
+def _seed_lexical_fast_path_fixture(db) -> None:
+    """两个主题明确分离的知识文档：前端规范 vs 离职办理。"""
+
+    db.add(Tenant(id="tenant_demo", name="Demo"))
+    db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+    frontend = KnowledgeDocument(
+        id="kdoc_frontend",
+        tenant_id="tenant_demo",
+        knowledge_base_id="kb_demo",
+        filename="frontend.md",
+        file_type="md",
+        title="前端编码规范",
+        status="ready",
+        bucket_count=1,
+        chunk_count=1,
+        metadata_json={
+            "document_card": {"title": "前端编码规范", "summary": "前端编码规范与组件命名规范。"}
+        },
+    )
+    leave = KnowledgeDocument(
+        id="kdoc_leave",
+        tenant_id="tenant_demo",
+        knowledge_base_id="kb_demo",
+        filename="leave.md",
+        file_type="md",
+        title="离职办理",
+        status="ready",
+        bucket_count=1,
+        chunk_count=1,
+        metadata_json={
+            "document_card": {"title": "离职办理", "summary": "离职申请与审批流程。"}
+        },
+    )
+    frontend_bucket = KnowledgeBucket(
+        id="kbucket_frontend",
+        tenant_id="tenant_demo",
+        knowledge_base_id="kb_demo",
+        document_id=frontend.id,
+        bucket_key="frontend",
+        title="前端编码规范",
+        summary="Vue 3、Vite、TypeScript、组件编写和命名规范。",
+    )
+    leave_bucket = KnowledgeBucket(
+        id="kbucket_leave",
+        tenant_id="tenant_demo",
+        knowledge_base_id="kb_demo",
+        document_id=leave.id,
+        bucket_key="leave",
+        title="离职申请流程",
+        summary="员工申请离职需要提交审批。",
+    )
+    db.add(frontend)
+    db.add(leave)
+    db.add(frontend_bucket)
+    db.add(leave_bucket)
+    db.add(
+        KnowledgeChunk(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=frontend.id,
+            bucket_id=frontend_bucket.id,
+            chunk_index=0,
+            content="前端编码规范包括 Vue 3、Vite、TypeScript 和组件命名规范。",
+            summary="前端编码规范。",
+            source_ref="frontend.md",
+        )
+    )
+    db.add(
+        KnowledgeChunk(
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            document_id=leave.id,
+            bucket_id=leave_bucket.id,
+            chunk_index=0,
+            content="员工申请离职后进入标准审批流程。",
+            summary="离职申请审批流程。",
+            source_ref="leave.md",
+        )
+    )
+    db.commit()
+
+
+def test_lexical_fast_path_skips_llm_routing_on_decisive_match(monkeypatch) -> None:
+    """词法 top-1 显著领先时直接采用，完全不触发 LLM 路由（省 10-25s）。"""
+
+    def _forbidden_route(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("LLM routing must not be called on decisive lexical match")
+
+    with _test_session() as db:
+        _seed_lexical_fast_path_fixture(db)
+        monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", _forbidden_route)
+        monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", _forbidden_route)
+
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="前端编码规范",
+                mode="chat",
+            ),
+            ModelConfig(id="model_route", tenant_id="tenant_demo", name="Route", model="route"),
+        )
+
+    phases = {item.get("phase") for item in response.route_trace}
+    assert "document_route_lexical_fast_path" in phases
+    assert "bucket_route_lexical_fast_path" in phases
+    assert all("fallback" not in str(phase) for phase in phases)
+    assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_frontend"]
+    assert [chunk.bucket_id for chunk in response.chunks] == ["kbucket_frontend"]
+
+
+def test_lexical_fast_path_not_triggered_when_scores_are_ambiguous(monkeypatch) -> None:
+    """词法分数糊（top-1 与 top-2 几乎同分）时不走快速路径，仍由 LLM 路由决策。"""
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        for index, (title, summary) in enumerate(
+            [
+                ("员工手册", "入职流程与考勤规则说明"),
+                ("员工手册附录", "考勤与假期规则补充"),
+            ]
+        ):
+            db.add(
+                KnowledgeDocument(
+                    id=f"kdoc_{index}",
+                    tenant_id="tenant_demo",
+                    knowledge_base_id="kb_demo",
+                    filename=f"doc{index}.md",
+                    file_type="md",
+                    title=title,
+                    status="ready",
+                    metadata_json={"document_card": {"title": title, "summary": summary}},
+                )
+            )
+        db.commit()
+        called = {"document": False, "bucket": False}
+
+        def fake_select_documents(*args, **kwargs):  # noqa: ANN002, ANN003
+            called["document"] = True
+            return ["kdoc_0"]
+
+        def fake_select_buckets(*args, **kwargs):  # noqa: ANN002, ANN003
+            called["bucket"] = True
+            return []
+
+        monkeypatch.setattr(
+            KnowledgeService, "_select_documents_with_llm", fake_select_documents
+        )
+        monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", fake_select_buckets)
+
+        # 「员工手册」同时强命中两个文档（同分 61.2），快速路径必须不触发
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="员工手册",
+                mode="chat",
+            ),
+            ModelConfig(id="model_route", tenant_id="tenant_demo", name="Route", model="route"),
+        )
+
+    assert called["document"] is True
+    phases = {item.get("phase") for item in response.route_trace}
+    assert "document_route_lexical_fast_path" not in phases
+
+
+def test_lexical_fast_path_unit_boundary_conditions() -> None:
+    """_lexical_fast_path_top 纯函数边界：空列表/低分/分数接近/唯一候选/内容验证。"""
+
+    rows = ["a", "b", "c"]
+    # 空输入
+    assert _lexical_fast_path_top([], [], 5) is None
+    # top-1 低于最低分阈值（14）
+    assert _lexical_fast_path_top(rows, [13.0, 1.0, 0.5], 5) is None
+    # 分数接近（差距 < 8）不触发
+    assert _lexical_fast_path_top(rows, [16.0, 10.0, 1.0], 5) is None
+    # 显著领先触发，且截断到 max_count
+    assert _lexical_fast_path_top(rows, [18.0, 2.0, 1.0], 2) == ["a", "b"]
+    # 唯一候选：无 top-2 可比，只要过最低分即触发
+    assert _lexical_fast_path_top(["a"], [16.0], 5) == ["a"]
+    # 唯一候选但分数不够
+    assert _lexical_fast_path_top(["a"], [12.0], 5) is None
+    # 内容验证不通过（标题命中、内容无关）→ 整体放弃
+    assert _lexical_fast_path_top(rows, [18.0, 2.0, 1.0], 2, content_verifier=lambda row: row != "a") is None
+    # 内容验证全部通过 → 正常返回
+    assert _lexical_fast_path_top(rows, [18.0, 2.0, 1.0], 2, content_verifier=lambda row: True) == ["a", "b"]
+
+
+def test_score_with_scores_helpers_match_legacy_functions() -> None:
+    """带分数版与原版排序结果一致（复用关系防回归）。"""
+
+    class _Row:
+        def __init__(self, title: str, summary: str) -> None:
+            self.title = title
+            self.summary = summary
+            self.filename = f"{title}.md"
+            self.metadata_json = {"document_card": {"title": title, "summary": summary}}
+
+    docs = [_Row("离职办理", "离职申请流程"), [_Row("前端规范", "Vue 组件")][0]]
+    legacy = [row.title for row in _score_documents("离职办理", docs)]
+    with_scores = [row.title for _score, row in _score_documents_with_scores("离职办理", docs)]
+    assert legacy == with_scores
+
+    buckets = [_Row("前端编码规范", "Vue 规范"), _Row("离职申请流程", "审批流程")]
+    legacy_buckets = [row.title for row in _score_buckets("离职申请", buckets, "answer")]
+    scored_buckets = [
+        row.title for _score, row in _score_buckets_with_scores("离职申请", buckets, "answer")
+    ]
+    assert legacy_buckets == scored_buckets
 
 
 def test_document_loading_does_not_hide_relevant_rows_after_first_40() -> None:

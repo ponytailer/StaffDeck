@@ -958,6 +958,125 @@ def test_turn_planner_retries_schema_invalid_json(monkeypatch) -> None:
     assert plan.task_frames[0].slot_hints == {}
 
 
+def test_turn_planner_compacts_context_to_dedicated_budget(monkeypatch) -> None:
+    """Planner 用独立 6K 上下文预算：超预算历史被裁剪，且不污染主上下文。
+
+    线上依据（2026-09-09）：planner 单次 12-62s，同模型 document_route 仅 3-4s；
+    意图识别不需要 32K 完整历史，压缩摘要 + 近几轮足够。
+    """
+
+    payloads: list[dict[str, object]] = []
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return {
+                "decision": "answer_only",
+                "user_intent": "闲聊",
+                "task_frames": [
+                    {
+                        "kind": "conversation",
+                        "decision": "answer_only",
+                        "requirements": ["回复用户"],
+                        "slot_hints": {},
+                        "depends_on_task_ids": [],
+                    }
+                ],
+                "task_updates": [],
+            }
+
+    monkeypatch.setattr(turn_planner_module, "LLMClient", FakeLLMClient)
+
+    # 构造一个远超 6K 预算的对话上下文（每条 ~2K token，共 10 条）
+    big_messages = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"历史消息 {index}：" + "内容" * 900,
+            "id": f"m{index}",
+        }
+        for index in range(10)
+    ]
+    conversation_context = {
+        "messages": big_messages,
+        "metadata": {"token_budget": 32_000, "estimated_tokens": 20_000},
+    }
+
+    TurnPlanner().plan(
+        "电脑如何申领",
+        _chat_session(),
+        available_skills=[],
+        model_config=_model_config(),
+        conversation_context=conversation_context,
+    )
+
+    assert len(payloads) == 1
+    planner_context = payloads[0]["conversation_context"]
+    messages = planner_context["messages"]
+    # 近 6 轮保留 + 旧消息被裁掉：消息数远小于原始 10 条
+    assert len(messages) < 10
+    # 上下文 token 估算不超独立预算（6K）
+    estimated = planner_context["metadata"]["estimated_tokens"]
+    assert estimated <= turn_planner_module.PLANNER_CONTEXT_TOKEN_BUDGET
+    # span 属性观测到位
+    with_span = payloads[0]
+    assert "current_session" in with_span
+
+
+def test_turn_planner_keeps_small_context_untouched(monkeypatch) -> None:
+    """小上下文（< 6K）不做任何裁剪，语义与改造前一致。"""
+
+    payloads: list[dict[str, object]] = []
+
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(
+            self, _system_prompt: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            payloads.append(deepcopy(payload))
+            return {
+                "decision": "answer_only",
+                "task_frames": [
+                    {
+                        "kind": "conversation",
+                        "decision": "answer_only",
+                        "requirements": ["回复用户"],
+                        "slot_hints": {},
+                        "depends_on_task_ids": [],
+                    }
+                ],
+                "task_updates": [],
+            }
+
+    monkeypatch.setattr(turn_planner_module, "LLMClient", FakeLLMClient)
+
+    small_context = {
+        "messages": [
+            {"role": "user", "content": "如何申领电脑", "id": "m1"},
+            {"role": "assistant", "content": "请提供工号。", "id": "m2"},
+        ],
+        "metadata": {"token_budget": 32_000, "estimated_tokens": 40},
+    }
+
+    TurnPlanner().plan(
+        "电脑如何申领",
+        _chat_session(),
+        available_skills=[],
+        model_config=_model_config(),
+        conversation_context=small_context,
+    )
+
+    planner_context = payloads[0]["conversation_context"]
+    # 小上下文原样保留（预算法不触碰未超预算的历史）
+    assert len(planner_context["messages"]) == 2
+
+
 def test_turn_planner_exposes_sops_but_not_runtime_capabilities(monkeypatch) -> None:
     payloads: list[dict[str, object]] = []
 
@@ -5280,3 +5399,75 @@ def test_agent_loop_transcript_compacts_old_tool_payloads_but_keeps_skill_instru
     assert "content" not in old_read["result"]["data"]
     assert old_read["result"]["data"]["continuation_token"] == "next"
     assert old_read["result"]["history_receipt"]["omitted_chars"] > 20_000
+
+
+def test_direct_reply_answer_uses_module_prompt_path(monkeypatch) -> None:
+    """防回归：_direct_reply_answer 必须读模块级 PROMPT_PATH。
+
+    线上事故（2026-09-08）：误写成 ResponseGenerator.PROMPT_PATH（类上无此
+    属性），直通每次 AttributeError 静默降级到标准路径，问候语耗时翻倍。
+    """
+    from app.core import harness_v2_engine
+    from app.core.response_generator import PROMPT_PATH
+
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        def __init__(self, _config):
+            pass
+
+        def generate_text(self, system_prompt: str, payload: dict) -> str:
+            captured["payload"] = payload
+            return "  你好！很高兴见到你。  "
+
+    monkeypatch.setattr("app.llm.LLMClient", _FakeClient)
+
+    reply = harness_v2_engine._direct_reply_answer(
+        "你好",
+        persona_prompt=None,
+        memory_context=[],
+        conversation_context=None,
+        answer_model_config=object(),
+    )
+
+    assert reply == "你好！很高兴见到你。"
+    payload = captured["payload"]
+    stage = payload["_agent_stage"]
+    instructions = stage["instructions"]
+    # 真实读到了 response_generator_prompt.md 的内容（而非异常占位）
+    assert isinstance(instructions, str) and len(instructions) > 100
+    # stage_data 平铺在 payload 顶层（stage_protocol.stage_payload 的约定）
+    assert "execution_directive" in payload
+    assert PROMPT_PATH.name in ("response_generator_prompt.md",)
+
+
+def test_capability_intro_direct_answer_injects_summary(monkeypatch) -> None:
+    from app.core import harness_v2_engine
+
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        def __init__(self, _config):
+            pass
+
+        def generate_text(self, system_prompt: str, payload: dict) -> str:
+            captured["payload"] = payload
+            return "我可以帮您处理请假、报销等事务。"
+
+    monkeypatch.setattr("app.llm.LLMClient", _FakeClient)
+
+    reply = harness_v2_engine._direct_reply_answer(
+        "你能做什么",
+        persona_prompt="你是 IT 服务台员工小福。",
+        memory_context=[],
+        conversation_context=None,
+        answer_model_config=object(),
+        capability_summary="- [技能] leave_skill：处理请假申请",
+    )
+
+    assert reply == "我可以帮您处理请假、报销等事务。"
+    payload = captured["payload"]
+    # stage_data 平铺在 payload 顶层（stage_protocol.stage_payload 的约定）
+    assert payload["capability_summary"] == "- [技能] leave_skill：处理请假申请"
+    assert "能力介绍" in payload["execution_directive"]
+    assert payload["employee_identity"] == "你是 IT 服务台员工小福。"

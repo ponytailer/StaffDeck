@@ -80,3 +80,68 @@ def invalidate_key(*keys: str) -> None:
         client.delete(*[_PREFIX + k for k in keys])
     except Exception:
         logger.warning("Redis 模型缓存失效失败：%s", keys)
+
+
+def store_json(key: str, value: Any, ttl_seconds: int = 300, namespace: str = "obj") -> bool:
+    """缓存任意 JSON 值；返回是否真正写入（Redis 不可用/写失败返回 False）。
+
+    ``namespace`` 区分缓存族（如 obj / kroute），失效按族扫描。
+    """
+
+    client = get_redis()
+    if client is None:
+        return False
+    try:
+        client.set(
+            f"staffdeck:{namespace}:{key}",
+            json.dumps(value, ensure_ascii=False, default=str),
+            ex=max(ttl_seconds, 1),
+        )
+        return True
+    except Exception:
+        logger.warning("Redis JSON 缓存写入失败：%s", key)
+        return False
+
+
+def load_json(key: str, namespace: str = "obj") -> Any | None:
+    """按 key 读 JSON 缓存；未命中/不可用/解析失败返回 None。"""
+
+    client = get_redis()
+    if client is None:
+        return None
+    try:
+        raw = client.get(f"staffdeck:{namespace}:{key}")
+    except Exception:
+        logger.warning("Redis JSON 缓存读取失败：%s", key)
+        return None
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def invalidate_namespace_pattern(namespace: str, pattern: str) -> None:
+    """按族 + 通配模式失效缓存（SCAN 迭代，不阻塞 Redis）。
+
+    例：invalidate_namespace_pattern("kroute", f"{tenant_id}:{kb_id}:*")
+    Redis 不可用时静默跳过。
+    """
+
+    client = get_redis()
+    if client is None:
+        return
+    full_pattern = f"staffdeck:{namespace}:{pattern}"
+    try:
+        batch: list[str] = []
+        # scan_iter 返回迭代器，逐批删除控制内存
+        for key in client.scan_iter(match=full_pattern, count=200):
+            batch.append(key)
+            if len(batch) >= 500:
+                client.delete(*batch)
+                batch = []
+        if batch:
+            client.delete(*batch)
+    except Exception:
+        logger.warning("Redis 模式失效失败：%s", full_pattern)

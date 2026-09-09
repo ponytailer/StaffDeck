@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import json
 import pytest
 
 from app.llm.client import LLMClient, LLMError, _thinking_mode_for_model
@@ -1398,7 +1399,49 @@ def test_generate_json_repairs_trailing_commas_and_string_newlines(monkeypatch):
     assert client.generate_json("prompt", {}) == {"ok": True, "reason": "第一行\n第二行"}
 
 
+def test_loads_llm_json_json_repair_rescue_truncated_output():
+    """json-repair 兜底（strict）：截断/单引号/JS 风格本地救回，不触发模型重试。
+
+    strict 模式保证：真垃圾文本仍抛异常走模型重试；连续对象抛异常，
+    保留 _loads_llm_json_sequence 路径语义。
+    """
+
+    from app.llm.client import _loads_llm_json
+
+    assert _loads_llm_json('{"actions": [{"tool": "a"}, {"tool": "b"') == {
+        "actions": [{"tool": "a"}, {"tool": "b"}]
+    }
+    assert _loads_llm_json("{name: '张三', age: 30}") == {"name": "张三", "age": 30}
+    # 连续对象必须仍抛异常（不能被 json-repair 吞掉，sequence 路径依赖此行为）
+    with pytest.raises(json.JSONDecodeError):
+        _loads_llm_json('{"decision":"answer_only"}{"decision":"start_new_task"}')
+    # 真垃圾仍抛异常，走模型重试兜底
+    with pytest.raises(json.JSONDecodeError):
+        _loads_llm_json("not json at all")
+
+
+def test_generate_json_single_quote_output_no_retry(monkeypatch):
+    """单引号 key 旧启发式救不回、必触发模型重试；json-repair 兜底后零重试。"""
+
+    client = object.__new__(LLMClient)
+    payloads = []
+
+    def fake_generate_text(_system_prompt, payload, response_format=None):  # noqa: ANN001, ARG001
+        payloads.append(payload)
+        return "{decision: 'ask_user', target_skill_id: 'purchase'}"
+
+    monkeypatch.setattr(client, "generate_text", fake_generate_text)
+
+    result = client.generate_json("prompt", {"query": "test"})
+
+    assert result == {"decision": "ask_user", "target_skill_id": "purchase"}
+    assert len(payloads) == 1
+    assert "_json_repair" not in payloads[0]
+
+
 def test_generate_json_allows_multiple_repair_attempts(monkeypatch):
+    """第 2 层模型重试仍生效：'not json' 真垃圾本地救不回，走全量 payload 重发。"""
+
     client = object.__new__(LLMClient)
     payloads = []
     calls = iter(["not json", '{"reason": "用户称呼为"', '{"ok": true}'])
@@ -1409,10 +1452,11 @@ def test_generate_json_allows_multiple_repair_attempts(monkeypatch):
 
     monkeypatch.setattr(client, "generate_text", fake_generate_text)
 
-    assert client.generate_json("prompt", {"query": "你好"}) == {"ok": True}
+    # 第 2 次输出的截断字符串现被 json-repair 兜底救回，不再烧第 3 次调用
+    assert client.generate_json("prompt", {"query": "你好"}) == {"reason": "用户称呼为"}
+    assert len(payloads) == 2
     assert payloads[1]["_json_repair"]["attempt"] == 1
-    assert payloads[2]["_json_repair"]["attempt"] == 2
-    assert "parser_error" in payloads[2]["_json_repair"]
+    assert "parser_error" in payloads[1]["_json_repair"]
 
 
 def test_generate_json_sequence_accepts_consecutive_objects_without_retry(monkeypatch):

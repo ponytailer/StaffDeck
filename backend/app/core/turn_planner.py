@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any
 
@@ -37,6 +38,13 @@ PROMPT_PATH = (
 )
 SCHEMA_REPAIR_ATTEMPTS = 1
 
+# Planner 独立上下文预算（2026-09-09）：意图识别只需「压缩摘要 + 近几轮」，
+# 不需要 32K 完整历史。实测 planner（32K 上下文）单次 12-62s，而 payload
+# 明显更小的 knowledge.document_route 同模型只要 3-4s——上下文体积是主因。
+# 6K ≈ 摘要 4K + 近 6 轮；SOP 复杂会话若需更多历史，决策依据是 pending_tasks
+# 摘要与 memory，而非逐字历史。
+PLANNER_CONTEXT_TOKEN_BUDGET = 6_000
+
 
 class TurnPlanner:
     """Single scene/SOP intent planner for the Harness v2 execution path."""
@@ -53,10 +61,18 @@ class TurnPlanner:
         interaction_mode: str = "normal",
         team_context: TeamPlannerContext | None = None,
     ) -> TurnPlan:
+        # Planner 独立上下文预算（2026-09-09）：意图识别不需要背完整对话历史，
+        # 32K 预算实测导致 planner 调用 12-62s（bucket_route 同模型仅 3-17s）。
+        # 压缩摘要 + 近几轮（6K）足够判断 intent；压缩在 deepcopy 副本上做，
+        # 不污染主对话上下文。
+        planner_payload = compact_conversation_context(
+            conversation_context,
+            token_budget=PLANNER_CONTEXT_TOKEN_BUDGET,
+        )
         payload = stage_payload(
             phase="TurnPlanner",
             user_message=message,
-            conversation_context=compact_conversation_context(conversation_context),
+            conversation_context=planner_payload,
             memory_context=memory_context,
             instructions=PROMPT_PATH.read_text(encoding="utf-8"),
             stage_data={
@@ -76,9 +92,14 @@ class TurnPlanner:
             },
             output_contract=TURN_PLANNER_OUTPUT_SCHEMA,
         )
+        payload_chars = len(json.dumps(payload, ensure_ascii=False, default=str))
         try:
             client = LLMClient(model_config)
-            with llm_operation("turn_planner.plan"):
+            with llm_operation(
+                "turn_planner.plan",
+                context_token_budget=PLANNER_CONTEXT_TOKEN_BUDGET,
+                payload_chars=payload_chars,
+            ):
                 plan = self._generate_validated_plan(
                     client,
                     unified_system_prompt(),

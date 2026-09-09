@@ -203,7 +203,7 @@ def _direct_reply_answer(
     抛给调用方降级到标准 Harness 路径，不劣于现状。
     """
 
-    from app.core.response_generator import ResponseGenerator
+    from app.core import response_generator as response_generator_module
 
     if capability_summary:
         execution_directive = (
@@ -238,7 +238,7 @@ def _direct_reply_answer(
             conversation_context if isinstance(conversation_context, dict) else {}
         ),
         memory_context=None,
-        instructions=ResponseGenerator.PROMPT_PATH.read_text(encoding="utf-8"),
+        instructions=response_generator_module.PROMPT_PATH.read_text(encoding="utf-8"),
         stage_data=stage_data,
         output_contract=(
             "只输出最终用户可见的 Markdown 正文，不输出 JSON 外壳、分析过程或内部状态；"

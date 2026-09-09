@@ -45,6 +45,12 @@ from app.knowledge.okf import (
     selected_concept_cards,
     upsert_concepts,
 )
+from app.knowledge.route_cache import (
+    get_route_cache,
+    invalidate_knowledge_base,
+    route_cache_key,
+    store_route_cache,
+)
 from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation, observed_span
@@ -62,7 +68,14 @@ EVIDENCE_CHUNK_CHARS = 900
 BUCKET_SECTION_CHARS = 6000
 PARAGRAPH_GROUP_CHARS = 4200
 SEARCH_DOCUMENT_ROUTE_LIMIT = 120
-SEARCH_BUCKET_ROUTE_LIMIT = 160
+# bucket_route 瘦身（2026-09-09）：路由候选 160 → 60。实测 bucket_route payload
+# ~616 chars/卡 × 160 候选 ≈ 99KB，单次 LLM 调用 48-74s（占 turn 总耗时 64%）；
+# 收到 60 后 payload ≈ 12KB（与 document_route 同量级），耗时降一个数量级。
+# 「词法 ranked 优先 + 补齐」语义保留——语义型 query 不丢候选，只是上限收紧。
+SEARCH_BUCKET_ROUTE_LIMIT = 60
+# 桶卡字符预算：_bucket_card_for_route 内强制总长截断，防止未来加字段无声回归。
+# 320 = 正常卡（~200-260）留余量，但仍是旧卡 616 的一半；JSON 键开销 ~110。
+BUCKET_ROUTE_CARD_CHAR_BUDGET = 320
 TERMINAL_INGEST_STATUSES = {"succeeded", "failed", "cancelled"}
 CANCELLING_INGEST_STATUSES = {"cancel_requested", "cancelled"}
 CANCEL_REQUEST_STALE_AFTER = timedelta(seconds=15)
@@ -70,6 +83,17 @@ SEARCH_MIN_DOCUMENT_SCORE = 2.0
 SEARCH_MIN_BUCKET_SCORE = 2.0
 SEARCH_MIN_CHUNK_SCORE = 2.0
 SEARCH_MIN_EVIDENCE_SCORE = 2.0
+# 词法快速路径（2026-09-09）：词法 top-1 分数足够高且与 top-2 拉开明显差距时，
+# 直接采用词法选择、跳过 LLM 路由（省 10-25s 的 document_route/bucket_route 调用）。
+# 词法打分本身在原流程中已计算（仅作 LLM 候选排序），这里复用其结果，零额外成本。
+# 阈值取「标题级词法决定性命中」量级：错误跳过 LLM 会把语义相关但词法不同名的
+# 文档筛掉（如「申领电脑」命中《设备管理制度》而错过《入职指导》），导致最终
+# chunk 零命中、检索空结果——宁可少跳，不可跳错（2026-09-09 线上教训）。
+LEXICAL_FAST_PATH_MIN_SCORE = 14.0
+LEXICAL_FAST_PATH_MIN_GAP = 8.0
+# 快速路径桶级验证：选出的桶内必须存在达到 chunk 门槛的词法命中内容，
+# 否则视为「标题命中、内容无关」，放弃快速路径退回 LLM 路由。
+LEXICAL_FAST_PATH_CHUNK_FLOOR = 3.0
 RELATED_CHUNK_MAX_COUNT = 6
 RELATED_CHUNK_MAX_CHARS = 4800
 KNOWLEDGE_INGEST_SCHEMA_VERSION = 2
@@ -565,6 +589,8 @@ class KnowledgeService:
                     "chunk_count": chunk_count,
                 },
             )
+            # 入库完成 → 知识内容已变更，删除该租户的路由决策缓存（TTL 兜底前保证新鲜）
+            invalidate_knowledge_base(job.tenant_id, job.knowledge_base_id)
             self._clear_embedded_content(job)
         except KnowledgeIngestCancelled as exc:
             self._finalize_cancelled_job(job, str(exc) or "入库任务已取消")
@@ -605,6 +631,34 @@ class KnowledgeService:
         if request.agent_id and not request.knowledge_base_ids and not request.knowledge_base_version_ids:
             route_trace.append({"phase": "no_visible_knowledge", "message": "当前智能体没有可见知识"})
             return KnowledgeSearchResponse(trace=route_trace, route_trace=route_trace)
+
+        # LLM 路由决策缓存（2026-09-09）：重复问法直接复用上次的 document/bucket
+        # 选择，跳过两次 LLM 路由（bucket_route 实测 12-74s/次）。失效由知识库
+        # 写路径按 (tenant, kb) 模式删除 + 30min TTL 兜底。只缓存 LLM 决策，
+        # 词法快速路径与词法打分不受影响。
+        self._route_cache_key = None
+        self._route_cache_hit: dict[str, Any] | None = None
+        if model_config is not None:
+            cache_key = route_cache_key(
+                request.tenant_id,
+                request.agent_id,
+                request.knowledge_base_ids,
+                query,
+            )
+            if cache_key:
+                # key 只要能构造就先记下（未命中时供写回使用）；命中与否单独记
+                self._route_cache_key = cache_key
+                cached = get_route_cache(cache_key)
+                if cached is not None:
+                    self._route_cache_hit = cached
+                    route_trace.append(
+                        {
+                            "phase": "route_cache_hit",
+                            "message": "命中路由决策缓存，跳过模型路由",
+                            "cached_document_count": len(cached.get("document_ids") or []),
+                            "cached_bucket_count": len(cached.get("bucket_ids") or []),
+                        }
+                    )
 
         with observed_span("knowledge_span", "knowledge.load_concepts") as span:
             concepts = self._load_concepts_for_search(request)
@@ -656,28 +710,55 @@ class KnowledgeService:
             strategy="llm" if model_config else "lexical",
         ) as span:
             selected_document_ids: list[str] = []
+            llm_document_route_ok = False
             if model_config:
-                route_documents = _route_candidates(
-                    _score_documents(query, documents),
-                    documents,
-                    SEARCH_DOCUMENT_ROUTE_LIMIT,
+                cached_document_ids = (
+                    [str(item) for item in (self._route_cache_hit or {}).get("document_ids") or []]
+                    if self._route_cache_hit is not None
+                    else None
                 )
-                llm_document_ids = self._select_documents_with_llm(
-                    query, route_documents, 5, model_config, route_trace
-                )
-                if llm_document_ids is None:
-                    selected_document_ids = [
-                        row.id for row in _score_documents(query, documents)[:5]
-                    ]
-                    route_trace.append(
-                        {
-                            "phase": "document_route_lexical_fallback",
-                            "message": "模型路由不可用，已按检索相关性选择知识文档",
-                            "selected_count": len(selected_document_ids),
-                        }
-                    )
+                if cached_document_ids is not None:
+                    allowed = {row.id for row in documents}
+                    selected_document_ids = [item for item in cached_document_ids if item in allowed]
                 else:
-                    selected_document_ids = llm_document_ids
+                    scored_documents = _score_documents_with_scores(query, documents)
+                    fast_path_documents = _lexical_fast_path_top(
+                        [row for _score, row in scored_documents],
+                        [score for score, _row in scored_documents],
+                        5,
+                    )
+                    if fast_path_documents is not None:
+                        selected_document_ids = [row.id for row in fast_path_documents]
+                        route_trace.append(
+                            {
+                                "phase": "document_route_lexical_fast_path",
+                                "message": "检索相关性显著命中，直接选择知识文档（跳过模型路由）",
+                                "selected_count": len(selected_document_ids),
+                            }
+                        )
+                    else:
+                        route_documents = _route_candidates(
+                            [row for _score, row in scored_documents],
+                            documents,
+                            SEARCH_DOCUMENT_ROUTE_LIMIT,
+                        )
+                        llm_document_ids = self._select_documents_with_llm(
+                            query, route_documents, 5, model_config, route_trace
+                        )
+                        if llm_document_ids is None:
+                            selected_document_ids = [
+                                row.id for _score, row in scored_documents[:5]
+                            ]
+                            route_trace.append(
+                                {
+                                    "phase": "document_route_lexical_fallback",
+                                    "message": "模型路由不可用，已按检索相关性选择知识文档",
+                                    "selected_count": len(selected_document_ids),
+                                }
+                            )
+                        else:
+                            selected_document_ids = llm_document_ids
+                            llm_document_route_ok = True
             else:
                 selected_document_ids = [row.id for row in _score_documents(query, documents)[:5]]
                 route_trace.append(
@@ -732,36 +813,99 @@ class KnowledgeService:
             strategy="llm" if model_config else "lexical",
         ) as span:
             selected_ids: list[str] = []
+            llm_bucket_route_ok = False
             if model_config:
-                route_buckets = _route_candidates(
-                    _score_buckets(query, buckets, request.query_type),
-                    buckets,
-                    SEARCH_BUCKET_ROUTE_LIMIT,
+                cached_bucket_ids = (
+                    [str(item) for item in (self._route_cache_hit or {}).get("bucket_ids") or []]
+                    if self._route_cache_hit is not None
+                    else None
                 )
-                llm_bucket_ids = self._select_buckets_with_llm(
-                    query,
-                    route_buckets,
-                    request.max_buckets,
-                    model_config,
-                    route_trace,
-                    request.query_type,
-                )
-                if llm_bucket_ids is None:
-                    selected_ids = [
-                        bucket.id
-                        for bucket in _score_buckets(query, buckets, request.query_type)[
-                            : request.max_buckets
-                        ]
-                    ]
-                    route_trace.append(
-                        {
-                            "phase": "bucket_route_lexical_fallback",
-                            "message": "模型路由不可用，已按检索相关性选择内部索引",
-                            "selected_count": len(selected_ids),
-                        }
-                    )
+                if cached_bucket_ids is not None:
+                    allowed_bucket_ids = {bucket.id for bucket in buckets}
+                    selected_ids = [item for item in cached_bucket_ids if item in allowed_bucket_ids]
                 else:
-                    selected_ids = llm_bucket_ids
+                    scored_buckets = _score_buckets_with_scores(
+                        query, buckets, request.query_type
+                    )
+
+                    def _bucket_has_lexical_content(bucket: KnowledgeBucket) -> bool:
+                        """桶级内容验证：桶内 chunk 词法最高分达标才算真命中。
+
+                        防「标题命中、内容无关」：快速路径若只看桶标题词法分，
+                        会把语义相关但词法不同名的目标桶筛掉，最终 chunk 零命中
+                        （2026-09-09 线上空结果事故）。验证不通过 → 放弃快速路径，
+                        退回 LLM 路由做语义纠偏。
+                        """
+
+                        bucket_chunks = self._load_chunks_for_buckets(
+                            request.tenant_id, [bucket.id], None
+                        )
+                        best = max(
+                            (
+                                _score_weighted_text(
+                                    query,
+                                    (chunk.summary or "", 1.4),
+                                    (chunk.content or "", 1.0),
+                                )
+                                for chunk in bucket_chunks
+                            ),
+                            default=0.0,
+                        )
+                        return best >= LEXICAL_FAST_PATH_CHUNK_FLOOR
+
+                    fast_path_buckets = _lexical_fast_path_top(
+                        [row for _score, row in scored_buckets],
+                        [score for score, _row in scored_buckets],
+                        request.max_buckets,
+                        content_verifier=_bucket_has_lexical_content,
+                    )
+                    if fast_path_buckets is not None:
+                        selected_ids = [bucket.id for bucket in fast_path_buckets]
+                        route_trace.append(
+                            {
+                                "phase": "bucket_route_lexical_fast_path",
+                                "message": "检索相关性显著命中，直接选择内部索引（跳过模型路由）",
+                                "selected_count": len(selected_ids),
+                            }
+                        )
+                    else:
+                        route_buckets = _route_candidates(
+                            [row for _score, row in scored_buckets],
+                            buckets,
+                            SEARCH_BUCKET_ROUTE_LIMIT,
+                        )
+                        if len(route_buckets) < len(buckets):
+                            route_trace.append(
+                                {
+                                    "phase": "bucket_route_candidates_trimmed",
+                                    "message": "路由候选已按词法相关性裁剪",
+                                    "candidate_count": len(buckets),
+                                    "routed_count": len(route_buckets),
+                                }
+                            )
+                        llm_bucket_ids = self._select_buckets_with_llm(
+                            query,
+                            route_buckets,
+                            request.max_buckets,
+                            model_config,
+                            route_trace,
+                            request.query_type,
+                        )
+                        if llm_bucket_ids is None:
+                            selected_ids = [
+                                bucket.id
+                                for _score, bucket in scored_buckets[: request.max_buckets]
+                            ]
+                            route_trace.append(
+                                {
+                                    "phase": "bucket_route_lexical_fallback",
+                                    "message": "模型路由不可用，已按检索相关性选择内部索引",
+                                    "selected_count": len(selected_ids),
+                                }
+                            )
+                        else:
+                            selected_ids = llm_bucket_ids
+                            llm_bucket_route_ok = True
             else:
                 selected_ids = [
                     bucket.id
@@ -777,6 +921,28 @@ class KnowledgeService:
                     }
                 )
             span.finish(selected_count=len(selected_ids))
+
+        # LLM 决策成功产出后写入路由缓存（词法/快速路径/缓存命中/LLM 失败词法
+        # 兜底的选择不回写，避免把非 LLM 决策固化 30 分钟）。
+        if (
+            model_config is not None
+            and self._route_cache_key is not None
+            and self._route_cache_hit is None
+            and llm_document_route_ok
+            and llm_bucket_route_ok
+            and selected_document_ids
+            and selected_ids
+        ):
+            store_ok = store_route_cache(self._route_cache_key, selected_document_ids, selected_ids)
+            if store_ok:
+                route_trace.append(
+                    {
+                        "phase": "route_cache_stored",
+                        "message": "模型路由决策已缓存",
+                        "document_count": len(selected_document_ids),
+                        "bucket_count": len(selected_ids),
+                    }
+                )
 
         bucket_by_id = {bucket.id: bucket for bucket in buckets}
         selected_buckets = [bucket_by_id[bucket_id] for bucket_id in selected_ids if bucket_id in bucket_by_id]
@@ -1274,30 +1440,20 @@ class KnowledgeService:
         trace: list[dict[str, Any]],
         query_type: str = "answer",
     ) -> list[str] | None:
+        cards = [_bucket_card_for_route(bucket) for bucket in buckets]
         payload = {
             "query": query,
             "query_type": query_type,
             "max_buckets": max_buckets,
-            "buckets": [
-                {
-                    "id": bucket.id,
-                    "title": bucket.title,
-                    "summary": bucket.summary,
-                    "document_id": bucket.document_id,
-                    "bucket_type": (bucket.metadata_json or {}).get("bucket_type"),
-                    "applicable_query_types": (bucket.metadata_json or {}).get(
-                        "applicable_query_types", []
-                    ),
-                    "section_paths": _route_labels(
-                        (bucket.metadata_json or {}).get("section_paths", []), 12, 80
-                    ),
-                    "quality": (bucket.metadata_json or {}).get("quality", {}),
-                }
-                for bucket in buckets
-            ],
+            "buckets": cards,
         }
+        payload_chars = len(json.dumps(payload, ensure_ascii=False))
         try:
-            with llm_operation("knowledge.bucket_route", candidate_count=len(buckets)):
+            with llm_operation(
+                "knowledge.bucket_route",
+                candidate_count=len(buckets),
+                payload_chars=payload_chars,
+            ):
                 raw = LLMClient(model_config).generate_json(
                     SEARCH_PROMPT.read_text(encoding="utf-8"), payload
                 )
@@ -2083,6 +2239,44 @@ def _document_card_for_route(row: KnowledgeDocument) -> dict[str, Any]:
     }
 
 
+def _bucket_card_for_route(row: KnowledgeBucket) -> dict[str, Any]:
+    """LLM bucket 路由卡片（2026-09-09 瘦身版）。
+
+    砍 `quality`（纯入库质检元数据，对「选哪个桶」零贡献）；section_paths
+    12 条×80 → 4 条×60（只需主题级感知）；summary 截 160（原未截断，入库存 300）。
+    每卡 ~616 → ~200 chars。字段总长受 BUCKET_ROUTE_CARD_CHAR_BUDGET 约束。
+    """
+
+    metadata = row.metadata_json or {}
+    title = _summarize_text(str(row.title or ""), 60)
+    summary = _summarize_text(str(row.summary or ""), 160)
+    paths = _route_labels(metadata.get("section_paths", []), 4, 60)
+    query_types = metadata.get("applicable_query_types")
+    card = {
+        "id": row.id,
+        "document_id": row.document_id,
+        "title": title,
+        "summary": summary,
+        "bucket_type": metadata.get("bucket_type"),
+        "applicable_query_types": query_types if isinstance(query_types, list) else [],
+        "section_paths": paths,
+    }
+    # 总长预算护栏：超预算时逐级降级（paths 4→2→0 → summary 硬截），绝不超发
+    card_chars = len(json.dumps(card, ensure_ascii=False))
+    if card_chars > BUCKET_ROUTE_CARD_CHAR_BUDGET and len(paths) > 2:
+        card["section_paths"] = paths[:2]
+        card_chars = len(json.dumps(card, ensure_ascii=False))
+    if card_chars > BUCKET_ROUTE_CARD_CHAR_BUDGET and paths:
+        card["section_paths"] = []
+        card_chars = len(json.dumps(card, ensure_ascii=False))
+    if card_chars > BUCKET_ROUTE_CARD_CHAR_BUDGET:
+        # 硬截 summary 到剩余预算（留 20 给键开销波动），保 id 可选
+        overflow = card_chars - BUCKET_ROUTE_CARD_CHAR_BUDGET
+        keep = max(40, len(card["summary"]) - overflow - 20)
+        card["summary"] = card["summary"][:keep]
+    return card
+
+
 def _route_candidates(ranked: list[Any], candidates: list[Any], limit: int) -> list[Any]:
     selected = list(ranked[:limit])
     selected_ids = {str(getattr(item, "id", "")) for item in selected}
@@ -2119,7 +2313,9 @@ def _route_labels(value: object, limit: int, char_limit: int) -> list[str]:
     return labels
 
 
-def _score_documents(query: str, documents: list[KnowledgeDocument]) -> list[KnowledgeDocument]:
+def _score_documents_with_scores(
+    query: str, documents: list[KnowledgeDocument]
+) -> list[tuple[float, KnowledgeDocument]]:
     scored: list[tuple[float, KnowledgeDocument]] = []
     for row in documents:
         card = (row.metadata_json or {}).get("document_card", {})
@@ -2132,14 +2328,46 @@ def _score_documents(query: str, documents: list[KnowledgeDocument]) -> list[Kno
         if score >= SEARCH_MIN_DOCUMENT_SCORE:
             scored.append((score, row))
     scored.sort(key=lambda item: item[0], reverse=True)
-    return [row for _score, row in scored]
+    return scored
 
 
-def _score_buckets(
+def _score_documents(query: str, documents: list[KnowledgeDocument]) -> list[KnowledgeDocument]:
+    return [row for _score, row in _score_documents_with_scores(query, documents)]
+
+
+def _lexical_fast_path_top(
+    scored_rows: list[Any],
+    scored_scores: list[float],
+    max_count: int,
+    content_verifier: callable | None = None,
+) -> list[Any] | None:
+    """词法快速路径判定：top-1 足够强且与 top-2 拉开差距时返回入选行，否则 None。
+
+    scored_rows / scored_scores 均已按分数降序排列且等长。
+    content_verifier：可选的内容验证回调（row → bool）。提供时入选的每行都必须
+    通过验证（如「桶内 chunk 确有词法命中」），任一行不通过则整体放弃快速路径，
+    防止「标题命中、内容无关」的误导性选择导致最终检索空结果。
+    """
+
+    if not scored_rows:
+        return None
+    top_score = scored_scores[0]
+    if top_score < LEXICAL_FAST_PATH_MIN_SCORE:
+        return None
+    second_score = scored_scores[1] if len(scored_scores) > 1 else 0.0
+    if top_score - second_score < LEXICAL_FAST_PATH_MIN_GAP and len(scored_rows) > 1:
+        return None
+    picked = list(scored_rows[:max_count])
+    if content_verifier is not None and not all(content_verifier(row) for row in picked):
+        return None
+    return picked
+
+
+def _score_buckets_with_scores(
     query: str,
     buckets: list[KnowledgeBucket],
     query_type: str = "answer",
-) -> list[KnowledgeBucket]:
+) -> list[tuple[float, KnowledgeBucket]]:
     scored: list[tuple[float, KnowledgeBucket]] = []
     for row in buckets:
         metadata = row.metadata_json or {}
@@ -2156,7 +2384,15 @@ def _score_buckets(
         if score >= SEARCH_MIN_BUCKET_SCORE:
             scored.append((score, row))
     scored.sort(key=lambda item: item[0], reverse=True)
-    return [row for _score, row in scored]
+    return scored
+
+
+def _score_buckets(
+    query: str,
+    buckets: list[KnowledgeBucket],
+    query_type: str = "answer",
+) -> list[KnowledgeBucket]:
+    return [row for _score, row in _score_buckets_with_scores(query, buckets, query_type)]
 
 
 def _rank_chunks(

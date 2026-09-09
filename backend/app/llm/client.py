@@ -1567,6 +1567,36 @@ def _loads_llm_json(text: str) -> Any:
         literal = None
     if isinstance(literal, (dict, list)):
         return literal
+    # json-repair 兜底（2026-09-09）：覆盖现有启发式救不回的破损模式
+    # （单引号 key、截断 JSON、JS 风格模板字符串/十六进制等），
+    # 在第 2 层"模型重试"前于本地微秒级修复，省掉一次完整 LLM 调用。
+    # strict=True：真垃圾（纯文本回复）返回空串不会误判成功，
+    # 且连续对象（`{"a":1}{"b":2}`）抛 ValueError，保留 _loads_llm_json_sequence 路径语义。
+    # 截断检测：括号不平衡说明输出被 max_token 掐断，此时 _extract_json 的
+    # rfind("}") 已把尾部截掉，须用原始 text 交给 json_repair 补全闭合。
+    try:
+        import json_repair
+
+        stripped = text.strip()
+        unbalanced = (
+            stripped.count("{") + stripped.count("[")
+            > stripped.count("}") + stripped.count("]")
+        )
+        repaired = json_repair.loads(text if unbalanced else candidate, strict=True)
+        if isinstance(repaired, (dict, list)):
+            return repaired
+    except Exception:
+        pass
+    # ---- 旧逻辑（无 json-repair 兜底版本，注释保留备查）----
+    # try:
+    #     literal = ast.literal_eval(candidate)
+    # except (SyntaxError, ValueError):
+    #     literal = None
+    # if isinstance(literal, (dict, list)):
+    #     return literal
+    # if last_error is not None:
+    #     raise last_error
+    # raise json.JSONDecodeError("Could not decode JSON", candidate, 0)
     if last_error is not None:
         raise last_error
     raise json.JSONDecodeError("Could not decode JSON", candidate, 0)
