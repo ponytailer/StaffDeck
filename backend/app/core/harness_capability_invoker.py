@@ -988,6 +988,16 @@ class HarnessCapabilityInvoker:
             "data": payload,
             "citations": knowledge_citations_from_results([payload]),
         }
+        # route 观测数据要在 data 外置（_persist_large_json_result 会把超限的
+        # data 换成沙箱文件引用）之前提到顶层，否则 harness_tool_completed
+        # 事件里永远看不到 route_cache_hit / fast_path 等 phase
+        route_trace = payload.get("route_trace")
+        if isinstance(route_trace, list) and route_trace:
+            result["route_phases"] = [
+                str(item.get("phase") or "?")
+                for item in route_trace
+                if isinstance(item, dict)
+            ]
         return self._persist_large_json_result(result, call_id=call_id)
 
     def _invoke_external_tool(

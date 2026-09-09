@@ -1045,8 +1045,14 @@ def _trace_capability_result(
             )
             if data.get(key) not in (None, "", [], {})
         }
-    return _bounded_capability_result(
+    trace = _bounded_capability_result(
         tool_name,
         trace_result,
         max_chars=4_000,
     )
+    # 知识检索的 route 观测 phase（route_cache_hit / fast_path 等）是
+    # 轻量字符串列表，原样保留到事件 payload 顶层，供诊断脚本扫描
+    route_phases = result.get("route_phases")
+    if isinstance(route_phases, list) and route_phases:
+        trace["route_phases"] = route_phases
+    return trace

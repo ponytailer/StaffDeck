@@ -92,6 +92,12 @@ def _check_route_cache_support() -> None:
         print(f"  [!] Redis 检查异常：{exc}")
 
     # ②③ 扫最近 span 找新代码标志
+    payload_chars_seen: list[tuple[str, int]] = []
+    route_cache_hits = 0
+    route_cache_stored = 0
+    slim_spans = 0
+    total_bucket_routes = 0
+    planner_chars: list[tuple[str, int]] = []
     try:
         # 每段查询独立开连接：第一条查询若失败会把连接置为 invalid，
         # 复用同一连接的后续查询会报 "This Connection is closed"
@@ -107,12 +113,6 @@ def _check_route_cache_support() -> None:
                     """
                 )
             ).fetchall()
-        payload_chars_seen: list[tuple[str, int]] = []
-        route_cache_hits = 0
-        route_cache_stored = 0
-        slim_spans = 0
-        total_bucket_routes = 0
-        planner_chars: list[tuple[str, int]] = []
         for row in rows:
             payload = as_payload(row[0])
             # 新版 _select_buckets_with_llm 在 llm_operation 上挂 payload_chars；
@@ -153,49 +153,62 @@ def _check_route_cache_support() -> None:
         print(f"  [!] LLM span 扫描失败：{exc}")
 
     # 盲区补丁：缓存命中不发 LLM 调用 → llm_call_finished 里扫不到 hit。
-    # route_cache_hit/stored/fast_path 是知识检索事件的 route_trace phase，
-    # 必须扫检索事件本体才能看到。独立连接 + 独立 try，前段失败不影响本段。
+    # route phase 经 harness_tool_completed 事件落库（tool_name=knowledge_search）。
+    # 新代码在事件 payload.result.route_phases 带轻量 phase 列表；旧事件回退
+    # 字符串匹配。独立连接 + 独立 try，前段失败不影响本段。
     ks_hits = ks_stores = ks_fast = 0
     ks_count = 0
+    ks_old_style = 0
     try:
         with engine.connect() as conn:
-            try:
-                ks_rows = conn.execute(
-                    text(
-                        """
-                        SELECT payload_json, created_at
-                        FROM agent_events
-                        WHERE event_type = 'knowledge_search'
-                        ORDER BY created_at DESC
-                        LIMIT 50
-                        """
-                    )
-                ).fetchall()
-            except Exception:  # noqa: BLE001 - 事件名可能不同，回退全事件扫描
-                ks_rows = conn.execute(
-                    text(
-                        """
-                        SELECT payload_json, created_at
-                        FROM agent_events
-                        ORDER BY created_at DESC
-                        LIMIT 400
-                        """
-                    )
-                ).fetchall()
-        ks_count = len(ks_rows)
+            ks_rows = conn.execute(
+                text(
+                    """
+                    SELECT payload_json, created_at
+                    FROM agent_events
+                    WHERE event_type = 'harness_tool_completed'
+                    ORDER BY created_at DESC
+                    LIMIT 150
+                    """
+                )
+            ).fetchall()
         for row in ks_rows:
-            trace_json = json.dumps(as_payload(row[0]), ensure_ascii=False)
-            ks_hits += trace_json.count("route_cache_hit")
-            ks_stores += trace_json.count("route_cache_stored")
-            ks_fast += trace_json.count("lexical_fast_path")
+            payload = as_payload(row[0])
+            # tool_name 在事件 payload 顶层（trace 链路平铺，不包一层）
+            if str(payload.get("tool_name") or "") != "knowledge_search":
+                continue
+            ks_count += 1
+            # 优先：新版事件 result.route_phases（轻量列表，精确计数）
+            nested = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+            phases = nested.get("route_phases")
+            if isinstance(phases, list):
+                ks_hits += sum(1 for p in phases if p == "route_cache_hit")
+                ks_stores += sum(1 for p in phases if p == "route_cache_stored")
+                ks_fast += sum(1 for p in phases if str(p).endswith("lexical_fast_path"))
+            else:
+                # 旧事件（无 route_phases）：result.data 可能还带完整 payload，
+                # 字符串匹配做兜底，可能含 chunk 正文噪声
+                trace_json = json.dumps(payload, ensure_ascii=False)
+                ks_old_style += 1
+                ks_hits += trace_json.count("route_cache_hit")
+                ks_stores += trace_json.count("route_cache_stored")
+                ks_fast += trace_json.count("lexical_fast_path")
         print(
-            f"  知识检索事件：最近 {ks_count} 条中 route_cache_hit ×{ks_hits}，"
+            f"  知识检索事件：最近 {ks_count} 条（route_phases 精确 {ks_count - ks_old_style} /"
+            f" 旧事件兜底 {ks_old_style}）→ route_cache_hit ×{ks_hits}，"
             f"route_cache_stored ×{ks_stores}，词法快速路径 ×{ks_fast}"
         )
+        if ks_count == 0:
+            print("  [i] 最近无 knowledge_search 调用事件；有检索但无事件 → 确认 trace_sink 配置")
         if ks_hits > 0:
             print("  [OK] 路由缓存命中已在发生（重复问法免 LLM 路由）")
         elif ks_count > 0 and ks_fast > 0:
             print("  [i] 无缓存命中但词法快速路径在生效（词法显著命中免 LLM 路由）")
+        elif ks_count > 0 and ks_old_style == ks_count:
+            print(
+                "  [!] 事件均为旧格式（无 route_phases）→ 新 invoker 代码未部署，"
+                "route phase 计数可能受 chunk 正文噪声干扰"
+            )
     except Exception as exc:  # noqa: BLE001
         print(f"  [!] 知识检索事件扫描失败：{exc}")
 
@@ -227,7 +240,7 @@ def main() -> None:
                 FROM agent_events
                 WHERE event_type = 'user_message_received'
                 ORDER BY created_at DESC
-                LIMIT 8
+                LIMIT 4
                 """
             )
         ).fetchall()
