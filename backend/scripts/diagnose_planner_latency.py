@@ -152,8 +152,9 @@ def _check_route_cache_support() -> None:
             f"  route_cache 迹象：最近 200 span 中 route_cache_hit ×{route_cache_hits}，"
             f"route_cache_stored ×{route_cache_stored}"
         )
-        if route_cache_stored == 0 and route_cache_hits == 0 and total_bucket_routes > 0:
-            print("  [!] 无任何 route_cache 迹象 → 大概率 Redis 未配置或缓存写入未发生")
+        # 误报修复：缓存命中/写入的 phase 记在 harness_tool_completed 事件里，
+        # llm_call_finished span 扫描天然扫不到（命中时根本不发 LLM 调用），
+        # 警告延后到 ks 事件段做双口径合并判定。
     except Exception as exc:  # noqa: BLE001
         print(f"  [!] LLM span 扫描失败：{exc}")
 
@@ -221,6 +222,17 @@ def _check_route_cache_support() -> None:
                 "  [!] 事件均为旧格式（无 route_phases）→ 新 invoker 代码未部署，"
                 "route phase 计数可能受 chunk 正文噪声干扰"
             )
+        if (
+            ks_hits == 0
+            and ks_stores == 0
+            and route_cache_hits == 0
+            and route_cache_stored == 0
+            and (ks_count > 0 or total_bucket_routes > 0)
+        ):
+            print(
+                "  [!] 无任何 route_cache 迹象（span + 知识检索事件双口径均零）"
+                "→ 检查 Redis 配置 / 缓存写入"
+            )
     except Exception as exc:  # noqa: BLE001
         print(f"  [!] 知识检索事件扫描失败：{exc}")
 
@@ -281,6 +293,13 @@ def _check_route_cache_support() -> None:
                     str(
                         payload.get("query")
                         or payload.get("next_node_id")
+                        or payload.get("tool_name")
+                        or (
+                            "缺必填:"
+                            + "、".join(str(s) for s in payload.get("missing_required") or [])
+                            if payload.get("missing_required")
+                            else ""
+                        )
                         or "、".join(str(s) for s in payload.get("required_slots") or [])
                         or ""
                     )[:40],
@@ -299,6 +318,53 @@ def _check_route_cache_support() -> None:
                 "  SOP 确定性执行器（P1）：无 sop_prefill_planned 事件"
                 "（未部署 / 未触发 / 观测代码未部署）"
             )
+        # 槽位抽取（P2）观测：全抽出（抽齐直通）vs 部分（带值询问）vs 空
+        with engine.connect() as conn:
+            ext_rows = conn.execute(
+                text(
+                    """
+                    SELECT payload_json, created_at
+                    FROM agent_events
+                    WHERE event_type = 'sop_slot_extraction'
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                    """
+                )
+            ).fetchall()
+        if ext_rows:
+            full = partial = empty = 0
+            durations: list[float] = []
+            details: list[tuple[str, int, int, str]] = []
+            for row in ext_rows:
+                payload = as_payload(row[0])
+                extracted = payload.get("extracted")
+                extracted_n = len(extracted) if isinstance(extracted, dict) else 0
+                fields_n = len(payload.get("fields") or [])
+                if fields_n and extracted_n >= fields_n:
+                    full += 1
+                elif extracted_n:
+                    partial += 1
+                else:
+                    empty += 1
+                durations.append(float(payload.get("duration_ms") or 0))
+                details.append(
+                    (
+                        bj_hms(as_datetime(row[1])),
+                        extracted_n,
+                        fields_n,
+                        json.dumps(extracted, ensure_ascii=False)[:60] if extracted else "",
+                    )
+                )
+            avg_ms = sum(durations) / len(durations) if durations else 0
+            print(
+                f"  槽位抽取（P2）：sop_slot_extraction ×{len(ext_rows)}"
+                f"（抽齐直通 ×{full}，部分抽取 ×{partial}，未抽到 ×{empty}）"
+                f" 平均 {avg_ms:.1f}ms"
+            )
+            for ts, ext_n, field_n, extracted_str in details[:5]:
+                print(f"    [{ts}] 抽到 {ext_n}/{field_n} {extracted_str}")
+        else:
+            print("  槽位抽取（P2）：无 sop_slot_extraction 事件（未部署 / 未触发）")
     except Exception as exc:  # noqa: BLE001
         print(f"  [!] P1 生效率观测失败：{exc}")
     print()

@@ -126,11 +126,19 @@ class HarnessTaskAgent:
         pending_actions: list[HarnessAction] = []
         # SOP 确定性执行器（P1）：预检索/纯流转/缺槽询问三类场景由代码直接判定，
         # 预填动作序列跳过首轮 task_action LLM 决策；不可判定返回空，走现有链路。
+        # 恢复到同一步骤且上次终点是 awaiting_user（等槽位）时，放行场景 A
+        # 槽位抽取——用户带齐信息回来正是该场景的主路径。
+        resumed_awaiting_user = (
+            same_step
+            and str(checkpoint.get("last_status") or "") == "awaiting_user"
+        )
         prefill_actions = plan_sop_prefill_actions(
             requirement,
             same_step=same_step,
+            resumed_awaiting_user=resumed_awaiting_user,
             satisfied_required_knowledge_ids=set(satisfied_required_knowledge_ids),
             trace_sink=trace_sink,
+            slot_extraction_model=lightweight_model_config or model_config,
         )
         if prefill_actions:
             pending_actions.extend(
@@ -154,6 +162,7 @@ class HarnessTaskAgent:
                 "version": 1,
                 "task_frame_id": requirement.task_frame_id,
                 "step_id": current_step_id,
+                "last_status": result.status,
                 "transcript": _transcript_for_model(transcript),
                 "citations": citations[-20:],
                 "evidence_results": evidence_results[-10:],
