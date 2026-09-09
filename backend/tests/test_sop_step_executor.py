@@ -792,6 +792,128 @@ def test_handoff_summary_filters_dirty_slots() -> None:
 
 
 # ---------------------------------------------------------------------------
+# P4 场景 A2：会话复用时的新值合并（17:41 复测踩中旧工号问题）
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_merge_updates_stale_slots_on_reused_session(monkeypatch) -> None:
+    """复现 17:41 场景：session 槽位已齐（旧工号1003），新消息工号2003 →
+    A2 抽取新值随 B 直通落库覆盖。"""
+    import app.core.sop_step_executor as executor_module
+
+    def fake_extract(*args, **kwargs):
+        assert "employee_id" in args[0]
+        return {"employee_id": "2003", "permission": "普通权限"}
+
+    monkeypatch.setattr(executor_module, "_extract_slots_llm", fake_extract)
+
+    events = _events()
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            sop_context={
+                "skill_id": "sop-1",
+                "step": {
+                    "node_id": "n1",
+                    "type": "collect",
+                    "name": "收集申请信息",
+                    "instruction": "收集工号、系统、权限级别。",
+                    "expected_user_info": ["employee_id", "system", "permission", "access_level"],
+                },
+            },
+            allowed_transitions=[{"next_node_id": "n3", "condition": ""}],
+            known_slots={"employee_id": "1003", "system": "crm"},
+            source_user_message="申请生产环境crm的普通权限，工号2003",
+        ),
+        slot_extraction_model="fake-model",
+        trace_sink=lambda t, p: events.append((t, p)),
+    )
+    assert len(actions) == 1
+    assert actions[0]["status"] == "completed"
+    assert actions[0]["next_step_id"] == "n3"
+    assert actions[0]["slot_updates"] == {"employee_id": "2003", "permission": "普通权限"}
+
+
+def test_fresh_merge_feeds_decision_evidence(monkeypatch) -> None:
+    """A2 新值进入路由证据：旧槽位匹配不上，新值「普通权限」唯一命中 n3 边。"""
+    import app.core.sop_step_executor as executor_module
+
+    def fake_extract(*args, **kwargs):
+        return {"permission": "普通权限"}
+
+    monkeypatch.setattr(executor_module, "_extract_slots_llm", fake_extract)
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            sop_context={
+                "skill_id": "sop-1",
+                "step": dict(_DECISION_STEP, expected_user_info=["permission", "access_level"]),
+                "slot_fields": _SLOT_FIELDS,
+            },
+            allowed_transitions=_ROUTE_EDGES,
+            known_slots={"employee_id": "1003", "permission": "normal"},
+            source_user_message="申请crm的普通权限，工号2003",
+        ),
+        slot_extraction_model="fake-model",
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "n3"
+    assert actions[0]["slot_updates"] == {"permission": "普通权限"}
+
+
+def test_fresh_merge_conflict_message_falls_back(monkeypatch) -> None:
+    """消息同时含两条边的条件词（普通权限+生产环境）→ 冲突否决，交还 LLM。"""
+    import app.core.sop_step_executor as executor_module
+
+    def fail_llm(*args, **kwargs):
+        raise AssertionError("不应触发抽取")  # D 直判不调用抽取；A2 未配模型跳过
+
+    monkeypatch.setattr(executor_module, "_extract_slots_llm", fail_llm)
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            sop_context={
+                "skill_id": "sop-1",
+                "step": _DECISION_STEP,
+                "slot_fields": _SLOT_FIELDS,
+            },
+            allowed_transitions=_ROUTE_EDGES,
+            known_slots={"access_level": "生产环境"},
+            source_user_message="申请生产环境crm的普通权限，工号2003",
+        ),
+    )
+    assert actions == []
+
+
+def test_fresh_merge_skipped_without_message_or_model(monkeypatch) -> None:
+    """无新消息或未配抽取模型时不触发 A2（保持原 B 直通零开销）。"""
+    import app.core.sop_step_executor as executor_module
+
+    def fail_llm(*args, **kwargs):
+        raise AssertionError("无消息/无模型不应触发抽取")
+
+    monkeypatch.setattr(executor_module, "_extract_slots_llm", fail_llm)
+
+    base_kwargs = {
+        "sop_context": {"skill_id": "sop-1", "step": dict(_DECISION_STEP, type="collect")},
+        "allowed_transitions": [{"next_node_id": "n3", "condition": ""}],
+        "known_slots": {"employee_id": "1003"},
+    }
+    # 无消息
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(source_user_message="", **base_kwargs),
+        slot_extraction_model="fake-model",
+    )
+    assert actions[0]["next_step_id"] == "n3"
+    assert actions[0].get("slot_updates") in (None, {})
+    # 无模型
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(**base_kwargs),
+    )
+    assert actions[0]["next_step_id"] == "n3"
+    assert actions[0].get("slot_updates") in (None, {})
+
+
+# ---------------------------------------------------------------------------
 # P4 场景 F：handoff 终点节点直通（零 LLM 转人工）
 # ---------------------------------------------------------------------------
 

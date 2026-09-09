@@ -142,6 +142,42 @@ def plan_sop_prefill_actions(
                 trace_sink=trace_sink,
             )
 
+        # 场景 A2（P4）：会话复用的新鲜度保护。required_slots 为空只说明
+        # session.slots_json 里有值——可能是**上一轮请求**的旧值（同会话
+        # 第二次申请换了工号，17:41 复测踩中：旧工号1003 带着走完全程）。
+        # 当前节点声明了 expected_user_info 且有新用户消息时跑一次轻量抽取，
+        # 新值合并进路由证据（merged_slots）并随 B 直通的 slot_updates 落库
+        # 覆盖旧值。
+        source_message = str(getattr(requirement, "source_user_message", "") or "")
+        fresh_slots: dict[str, Any] = {}
+        if (
+            not required_slots
+            and not resume_slot_recovery
+            and slot_extraction_model is not None
+        ):
+            fresh_expected = [
+                str(item).strip()
+                for item in (step.get("expected_user_info") or [])
+                if str(item).strip()
+            ]
+            if fresh_expected and source_message.strip():
+                extracted = _extract_slots_llm(
+                    fresh_expected,
+                    source_message,
+                    known_slots,
+                    slot_extraction_model,
+                    trace_sink,
+                    step_instruction=str(step.get("instruction") or ""),
+                    mode="fresh_merge",
+                )
+                fresh_slots = {
+                    str(key): value
+                    for key, value in extracted.items()
+                    if str(key) in set(fresh_expected)
+                    and value not in (None, "", [], {})
+                }
+        merged_slots = {**known_slots, **fresh_slots} if fresh_slots else known_slots
+
         if required_slots:
             # 场景 A（P2 增强）：缺槽时先尝试轻量 LLM 槽位抽取——
             # 用户首条消息往往已带齐信息（如「申请OA管理员权限，工号3012」），
@@ -201,7 +237,7 @@ def plan_sop_prefill_actions(
         ):
             return _plan_handoff_passthrough(
                 step,
-                known_slots,
+                merged_slots,
                 trace_sink,
                 allowed_fields=set(slot_fields),
             )
@@ -211,12 +247,15 @@ def plan_sop_prefill_actions(
         if str(step.get("type") or "").strip() == _DECISION_NODE_TYPE:
             next_target = _decision_direct_next(
                 getattr(requirement, "allowed_transitions", []) or [],
-                known_slots,
-                user_message=str(getattr(requirement, "source_user_message", "") or ""),
+                merged_slots,
+                user_message=source_message,
                 allowed_fields=set(slot_fields),
             )
             if next_target:
                 action = _passthrough_action(step, next_target)
+                if fresh_slots:
+                    # A2 新值随直判落库，避免旧槽位（如旧工号）继续存活
+                    action["slot_updates"] = fresh_slots
                 return _emit(
                     trace_sink,
                     "decision_direct_eval",
@@ -224,12 +263,12 @@ def plan_sop_prefill_actions(
                     next_node_id=next_target,
                 )
 
-        # 场景 B：纯流转直通
+        # 场景 B：纯流转直通（A2 抽到的新值随 slot_updates 落库覆盖旧值）
         return _plan_prefetch_or_passthrough(
             requirement,
             required_knowledge_ids=[],
             satisfied_required_knowledge_ids=satisfied_required_knowledge_ids,
-            extracted_slots={},
+            extracted_slots=fresh_slots,
             step=step,
             trace_sink=trace_sink,
             scene_suffix="",
@@ -490,6 +529,7 @@ def _extract_slots_llm(
     trace_sink: Any,
     *,
     step_instruction: str = "",
+    mode: str = "missing_fill",
 ) -> dict[str, Any]:
     """轻量槽位抽取：从用户首条消息中提取期望字段值。
 
@@ -497,6 +537,7 @@ def _extract_slots_llm(
     这里拆成独立的 1-3s 轻量调用。失败/不可用时返回空 dict，调用方退回
     模板询问（保守行为）。step_instruction 是 SOP 节点说明，为抽象字段名
     提供业务语义（如 access_level=访问级别/环境类型）。
+    mode：missing_fill=缺槽补全（场景 A）/ fresh_merge=会话复用新值合并（A2）。
     """
 
     if model_config is None or not fields or not user_message.strip():
@@ -529,6 +570,7 @@ def _extract_slots_llm(
             trace_sink(
                 "sop_slot_extraction",
                 {
+                    "mode": mode,
                     "fields": list(fields),
                     "extracted": result,
                     "duration_ms": round((_time.monotonic() - started) * 1000, 1),
