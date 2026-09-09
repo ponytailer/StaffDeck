@@ -507,6 +507,7 @@ def _extract_slots_llm(
     result: dict[str, Any] = {}
     try:
         from app.llm import LLMClient
+        from app.observability.spans import llm_operation
 
         client = LLMClient(model_config)
         payload = {
@@ -515,7 +516,10 @@ def _extract_slots_llm(
             "known_slots": known_slots,
             "user_message": user_message[:2_000],
         }
-        raw = client.generate_json(EXTRACTION_SYSTEM_PROMPT, payload)
+        # 专用 operation：output_policy 据此收紧 json 修复/空响应重试
+        # （默认 3 次修复在慢模型上会串行烧 2-4 轮完整 LLM 调用）
+        with llm_operation("sop.slot_extraction"):
+            raw = client.generate_json(EXTRACTION_SYSTEM_PROMPT, payload)
         values = raw.get("slot_values") if isinstance(raw, dict) else None
         result = dict(values) if isinstance(values, dict) else {}
     except Exception:  # noqa: BLE001 - 抽取失败退回模板询问，绝不阻断

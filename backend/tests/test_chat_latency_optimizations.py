@@ -124,11 +124,13 @@ def _task_requirement() -> TaskRequirement:
 def test_operation_json_repair_attempts_policy() -> None:
     assert OPERATION_JSON_REPAIR_ATTEMPTS["harness.task_action"] == 1
     assert OPERATION_JSON_REPAIR_ATTEMPTS["turn_planner.plan"] == 1
+    assert OPERATION_JSON_REPAIR_ATTEMPTS["sop.slot_extraction"] == 0
     # 未配置的操作回落默认值
     assert operation_json_repair_attempts("response.generate", 3) == 3
     # 配置的操作返回收紧值
     assert operation_json_repair_attempts("harness.task_action", 3) == 1
     assert operation_json_repair_attempts("turn_planner.plan", 3) == 1
+    assert operation_json_repair_attempts("sop.slot_extraction", 3) == 0
 
 
 def test_generate_json_repair_attempts_respects_operation(monkeypatch) -> None:

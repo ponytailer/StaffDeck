@@ -6,6 +6,8 @@ from __future__ import annotations
 OPERATION_EMPTY_RESPONSE_RETRIES: dict[str, int] = {
     "knowledge.document_route": 0,
     "knowledge.bucket_route": 0,
+    # 同上：抽取失败有模板兜底，空响应重试只会拉长尾延迟
+    "sop.slot_extraction": 0,
 }
 
 # JSON repair resends the full payload to the model. For long-context
@@ -15,6 +17,10 @@ OPERATION_EMPTY_RESPONSE_RETRIES: dict[str, int] = {
 OPERATION_JSON_REPAIR_ATTEMPTS: dict[str, int] = {
     "harness.task_action": 1,
     "turn_planner.plan": 1,
+    # SOP 槽位抽取是小 payload 控制面调用，失败直接退回模板询问；
+    # 慢模型上一次修复重试就是十几秒，不值得（2026-09-09 实测抽取
+    # 平均 40s 主要来自 json_attempt 串行重试）。
+    "sop.slot_extraction": 0,
 }
 
 
