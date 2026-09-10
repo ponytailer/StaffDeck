@@ -55,3 +55,4 @@ overview.md
 *.dmg
 db-export/
 *.db
+*log*

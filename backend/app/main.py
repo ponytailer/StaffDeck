@@ -20,6 +20,7 @@ from app.api import (
     mock,
     model_configs,
     persona,
+    scheduled_task_monitor,
     scheduled_tasks,
     sessions,
     skills,
@@ -77,9 +78,16 @@ def on_startup() -> None:
         with Session(engine) as db:
             seed_demo_data(db)
             recover_orphan_harness_runs(db, startup=True)
+            if settings.scheduler_backend == "rq":
+                # rq 后端：主进程只负责按 PG 全量重建 Redis 调度；
+                # 实际触发与执行由独立进程 app.scheduled_tasks.rq_worker 承担。
+                from app.scheduled_tasks import rq_dispatch
+
+                rq_dispatch.sync_all_on_startup(db)
         recover_codex_a2a_tasks()
         recover_a2a_client_tasks()
-        start_background_worker()
+        if settings.scheduler_backend != "rq":
+            start_background_worker()
         start_channel_services()
         start_timeout_sweeper()
         start_harness_recovery_sweeper()
@@ -134,6 +142,7 @@ app.include_router(persona.router)
 app.include_router(scheduled_tasks.enterprise_router)
 app.include_router(scheduled_tasks.chat_router)
 app.include_router(scheduled_tasks.chat_draft_router)
+app.include_router(scheduled_task_monitor.enterprise_router)
 app.include_router(ui_config.enterprise_router)
 app.include_router(channels.router)
 app.include_router(teams.router)

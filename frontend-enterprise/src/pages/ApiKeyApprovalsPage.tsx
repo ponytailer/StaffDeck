@@ -1070,23 +1070,6 @@ export default function ApiKeyApprovalsPage({
         </div>
       ),
     },
-    {
-      key: 'gateway',
-      title: '网关',
-      width: 120,
-      render: (row) =>
-        row.gateway_name ? (
-          <span className="text-[13px] text-[#464c5e]">{row.gateway_name}</span>
-        ) : (
-          <span className="text-[12px] text-[#c0c6d4]">—</span>
-        ),
-    },
-    {
-      key: 'type',
-      title: '类型',
-      width: 80,
-      render: (row) => <span className="text-[12px] text-[#464c5e]">{row.consumer_type}</span>,
-    },
   ];
 
   const consumerColumns: DataTableColumn<Consumer>[] = [
@@ -1274,23 +1257,12 @@ export default function ApiKeyApprovalsPage({
       },
     },
     {
-      key: 'gateway',
-      title: '网关',
-      width: 110,
-      render: (row) =>
-        row.gateway_name ? (
-          <span className="text-[13px] text-[#464c5e]">{row.gateway_name}</span>
-        ) : (
-          <span className="text-[12px] text-[#c0c6d4]">—</span>
-        ),
-    },
-    {
       key: 'quota',
       title: '配额',
-      width: 100,
+      width: 110,
       render: (row) =>
         row.quota_limit ? (
-          <span className="text-[12px] text-[#464c5e]">
+          <span className="whitespace-nowrap text-[12px] text-[#464c5e]">
             {row.quota_limit.toLocaleString('zh-CN')} / {PERIOD_LABEL[row.quota_period ?? ''] ?? '-'}
           </span>
         ) : (
@@ -1300,7 +1272,7 @@ export default function ApiKeyApprovalsPage({
     {
       key: 'used',
       title: '已用',
-      width: 110,
+      width: 150,
       render: (row) => {
         const archived = row.archived_used_amount ?? 0;
         return (
@@ -1309,7 +1281,7 @@ export default function ApiKeyApprovalsPage({
               {row.used_amount.toLocaleString('zh-CN')}
             </span>
             {archived > 0 && (
-              <span className="text-[11px] text-[#858b9c] tabular-nums">
+              <span className="whitespace-nowrap text-[11px] text-[#858b9c] tabular-nums">
                 当前窗口 {(row.current_used_amount ?? 0).toLocaleString('zh-CN')} · 重置前 {archived.toLocaleString('zh-CN')}
               </span>
             )}
