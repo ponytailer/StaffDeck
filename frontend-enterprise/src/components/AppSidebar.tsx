@@ -65,7 +65,8 @@ const PRIMARY_NAV: NavItem[] = [
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
   { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },
-  { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
+  // 暂时隐藏渠道接入入口（页面与路由保留，需要时恢复下行即可）
+  // { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
   { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
 ];
 

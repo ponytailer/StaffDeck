@@ -3222,12 +3222,30 @@ def _migrate_api_key_quota_rule(conn, tables: set[str]) -> None:
 
 
 def _migrate_api_key_usage_snapshot(conn, tables: set[str]) -> None:
-    """新增配额用量快照表(api_key_usage_snapshots)。"""
+    """新增配额用量快照表(api_key_usage_snapshots)；已存在时补充归档列。"""
     if "api_key_usage_snapshots" not in tables:
         from app.db.models import ApiKeyUsageSnapshot
 
         ApiKeyUsageSnapshot.metadata.create_all(bind=engine)
         return
+    columns = {
+        column["name"] for column in inspect(engine).get_columns("api_key_usage_snapshots")
+    }
+    # 月内配额窗口重置累计列（2026-09-10）：云端值 < 当前窗口值时旧值归档
+    if "archived_used_amount" not in columns:
+        conn.execute(
+            text(
+                "ALTER TABLE api_key_usage_snapshots "
+                "ADD COLUMN archived_used_amount INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+    if "reset_count" not in columns:
+        conn.execute(
+            text(
+                "ALTER TABLE api_key_usage_snapshots "
+                "ADD COLUMN reset_count INTEGER NOT NULL DEFAULT 0"
+            )
+        )
 
 
 def get_session() -> Generator[Session, None, None]:

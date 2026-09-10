@@ -575,16 +575,19 @@ class ApiKeyApplicationUsageItem(BaseModel):
     quota_limit: int | None = None
     quota_period: str | None = None
     quota_rule_id: str | None = None
-    used_amount: int
-    usage_rate: float  # 0.0 ~ 1.0
+    used_amount: int  # 本自然月累计（当前窗口 + 月内重置归档）
+    current_used_amount: int = 0  # 当前配额窗口用量（重置后从云端新值起算）
+    archived_used_amount: int = 0  # 月内重置前归档累计
+    usage_rate: float  # 0.0 ~ 1.0，按「本月累计已用 / 有效配额总量（含重置窗口叠加）」计算
     suggestion: str  # expand / normal / watch / unknown
 
 
 class ApiKeyUsageSummary(BaseModel):
     allocated_users: int
     total_quota: int
-    total_used: int
-    avg_usage_rate: float
+    total_used: int  # 本自然月累计
+    total_current_used: int = 0  # 当前窗口合计
+    avg_usage_rate: float  # 按「本月累计已用合计 / 有效配额合计」计算
     high_watermark_users: int
     low_watermark_users: int
 
@@ -1372,7 +1375,7 @@ def list_my_usage(
         cached_used = get_json(usage_cache_key) if (usage_cache_key and not refresh) else None
         if client and row.gateway_id and row.quota_rule_id and subject_id:
             if cached_used is not None:
-                # TTL 内的用量缓存：跳过云端调用（快照照常 upsert，保持取较大值语义）
+                # TTL 内的用量缓存：跳过云端调用（快照照常 upsert，重置归档语义不变）
                 used_amount = int(cached_used or 0)
             else:
                 try:
@@ -1387,38 +1390,52 @@ def list_my_usage(
                         set_json(usage_cache_key, used_amount)
                 except (AliyunApigError, RuntimeError, ValueError):
                     used_amount = None  # 标记查询失败，回退快照
-            if used_amount is not None:
-                _upsert_usage_snapshot(
-                    db,
-                    tenant_id=tenant_id,
-                    month=month,
-                    consumer_id=subject_id,
-                    consumer_name=subject_name,
-                    gateway_id=row.gateway_id,
-                    gateway_name=row.gateway_name,
-                    quota_rule_id=row.quota_rule_id,
-                    quota_rule_name=row.quota_rule_name,
-                    quota_limit=row.quota_limit or 0,
-                    quota_period=row.quota_period,
-                    used_amount=used_amount,
-                )
-                db.commit()
+        if used_amount is not None:
+            _upsert_usage_snapshot(
+                db,
+                tenant_id=tenant_id,
+                month=month,
+                consumer_id=subject_id,
+                consumer_name=subject_name,
+                gateway_id=row.gateway_id,
+                gateway_name=row.gateway_name,
+                quota_rule_id=row.quota_rule_id,
+                quota_rule_name=row.quota_rule_name,
+                quota_limit=row.quota_limit or 0,
+                quota_period=row.quota_period,
+                used_amount=used_amount,
+            )
+            db.commit()
 
-        # 实时查询失败时，回退读当月快照（按规则叠加；组粒度主体查组 ID 的快照）
-        if used_amount is None or not (client and row.gateway_id and row.quota_rule_id and subject_id):
-            snap_rows = db.exec(
+        # 展示值统一读快照：used_amount(当前窗口) + archived_used_amount(重置前
+        # 归档) = 本自然月累计使用量。云端成功时 upsert 刚写入实时值，快照即最新；
+        # 查询失败时快照是唯一数据源（回退语义不变）。
+        snap_rows = (
+            db.exec(
                 select(ApiKeyUsageSnapshot).where(
                     ApiKeyUsageSnapshot.tenant_id == tenant_id,
                     ApiKeyUsageSnapshot.month == month,
                     ApiKeyUsageSnapshot.consumer_id == subject_id,
                 )
-            ).all() if subject_id else []
-            if snap_rows:
-                quota_limit = sum(int(s.quota_limit or 0) for s in snap_rows)
-                used_amount = sum(int(s.used_amount or 0) for s in snap_rows)
-            else:
+            ).all()
+            if subject_id
+            else []
+        )
+        if snap_rows:
+            quota_limit = sum(
+                int(s.quota_limit or 0) * (1 + int(getattr(s, "reset_count", 0) or 0))
+                for s in snap_rows
+            )
+            current_used = sum(int(s.used_amount or 0) for s in snap_rows)
+            used_amount = current_used + sum(
+                int(getattr(s, "archived_used_amount", 0) or 0) for s in snap_rows
+            )
+        else:
+            current_used = int(used_amount or 0)
+            if used_amount is None:
                 used_amount = 0
 
+        # 使用率 = 本月累计已用 / 有效配额总量（含重置窗口叠加）
         usage_rate = (used_amount / quota_limit) if quota_limit > 0 else 0.0
         items.append(
             ApiKeyApplicationUsageItem(
@@ -1433,6 +1450,8 @@ def list_my_usage(
                 quota_period=row.quota_period,
                 quota_rule_id=row.quota_rule_id,
                 used_amount=used_amount,
+                current_used_amount=current_used,
+                archived_used_amount=used_amount - current_used,
                 usage_rate=round(usage_rate, 4),
                 suggestion=_usage_suggestion(usage_rate),
             )
@@ -1651,7 +1670,7 @@ def approve_application(
         db.add(local_consumer)
 
     # 5) 落库审批单
-    default_api_url = "https://ai-gateway.folidaymall.com/v1/chat/completions"
+    default_api_url = "https://ai-gateway.folidaymall.com/ailab/v1/chat/completions"
     row.api_key_encrypted = encrypt_secret(api_key)
     row.api_url = (request.api_url or "").strip() or default_api_url
     row.gateway_name = gateway.name
@@ -1887,6 +1906,13 @@ def _current_month() -> str:
     return utc_now().strftime("%Y-%m")
 
 
+def _subject_used_amount(subj: dict[str, Any]) -> int | None:
+    """从 subjects 列表项提取用量：字段缺失返回 None（无法判定，保持快照原值），
+    字段存在（含 0，即真实重置/未使用）返回数值。"""
+    raw = subj.get("usedAmount")
+    return int(raw) if raw is not None else None
+
+
 def _upsert_usage_snapshot(
     db: Session,
     tenant_id: str,
@@ -1899,21 +1925,24 @@ def _upsert_usage_snapshot(
     quota_rule_name: str | None,
     quota_limit: int,
     quota_period: str | None,
-    used_amount: int,
+    used_amount: int | None,
 ) -> None:
-    """把一次实时用量写入快照表（幂等 upsert）。
+    """把一次实时用量写入快照表（幂等 upsert，含月内重置归档）。
 
-    写入语义按规则周期区分：
-    - month 粒度（含周期缺失的存量行）：used_amount 取较大值（月内用量单调
-      递增，防云端偶发低值/查询失败回退导致快照回退）；
-    - day / week 粒度：云端周期会重置（日清零/周清零），used_amount 直接采用
-      云端新值，否则重置后的真实低值会被 max 护栏永久挡在快照外（表现为
-      「阿里云数据已重置，配额页还显示旧用量」）。
+    写入语义：
+    - used_amount 传数值：以云端为准更新当前窗口值。若新值 < 本地当前窗口值，
+      判定配额窗口被重置（云端手动重置/窗口对齐变更等）：旧窗口累计归档进
+      archived_used_amount（冻结，=「快照1」），云端新值成为当前窗口
+      used_amount（=「快照2」）；展示层取两者之和 = 本自然月累计使用量。
+      注意两条链路（ListSubjects / 按主体 GetUsage）短暂不一致可能造成误判
+      归档——展示总量只会轻微偏高且随后续轮询收敛，可接受。
+    - used_amount 传 None：本次云端响应未携带用量字段，无法判定——已有行
+      保持原值仅更新元数据，新行落 0。个人/管理员链路在查询失败时根本不
+      调本函数（回退读快照），所以正常路径只会有「成功读到值」或「响应缺
+      字段」两种形态。
     """
     if not consumer_id or not quota_rule_id:
         return
-    period = (quota_period or "").lower()
-    monotonic = period not in ("day", "week")
     row = db.exec(
         select(ApiKeyUsageSnapshot).where(
             ApiKeyUsageSnapshot.tenant_id == tenant_id,
@@ -1939,9 +1968,17 @@ def _upsert_usage_snapshot(
             )
         )
     else:
-        new_used = int(used_amount or 0)
-        # month 粒度取较大值防回退；day/week 粒度以云端为准（周期重置即回落）
-        row.used_amount = max(int(row.used_amount or 0), new_used) if monotonic else new_used
+        if used_amount is not None:
+            new_used = int(used_amount or 0)
+            current_used = int(row.used_amount or 0)
+            if new_used < current_used:
+                # 云端低于本地当前窗口值 → 窗口被重置：旧值归档冻结，新值起算
+                row.archived_used_amount = (
+                    int(row.archived_used_amount or 0) + current_used
+                )
+                row.reset_count = int(getattr(row, "reset_count", 0) or 0) + 1
+            row.used_amount = new_used
+        # None = 响应缺用量字段无法判定，保持原值
         row.consumer_name = consumer_name or row.consumer_name
         row.quota_rule_name = quota_rule_name or row.quota_rule_name
         row.quota_limit = int(quota_limit or row.quota_limit or 0)
@@ -1952,8 +1989,42 @@ def _upsert_usage_snapshot(
         db.add(row)
 
 
+def _snapshot_row_current_month_visible(
+    snap: ApiKeyUsageSnapshot,
+    rules_by_external_id: dict[str, ApiKeyQuotaRule],
+    live_subject_ids_by_rule: dict[str, set[str]],
+) -> bool:
+    """当月快照行是否仍可信、可展示。
+
+    实时主体查询（ListQuotaRuleSubjects）返回该规则当前挂载的主体；不在
+    列表里的快照行已无云端主体在更新——典型如组粒度规则切换前按消费者
+    cs- 写入的行、已从规则解绑的消费者——它们永不更新，会以旧值出现在
+    管理员用量列表（表现为「云端已重置/已换主体，配额页还是旧数据」）。
+
+    保留情形：规则已删除（历史数据）、主体列表查询失败（无法判定，宁旧
+    勿错删）、行主体在当前云端主体列表中（本次请求刚用实时值 upsert 过）。
+    其余行（解绑残留、组粒度切换前的旧主体行等）当月一律过滤。
+    """
+
+    rule = rules_by_external_id.get(snap.quota_rule_id or "")
+    if rule is None:
+        return True
+    live_ids = live_subject_ids_by_rule.get(snap.quota_rule_id or "")
+    if live_ids is None:
+        return True
+    # 主体列表查询成功：仅「仍在云端主体列表中」的行可信（本次请求刚用
+    # 实时值 upsert 过），其余（解绑残留/换主体前旧行）一律过滤
+    return (snap.consumer_id or "") in live_ids
+
+
 def _summarize_snapshot_rows(rows: list[ApiKeyUsageSnapshot]) -> list[dict[str, Any]]:
-    """把快照行按消费者聚合：quota_limit 求和（换规则叠加）、used_amount 求和。"""
+    """把快照行按消费者聚合：用量双口径求和、quota_limit 按窗口数叠加。
+
+    - quota_limit：换规则叠加；重置过的行按 quota_limit × (1 + reset_count)
+      叠加（月内每个窗口都有各自完整的配额总量）；
+    - used_amount：本自然月累计 = 当前窗口 + 月内重置归档（archived_used_amount）；
+    - current_used_amount：当前配额窗口用量（重置检测的「快照2」）。
+    """
     merged: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for snap in rows:
@@ -1970,11 +2041,17 @@ def _summarize_snapshot_rows(rows: list[ApiKeyUsageSnapshot]) -> list[dict[str, 
                 "quota_rule_ids": [snap.quota_rule_id] if snap.quota_rule_id else [],
                 "quota_rule_names": [snap.quota_rule_name] if snap.quota_rule_name else [],
                 "used_amount": 0,
+                "current_used_amount": 0,
             }
             merged[key] = entry
             order.append(key)
-        entry["quota_limit"] += int(snap.quota_limit or 0)
-        entry["used_amount"] += int(snap.used_amount or 0)
+        entry["quota_limit"] += int(snap.quota_limit or 0) * (
+            1 + int(getattr(snap, "reset_count", 0) or 0)
+        )
+        archived = int(getattr(snap, "archived_used_amount", 0) or 0)
+        window_used = int(snap.used_amount or 0)
+        entry["used_amount"] += window_used + archived
+        entry["current_used_amount"] += window_used
         if snap.quota_period and not entry["quota_period"]:
             entry["quota_period"] = snap.quota_period
         if snap.quota_rule_id and snap.quota_rule_id not in entry["quota_rule_ids"]:
@@ -2022,7 +2099,24 @@ def list_usage(
     ensure_tenant_admin(tenant_id, current_user)
     target_month = (_coerce_str(month) or _current_month()).strip()
     current_month = _current_month()
-    is_current_month = target_month >= current_month
+    # 仅「正好是当前月」才实时回源阿里云并写快照；未来月份直接返回空
+    # （此前 target_month >= current_month 把 10 月也当当月，云端实时值被
+    # 错误 upsert 成未来月快照，出现「10 月能查看且数据错乱」）
+    is_current_month = target_month == current_month
+    if target_month > current_month:
+        return ApiKeyApplicationUsageRead(
+            month=target_month,
+            summary=ApiKeyUsageSummary(
+                allocated_users=0,
+                total_quota=0,
+                total_used=0,
+                total_current_used=0,
+                avg_usage_rate=0.0,
+                high_watermark_users=0,
+                low_watermark_users=0,
+            ),
+            items=[],
+        )
 
     if is_current_month:
         # 仅当月查询时同步消费者（历史月不需要，避免多余阿里云调用）
@@ -2048,11 +2142,19 @@ def list_usage(
     #   规则限额与用量。以「组」为主体落一条快照（配额/用量只计一次，
     #   避免 N 个成员重复计数）；个人面板 /mine/usage 会把组用量映射给成员。
     subject_usage: dict[str, tuple[ApiKeyQuotaRule, dict[str, Any]]] = {}
-    if is_current_month and client:
-        rule_rows = db.exec(
+    # 当月实时主体 ID 集（按规则）：判定快照行是否仍有云端主体在更新
+    live_subject_ids_by_rule: dict[str, set[str]] = {}
+    # 规则映射当月无条件加载（不依赖云端可用性）：实时主体查询与
+    # 快照行粒度一致性过滤都要用
+    rules_by_external_id: dict[str, ApiKeyQuotaRule] = {}
+    if is_current_month:
+        for rule in db.exec(
             select(ApiKeyQuotaRule).where(ApiKeyQuotaRule.tenant_id == tenant_id)
-        ).all()
-        for rule in rule_rows:
+        ).all():
+            if rule.external_rule_id:
+                rules_by_external_id[rule.external_rule_id] = rule
+    if is_current_month and client:
+        for rule in rules_by_external_id.values():
             if not rule.external_rule_id:
                 continue
             # 规则主体列表短 TTL 缓存（JSON dict 列表，与云端结构一致）
@@ -2067,6 +2169,13 @@ def list_usage(
                 except (AliyunApigError, RuntimeError, ValueError):
                     continue
                 set_json(subjects_key, subjects)
+            if not isinstance(subjects, list):
+                continue
+            live_subject_ids_by_rule[rule.external_rule_id] = {
+                str(subj.get("id") or "")
+                for subj in subjects
+                if isinstance(subj, dict) and subj.get("id")
+            }
             for subj in subjects if isinstance(subjects, list) else []:
                 sid = subj.get("id") or ""
                 if sid:
@@ -2108,7 +2217,7 @@ def list_usage(
                 quota_rule_name=rule.name,
                 quota_limit=int(rule.quota_limit or 0),
                 quota_period=rule.period_type,
-                used_amount=int(subj.get("usedAmount") or 0),
+                used_amount=_subject_used_amount(subj),
             )
         # 组粒度主体（subjectType=consumer_group）：组共享规则限额与用量，以组
         # 为主体落一条快照，避免按组内每个消费者重复计配额；行内不与消费者行混淆
@@ -2127,7 +2236,7 @@ def list_usage(
                 quota_rule_name=rule.name,
                 quota_limit=int(rule.quota_limit or 0),
                 quota_period=rule.period_type,
-                used_amount=int(subj.get("usedAmount") or 0),
+                used_amount=_subject_used_amount(subj),
             )
         db.commit()
         db.expire_all()
@@ -2139,12 +2248,24 @@ def list_usage(
         ).all()
 
     # 按消费者聚合快照行（quota_limit 求和 → 换规则叠加，used_amount 求和）
+    if is_current_month:
+        # 过滤已无云端主体在更新的存量行（组粒度切换前的 cs- 行、已解绑
+        # 消费者的行等）——它们永不更新，会以旧值展示「数据还是旧的」。
+        # 规则已删除/主体列表查询失败的行保留（历史数据 / 无法判定）。
+        snap_rows = [
+            row
+            for row in snap_rows
+            if _snapshot_row_current_month_visible(
+                row, rules_by_external_id, live_subject_ids_by_rule
+            )
+        ]
     merged_by_consumer = _summarize_snapshot_rows(list(snap_rows))
     merged_map = {m["consumer_id"]: m for m in merged_by_consumer}
 
     items: list[ApiKeyApplicationUsageItem] = []
     total_quota = 0
     total_used = 0
+    total_current_used = 0
     high_count = 0
     low_count = 0
 
@@ -2175,16 +2296,19 @@ def list_usage(
         m = merged_map.get(cid)
         if m:
             quota_limit = int(m["quota_limit"])
-            used_amount = int(m["used_amount"])
+            used_amount = int(m["used_amount"])  # 本自然月累计（含归档）
+            current_used = int(m["current_used_amount"])  # 当前窗口
             quota_period = m["quota_period"]
             rule_names = m["quota_rule_names"]
         else:
             rule, subj = subject_usage.get(cid, (None, {}))
             quota_limit = int(rule.quota_limit or 0) if rule else 0
-            used_amount = int(subj.get("usedAmount") or 0)
+            current_used = int(subj.get("usedAmount") or 0)
+            used_amount = current_used
             quota_period = rule.period_type if rule else None
             rule_names = [rule.name] if rule else []
 
+        # 使用率 = 本月累计已用 / 有效配额总量（quota_limit × (1+重置次数) 求和）
         usage_rate = (used_amount / quota_limit) if quota_limit > 0 else 0.0
         suggestion = _usage_suggestion(usage_rate)
         if usage_rate >= 0.9:
@@ -2194,6 +2318,7 @@ def list_usage(
 
         total_quota += quota_limit
         total_used += used_amount
+        total_current_used += current_used
 
         items.append(
             ApiKeyApplicationUsageItem(
@@ -2210,12 +2335,15 @@ def list_usage(
                 quota_period=quota_period,
                 quota_rule_id=", ".join(rule_names) or None,
                 used_amount=used_amount,
+                current_used_amount=current_used,
+                archived_used_amount=used_amount - current_used,
                 usage_rate=round(usage_rate, 4),
                 suggestion=suggestion,
             )
         )
 
     allocated_users = len(items)
+    # 平均使用率同口径：累计已用合计 / 有效配额合计
     avg_usage_rate = (total_used / total_quota) if total_quota > 0 else 0.0
 
     return ApiKeyApplicationUsageRead(
@@ -2224,6 +2352,7 @@ def list_usage(
             allocated_users=allocated_users,
             total_quota=total_quota,
             total_used=total_used,
+            total_current_used=total_current_used,
             avg_usage_rate=round(avg_usage_rate, 4),
             high_watermark_users=high_count,
             low_watermark_users=low_count,

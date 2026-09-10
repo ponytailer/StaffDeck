@@ -760,9 +760,12 @@ class ApiKeyUsageSnapshot(SQLModel, table=True):
 
     当月每次查询用量时把实时值 upsert 进快照；历史月份直接读快照，
     不再回源阿里云。中途更换配额规则时按规则维度叠加，换规则不丢当月已用量。
-    写入语义按规则周期区分（_upsert_usage_snapshot）：
-    - month 粒度：used_amount 取较大值（月内单调递增，防回退）；
-    - day / week 粒度：直接采用云端值（云端周期重置即回落）。
+
+    月内累计语义（2026-09-10 定案）：配额窗口可能在自然月内被重置（云端手动
+    重置/窗口对齐变更）。检测到云端值 < 本地当前窗口值时，旧窗口累计归档进
+    archived_used_amount（冻结不再变动，=「快照1」），云端新值作为当前窗口
+    used_amount（=「快照2」，之后持续更新）。展示值 = 两者之和 = 本自然月
+    累计使用量；未发生过重置时 archived 恒为 0，行为与单快照一致。
     """
 
     __tablename__ = "api_key_usage_snapshots"
@@ -788,7 +791,9 @@ class ApiKeyUsageSnapshot(SQLModel, table=True):
     quota_rule_name: Optional[str] = None
     quota_limit: int = 0
     quota_period: Optional[str] = None  # day / week / month
-    used_amount: int = 0
+    used_amount: int = 0  # 当前配额窗口用量（「快照2」，重置后从云端新值起算）
+    archived_used_amount: int = 0  # 月内窗口重置前的累计用量（「快照1」，冻结）
+    reset_count: int = 0  # 月内窗口重置次数；本行有效总配额 = quota_limit × (1 + reset_count)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

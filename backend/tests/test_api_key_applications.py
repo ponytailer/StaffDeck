@@ -44,6 +44,11 @@ def _force_aigw_mock(monkeypatch):
 
     monkeypatch.setattr(aigw_config, "USE_MOCK", True)
     monkeypatch.setattr(aigw_client, "USE_MOCK", True)
+    # 隔离真实 Redis 缓存/节流：subjects 短 TTL 缓存会在同 gateway/rule id 的
+    # 测试间串数据（30s TTL > 整个文件运行时长），导致跨用例污染
+    monkeypatch.setattr(apk, "get_json", lambda key: None)
+    monkeypatch.setattr(apk, "set_json", lambda key, value, ttl_seconds=None: None)
+    monkeypatch.setattr(apk, "acquire_sync_throttle", lambda key: False)
 
 
 TENANT = "tenant_test_apk"
@@ -1724,8 +1729,12 @@ def _snapshot(session, month, consumer_id, rule, used, period="month"):
     return row
 
 
-def test_snapshot_month_period_keeps_monotonic_guard():
-    """month 粒度：云端偶发低值不回退快照（月内单调递增语义保持）。"""
+def test_snapshot_month_period_accepts_cloud_reset():
+    """month 粒度：云端窗口重置（usedAmount 回落）→ 旧值归档冻结、新值起算。
+
+    回归：此前 month 粒度的 max 单调护栏把重置前的旧值永久锁在快照里
+    （实测 5668 vs 云端 4），表现为「云端已重置，管理员配额页还是旧数据」。
+    """
     session = _make_session()
     _, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
     month = "2026-09"
@@ -1741,7 +1750,77 @@ def test_snapshot_month_period_keeps_monotonic_guard():
     row = session.exec(
         select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-a")
     ).first()
-    assert row.used_amount == 800
+    assert row.used_amount == 50
+    assert row.archived_used_amount == 800
+
+
+def test_snapshot_reset_accumulates_across_multiple_resets():
+    """多次重置：归档累计叠加（快照1 之和），当前窗口始终为最新云端值。"""
+    session = _make_session()
+    _, rule = _make_group_rule(session, quota_limit=10000, period_type="month")
+    month = "2026-09"
+    _snapshot(session, month, "cs-m", rule, used=5668, period="month")
+
+    # 第一次重置：5668 → 4
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-m",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=10000, quota_period="month", used_amount=4,
+    )
+    # 窗口内正常增长：4 → 10
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-m",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=10000, quota_period="month", used_amount=10,
+    )
+    # 第二次重置：10 → 2
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-m",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=10000, quota_period="month", used_amount=2,
+    )
+    session.commit()
+    row = session.exec(
+        select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-m")
+    ).first()
+    assert row.used_amount == 2
+    assert row.archived_used_amount == 5668 + 10  # 5668 + 4..10 段 + 10
+    assert row.reset_count == 2
+    # 本月累计 = 快照1 + 快照2；配额总量 = 每次（每个窗口）总量之和
+    summarized = apk._summarize_snapshot_rows([row])
+    assert summarized[0]["used_amount"] == 5668 + 10 + 2
+    assert summarized[0]["quota_limit"] == 10000 * 3  # 原窗口 + 2 次重置后的新窗口
+    assert summarized[0]["current_used_amount"] == 2
+
+
+def test_snapshot_no_reset_keeps_single_window():
+    """未重置（云端值 >= 本地值）：单窗口原地更新，归档恒为 0。"""
+    session = _make_session()
+    _, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
+    month = "2026-09"
+    _snapshot(session, month, "cs-n", rule, used=100, period="month")
+
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-n",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=2000, quota_period="month", used_amount=150,
+    )
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-n",
+        consumer_name="c", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=2000, quota_period="month", used_amount=150,  # 持平不算重置
+    )
+    session.commit()
+    row = session.exec(
+        select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-n")
+    ).first()
+    assert row.used_amount == 150
+    assert row.archived_used_amount == 0
 
 
 def test_snapshot_day_period_accepts_cloud_reset():
@@ -1767,6 +1846,7 @@ def test_snapshot_day_period_accepts_cloud_reset():
         select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-b")
     ).first()
     assert row.used_amount == 60
+    assert row.archived_used_amount == 480  # 重置段同样归档，月累计不丢
 
 
 def test_snapshot_week_period_accepts_cloud_reset():
@@ -1809,8 +1889,8 @@ def test_snapshot_day_period_still_advances_when_cloud_grows():
     assert row.used_amount == 120
 
 
-def test_snapshot_missing_period_defaults_to_monotonic():
-    """quota_period 缺失时保守取较大值（与旧行为一致，避免误清零）。"""
+def test_snapshot_missing_period_takes_cloud_value():
+    """quota_period 缺失：云端成功返回的值同样优先（重置/低值都采信）。"""
     session = _make_session()
     _, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
     month = "2026-09"
@@ -1826,4 +1906,123 @@ def test_snapshot_missing_period_defaults_to_monotonic():
     row = session.exec(
         select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-e")
     ).first()
+    assert row.used_amount == 10
+
+
+def test_snapshot_missing_used_amount_keeps_existing_value():
+    """云端响应缺 usedAmount 字段（used_amount=None）：已有行保持原值只更新元数据。"""
+    session = _make_session()
+    _, rule = _make_group_rule(session, quota_limit=2000, period_type="month")
+    month = "2026-09"
+    _snapshot(session, month, "cs-f", rule, used=800, period="month")
+
+    apk._upsert_usage_snapshot(
+        session, tenant_id=TENANT, month=month, consumer_id="cs-f",
+        consumer_name="c-renamed", gateway_id="gw-test123", gateway_name="主力网关",
+        quota_rule_id=rule.external_rule_id or "", quota_rule_name=rule.name,
+        quota_limit=3000, quota_period="month", used_amount=None,
+    )
+    session.commit()
+    row = session.exec(
+        select(apk.ApiKeyUsageSnapshot).where(apk.ApiKeyUsageSnapshot.consumer_id == "cs-f")
+    ).first()
     assert row.used_amount == 800
+    assert row.consumer_name == "c-renamed"
+    assert row.quota_limit == 3000
+
+
+def test_subject_used_amount_missing_field_returns_none():
+    """_subject_used_amount：字段缺失 → None；0 → 0（真实重置可落库）。"""
+    assert apk._subject_used_amount({"id": "cs-x"}) is None
+    assert apk._subject_used_amount({"id": "cs-x", "usedAmount": 0}) == 0
+    assert apk._subject_used_amount({"id": "cs-x", "usedAmount": 43}) == 43
+
+
+def test_usage_filters_stale_consumer_rows_under_group_rule():
+    """组粒度规则切换前按消费者写入的 cs- 快照行已无云端主体更新，
+    当月管理员用量列表过滤掉，不再展示旧值（云端重置/换主体后仍显示旧数据）。"""
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=3000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+    _register_group_scoped_rule(session, fake, group, rule, group_used=900)
+    # 本地规则行：同步回填后的组粒度
+    rule.subject_type = "consumer_group"
+    session.add(rule)
+
+    for cid, name in (("cs-a", "成员A"), ("cs-b", "成员B")):
+        session.add(
+            ApiKeyConsumer(
+                tenant_id=TENANT,
+                name=name,
+                gateway_id=rule.gateway_id,
+                gateway_name=rule.gateway_name,
+                external_consumer_id=cid,
+                external_consumer_group_id=group.id,
+                consumer_group_name=group.name,
+                status="enabled",
+                enable=True,
+            )
+        )
+    # 切组粒度前的存量快照行（旧值 500，云端已无该主体）
+    month = apk._current_month()
+    _snapshot(session, month, "cs-a", rule, used=500)
+    _snapshot(session, month, "cs-b", rule, used=500)
+    session.commit()
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        usage = list_usage(tenant_id=TENANT, db=session, current_user=admin)
+
+    used_values = [item.used_amount for item in usage.items]
+    assert 500 not in used_values
+    # 组行展示云端实时值；成员行无独立用量（0/0，组配额只计一次语义不变）
+    group_item = next(item for item in usage.items if item.consumer_id == group.id)
+    assert group_item.used_amount == 900
+    assert group_item.quota_limit == 3000
+    member_items = [item for item in usage.items if item.consumer_id in ("cs-a", "cs-b")]
+    for m in member_items:
+        assert m.used_amount == 0
+        assert m.quota_limit == 0
+    assert usage.summary.total_used == 900
+
+
+def test_usage_filters_detached_consumer_row_current_month_only():
+    """消费者粒度规则：已从规则解绑的消费者快照行当月过滤；历史月保留。"""
+    session = _make_session()
+    admin = _admin(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=2000, period_type="day")
+    _register_cloud_refs(fake, group, rule)
+    # 仅 cs-a 仍挂在该规则上（cs-old 已解绑）
+    fake.attached.append({"gateway_id": rule.gateway_id, "rule_id": rule.external_rule_id, "consumer_id": "cs-a"})
+    for cid in ("cs-a", "cs-old"):
+        session.add(
+            ApiKeyConsumer(
+                tenant_id=TENANT,
+                name=cid,
+                gateway_id=rule.gateway_id,
+                gateway_name=rule.gateway_name,
+                external_consumer_id=cid,
+                status="enabled",
+                enable=True,
+            )
+        )
+    month = apk._current_month()
+    _snapshot(session, month, "cs-a", rule, used=100, period="day")
+    _snapshot(session, month, "cs-old", rule, used=500, period="day")
+    _snapshot(session, "2020-01", "cs-old", rule, used=500, period="day")
+    session.commit()
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        current = list_usage(tenant_id=TENANT, db=session, current_user=admin)
+        history = list_usage(tenant_id=TENANT, month="2020-01", db=session, current_user=admin)
+
+    current_by_id = {item.consumer_id: item for item in current.items}
+    # cs-a 仍挂规则：展示实时值（fake subjects usedAmount=500）
+    assert current_by_id["cs-a"].used_amount == 500
+    # cs-old 已解绑：当月不展示旧值 500
+    assert current_by_id["cs-old"].used_amount == 0
+    # 历史月不过滤：解绑前的用量保留
+    history_by_id = {item.consumer_id: item for item in history.items}
+    assert history_by_id["cs-old"].used_amount == 500

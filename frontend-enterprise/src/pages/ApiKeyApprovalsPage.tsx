@@ -137,6 +137,7 @@ type UsageSummary = {
   allocated_users: number;
   total_quota: number;
   total_used: number;
+  total_current_used: number;
   avg_usage_rate: number;
   high_watermark_users: number;
   low_watermark_users: number;
@@ -156,6 +157,8 @@ type UsageItem = {
   quota_period: string | null;
   quota_rule_id: string | null;
   used_amount: number;
+  current_used_amount: number;
+  archived_used_amount: number;
   usage_rate: number;
   suggestion: string;
 };
@@ -1297,12 +1300,22 @@ export default function ApiKeyApprovalsPage({
     {
       key: 'used',
       title: '已用',
-      width: 90,
-      render: (row) => (
-        <span className="text-[13px] font-medium text-[#18181a]">
-          {row.used_amount.toLocaleString('zh-CN')}
-        </span>
-      ),
+      width: 110,
+      render: (row) => {
+        const archived = row.archived_used_amount ?? 0;
+        return (
+          <div className="flex flex-col gap-[2px]">
+            <span className="text-[13px] font-medium text-[#18181a]">
+              {row.used_amount.toLocaleString('zh-CN')}
+            </span>
+            {archived > 0 && (
+              <span className="text-[11px] text-[#858b9c] tabular-nums">
+                当前窗口 {(row.current_used_amount ?? 0).toLocaleString('zh-CN')} · 重置前 {archived.toLocaleString('zh-CN')}
+              </span>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'rate',
@@ -1538,8 +1551,8 @@ export default function ApiKeyApprovalsPage({
               <div className="grid grid-cols-2 gap-[10px] px-[12px] md:grid-cols-3 lg:grid-cols-6">
                 {[
                   { label: '已分配用户', value: usage.summary.allocated_users },
-                  { label: '配额总额', value: usage.summary.total_quota.toLocaleString('zh-CN') },
-                  { label: '已用总额', value: usage.summary.total_used.toLocaleString('zh-CN') },
+                  { label: '配额总额（含重置窗口）', value: usage.summary.total_quota.toLocaleString('zh-CN') },
+                  { label: '已用总额（本月累计）', value: usage.summary.total_used.toLocaleString('zh-CN') },
                   {
                     label: '平均使用率',
                     value: `${Math.round(usage.summary.avg_usage_rate * 100)}%`,
@@ -1577,6 +1590,7 @@ export default function ApiKeyApprovalsPage({
                 <span className="text-[13px] font-medium text-[#18181a] tabular-nums">{usageMonth}</span>
                 <button
                   type="button"
+                  disabled={usageMonth >= new Date().toISOString().slice(0, 7)}
                   onClick={() => {
                     const d = new Date(usageMonth + '-01');
                     d.setMonth(d.getMonth() + 1);
@@ -1584,7 +1598,7 @@ export default function ApiKeyApprovalsPage({
                     setUsageMonth(m);
                     void loadUsage(m);
                   }}
-                  className="grid size-[28px] place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-[#757f9c] hover:bg-[#f6f6f6]"
+                  className="grid size-[28px] place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-[#757f9c] hover:bg-[#f6f6f6] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white"
                 >
                   <ChevronRight className="size-[14px]" />
                 </button>

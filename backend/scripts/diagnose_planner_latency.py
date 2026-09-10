@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import text  # noqa: E402
 
 from app.db.database import engine  # noqa: E402
+from app.llm.output_policy import OPERATION_TIMEOUT_SECONDS  # noqa: E402
 
 
 def as_payload(value: object) -> dict:
@@ -261,6 +262,20 @@ def _check_route_cache_support() -> None:
             for ts, chars, dur in task_action_chars[:5]:
                 flag = "  ← 大 payload" if chars > 50_000 else ""
                 print(f"    [{ts}] payload_chars={chars} dur={dur / 1000:.1f}s{flag}")
+            # 超时收紧部署判定：harness.task_action 收紧为 90s，
+            # 单次 dur 超过上限说明该环境未部署/未重启新代码
+            timeout_cap = OPERATION_TIMEOUT_SECONDS.get("harness.task_action")
+            if timeout_cap:
+                over = [d for _, _, d in task_action_chars if d > timeout_cap * 1000]
+                if over:
+                    print(
+                        f"  [!] {len(over)} 次 task_action dur 超过 {timeout_cap:.0f}s 收紧上限"
+                        " → 交互超时收紧代码未部署或进程未重启"
+                    )
+                else:
+                    print(
+                        f"  [OK] 交互超时收紧生效（全部 dur ≤ {timeout_cap:.0f}s 上限）"
+                    )
         else:
             print("  task_action payload：无 payload_chars → 观测代码未部署")
     except Exception as exc:  # noqa: BLE001
@@ -381,7 +396,7 @@ def main() -> None:
                 FROM agent_events
                 WHERE event_type = 'user_message_received'
                 ORDER BY created_at DESC
-                LIMIT 4
+                LIMIT 1
                 """
             )
         ).fetchall()
