@@ -33,8 +33,11 @@ from app.observability.spans import llm_operation
 from app.llm import client as llm_client_module
 from app.llm.output_policy import (
     OPERATION_JSON_REPAIR_ATTEMPTS,
+    OPERATION_TIMEOUT_SECONDS,
     operation_json_repair_attempts,
+    operation_timeout_seconds,
 )
+from app.llm.protocol_drivers import ChatCompletionsDriver
 
 
 def _test_engine() -> any:
@@ -114,6 +117,76 @@ def _task_requirement() -> TaskRequirement:
         ],
         capability_manifest=CapabilityManifest(available=[descriptor]),
     )
+
+
+# ---------------------------------------------------------------------------
+# 交互式操作超时收紧（网关挂死时快速失败，而非阻塞整轮 600s）
+# ---------------------------------------------------------------------------
+
+
+def test_operation_timeout_policy() -> None:
+    assert OPERATION_TIMEOUT_SECONDS["harness.task_action"] == 90.0
+    assert OPERATION_TIMEOUT_SECONDS["turn_planner.plan"] == 90.0
+    assert OPERATION_TIMEOUT_SECONDS["sop.slot_extraction"] == 30.0
+    # 未配置的操作（生成类/流式回复）保持模型级默认
+    assert operation_timeout_seconds("response.generate", 600.0) == 600.0
+    assert operation_timeout_seconds(None, 600.0) == 600.0
+    assert operation_timeout_seconds("harness.task_action", 600.0) == 90.0
+
+
+def test_generate_text_sets_interactive_request_timeout(monkeypatch) -> None:
+    """交互式操作的下发请求携带 _request_timeout（驱动层转 SDK per-request timeout）。"""
+    calls: list[dict] = []
+    _patch_client_driver(monkeypatch, calls)
+
+    client = llm_client_module.LLMClient(_model_config())
+    with pytest.raises(llm_client_module.LLMError):
+        with llm_operation("harness.task_action"):
+            client.generate_json("系统提示", {"task_requirement": {}})
+
+    assert calls and calls[0]["_request_timeout"] == 90.0
+
+
+def test_generate_text_keeps_default_timeout_for_generative(monkeypatch) -> None:
+    """生成类操作不收紧：_request_timeout 等于模型级默认（桩配置为 60s）。"""
+    calls: list[dict] = []
+    _patch_client_driver(monkeypatch, calls)
+
+    client = llm_client_module.LLMClient(_model_config())
+    with pytest.raises(llm_client_module.LLMError):
+        with llm_operation("response.generate"):
+            client.generate_json("系统提示", {"x": 1})
+
+    assert calls and calls[0]["_request_timeout"] == client.timeout_seconds == 60.0
+
+
+def test_chat_completions_driver_passes_request_timeout() -> None:
+    """驱动层把 _request_timeout 转为 SDK per-request timeout，且不进入 payload。"""
+    captured: dict = {}
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+            )
+
+    driver = ChatCompletionsDriver(
+        client=SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
+    )
+    request = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hi"}],
+        "_request_timeout": 30.0,
+    }
+    driver.complete(request)
+    assert captured.get("timeout") == 30.0
+    # 下划线键被剥离，不会透传给厂商
+    assert "_request_timeout" not in captured
+
+    captured.clear()
+    driver.complete({"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+    assert "timeout" not in captured
 
 
 # ---------------------------------------------------------------------------

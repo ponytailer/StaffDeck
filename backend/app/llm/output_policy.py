@@ -24,6 +24,29 @@ OPERATION_JSON_REPAIR_ATTEMPTS: dict[str, int] = {
 }
 
 
+# Interactive control-plane calls sit on the chat turn's critical path. When
+# the upstream gateway hangs, a call would otherwise block for the full model
+# timeout (default 600s) before the caller's fallback can engage — observed as
+# an 8+ minute silent stall (2026-09-09). Clamp each interactive operation to a
+# bounded ceiling; every one of these has a deterministic/LLM fallback.
+OPERATION_TIMEOUT_SECONDS: dict[str, float] = {
+    "turn_planner.plan": 90.0,
+    "harness.task_action": 90.0,
+    "knowledge.document_route": 60.0,
+    "knowledge.bucket_route": 60.0,
+    "sop.slot_extraction": 30.0,
+    "session.title": 30.0,
+    "memory.capture": 30.0,
+}
+
+
+def operation_timeout_seconds(operation: str | None, default_seconds: float) -> float:
+    configured = OPERATION_TIMEOUT_SECONDS.get(str(operation or ""))
+    if configured is None:
+        return max(1.0, float(default_seconds))
+    return max(1.0, float(configured))
+
+
 def operation_json_repair_attempts(operation: str, default_attempts: int) -> int:
     configured = OPERATION_JSON_REPAIR_ATTEMPTS.get(operation)
     return max(0, int(default_attempts if configured is None else configured))

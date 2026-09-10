@@ -135,12 +135,18 @@ class ChatCompletionsDriver:
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
         payload = _wire_request(request)
+        # per-request timeout（交互操作收紧用；键以下划线开头不会进入 payload）
+        request_timeout = request.get("_request_timeout")
         _diag_log_outgoing(
             "chat.completions",
             _sdk_endpoint_label(self.client, "/chat/completions"),
             payload,
         )
         try:
+            if request_timeout is not None:
+                return self.client.chat.completions.create(
+                    **payload, timeout=request_timeout
+                )
             return self.client.chat.completions.create(**payload)
         except Exception as exc:
             error = _protocol_call_error(exc)
@@ -195,7 +201,13 @@ class OpenAIResponsesDriver:
             payload,
         )
         try:
-            response = self.client.responses.create(**_responses_request(request))
+            request_timeout = request.get("_request_timeout")
+            if request_timeout is not None:
+                response = self.client.responses.create(
+                    **_responses_request(request), timeout=request_timeout
+                )
+            else:
+                response = self.client.responses.create(**_responses_request(request))
         except ProtocolCallError as exc:
             _diag_log_error("responses", exc)
             raise

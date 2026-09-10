@@ -25,6 +25,7 @@ from app.llm.output_policy import (
     operation_empty_response_retries,
     operation_json_repair_attempts,
     operation_output_tokens,
+    operation_timeout_seconds,
 )
 from app.llm.protocol_drivers import (
     AnthropicMessagesDriver,
@@ -249,6 +250,13 @@ class LLMClient:
                 "temperature": self.temperature,
                 "max_tokens": max_output_tokens,
             }
+            # 交互式控制面调用按 output_policy 收紧超时（网关挂死时快速失败
+            # 进入调用方兜底，而不是阻塞整轮对话直到模型级 600s 超时）。
+            # 下划线前缀键会被 _wire_request 剥离，不会进入厂商 payload；
+            # 仅 OpenAI 系驱动读取并转为 SDK per-request timeout。
+            request["_request_timeout"] = operation_timeout_seconds(
+                operation, self.timeout_seconds
+            )
             if cancellation is not None:
                 request["_cancellation"] = cancellation
             if response_format:
