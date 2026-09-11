@@ -62,7 +62,7 @@ export function ConfirmDialog({
         onOpenChange(next);
       }}
     >
-      <AlertDialogContent className="gap-0 overflow-hidden rounded-[16px] p-0">
+      <AlertDialogContent className="w-[calc(100%-2rem)] gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[420px]">
         <div className="flex items-start gap-[8px] px-[16px] pt-[16px] pb-[12px]">
           {leadingIcon}
           <AlertDialogTitle className="min-w-0 flex-1 text-[14px] leading-[normal] font-medium text-[#18181a] [word-break:break-word]">

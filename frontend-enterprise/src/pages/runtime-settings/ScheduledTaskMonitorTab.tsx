@@ -523,23 +523,24 @@ export default function ScheduledTaskMonitorTab() {
 
   return (
     <>
-      {/* 概览统计 */}
-      <div className="mt-[16px] flex flex-wrap items-stretch gap-[20px]" aria-label="任务监控统计">
-        <StatCard label="定时任务" value={overview?.tasks.total ?? '—'} className="basis-[190px]" />
-        <StatCard label="启用中" value={overview?.tasks.active ?? '—'} tone="green" className="basis-[190px]" />
-        <StatCard label="已暂停" value={overview?.tasks.paused ?? '—'} className="basis-[190px]" />
-        <StatCard label="执行中" value={overview?.runs.running ?? '—'} className="basis-[190px]" />
+      {/* 概览统计：6 张卡在宽屏铺满一行（xl），窄屏按 3 列 / 2 列降级，避免最后一张卡被挤成单独一行 */}
+      <div
+        className="mt-[16px] grid grid-cols-2 gap-[20px] sm:grid-cols-3 xl:grid-cols-6"
+        aria-label="任务监控统计"
+      >
+        <StatCard label="定时任务" value={overview?.tasks.total ?? '—'} />
+        <StatCard label="启用中" value={overview?.tasks.active ?? '—'} tone="green" />
+        <StatCard label="已暂停" value={overview?.tasks.paused ?? '—'} />
+        <StatCard label="执行中" value={overview?.runs.running ?? '—'} />
         <StatCard
           label="待处理"
           value={overview?.runs.pending ?? '—'}
           valueClassName={(overview?.runs.pending ?? 0) > 0 ? 'text-[#ff7f00]' : undefined}
-          className="basis-[190px]"
         />
         <StatCard
           label="24h 失败"
           value={overview?.runs.last_24h_failed ?? '—'}
           tone={(overview?.runs.last_24h_failed ?? 0) > 0 ? 'red' : 'default'}
-          className="basis-[190px]"
         />
       </div>
 

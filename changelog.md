@@ -9,7 +9,10 @@
 - **管理端：新增「超级管理员 → 任务监控」** — 侧边栏「运行设置」重命名为「超级管理员」（该页本就仅管理员可见）；页内拆分为「运行设置 / 任务监控」两个 Tab
   - 后端新增 `/api/enterprise/scheduled-task-monitor/{overview,tasks,runs}`（`app/api/scheduled_task_monitor.py`，统一 `require_tenant_admin` 鉴权），概览聚合任务/执行记录计数与 24h 失败，运行时状态来自 `rq_dispatch.runtime_status()`（队列计数 + worker 心跳，Redis 不可用时优雅降级）；列表用批量 JOIN/IN 查询避免逐行回源
   - 前端 `ScheduledTaskMonitorTab.tsx`：6 张指标卡 + 调度运行时面板（rq/Redis 状态、5 个运行时计数、worker 列表与当前任务）+ 全部定时任务表（筛选/搜索/分页，支持立即执行、暂停启用、删除）+ 执行记录表（状态筛选、按任务筛选、查看会话、重新执行），15s 自动刷新可切换
+  - 布局：概览统计由 `flex flex-wrap` + `basis-[190px]`（6 张需 1240px，内容列宽 1030~1240 时第 6 张「24h 失败」被挤到第二行）改为响应式网格：xl 一行 6 列铺满、`sm` 3 列、窄屏 2 列
 - **定时任务：修复 rq worker 启动后自动退出** — worker 复用带 `socket_timeout=1.5` 的连接，而 rq 靠 `BLMOVE` 长阻塞等任务（`dequeue_timeout ≈ 405s`），阻塞读被 socket 读超时打断后 `Worker.work()` 捕获 `TimeoutError` 直接退出（日志：`Redis connection timeout, quitting...`）。现按用途拆分连接：`blocking` 档（worker 出队）不设读超时、交给 rq 自己按 `dequeue_timeout + 10` 兜底，并开 `socket_keepalive` 防长阻塞连接被中间设备判死；`inspect` 档隔离监控只读（rq 构造 `Worker` 会改写连接池超时，避免污染控制面连接）
+- **定时任务：新建保存后回到任务列表** — 原实现照搬工具页（新建后 `replace` 到 `/edit`），但工具编辑页右侧有需要已保存 id 的探测面板、定时任务编辑页没有，照搬只留下副作用。现改为新建成功后 `replace` 回 `/enterprise/scheduled-tasks`（列表按 `updated_at desc`，新任务落在首位可立即确认），提示语区分「已创建 / 已保存」；保留 `replace` 以免浏览历史里留下空的新建表单造成重复创建
+- **前端：修复所有「二次确认」弹窗被拉成全屏宽** — `alert-dialog.tsx` 的 `AlertDialogContent` 只有 `w-full`，限宽的 `data-[size=default]:max-w-xs / sm:max-w-sm` 实测未进产物 CSS → 删除类确认弹窗渲染成整屏宽白条（用户反馈「太吓人」）。`ConfirmDialog` 是全站唯一直接使用该基类的组件（18 处调用：定时任务/知识/SOP/技能/团队/渠道/模型/账号…），已按项目既有惯例补 `w-[calc(100%-2rem)] … sm:max-w-[420px]`（与 `GeneralSkillsPage` 的危险操作弹窗同款），一次修复全站
 - **前端**：消费组管理表移除「网关」「类型」列（`bc6419f`）
 
 ## 2026-09-10

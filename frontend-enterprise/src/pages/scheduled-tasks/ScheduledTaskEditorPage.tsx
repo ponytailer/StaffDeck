@@ -182,13 +182,17 @@ function ScheduledTaskEditorPage({
         isEdit && taskId
           ? await api.put<ScheduledTaskRead>(`/api/enterprise/scheduled-tasks/${taskId}`, payload)
           : await api.post<ScheduledTaskRead>('/api/enterprise/scheduled-tasks', payload);
-      notify.success('定时任务已保存');
       if (!isEdit) {
-        navigate(`/enterprise/scheduled-tasks/${saved.id}/edit`, { replace: true });
-      } else {
-        setTaskMetadata(saved.metadata || {});
-        setValues(taskToFormValues(saved));
+        // 新建后回列表：任务列表按 updated_at 倒序，新任务会排在首位，能立刻确认创建结果。
+        // 用 replace 是为了不在浏览历史里留下一个「新建」表单——否则后退会回到空表单，再点保存就重复建了一条。
+        // （编辑页保留在原页是另一件事：编辑保存后原地刷新表单，不跳转。）
+        notify.success('定时任务已创建');
+        navigate('/enterprise/scheduled-tasks', { replace: true });
+        return;
       }
+      notify.success('定时任务已保存');
+      setTaskMetadata(saved.metadata || {});
+      setValues(taskToFormValues(saved));
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '保存定时任务失败');
     } finally {
