@@ -110,6 +110,8 @@ export const RUN_STATUS_BADGE: Record<string, { tone: BadgeTone; text: string }>
   succeeded: { tone: 'green', text: '成功' },
   failed: { tone: 'red', text: '失败' },
   running: { tone: 'blue', text: '执行中' },
+  queued: { tone: 'gray', text: '排队中' },
+  retrying: { tone: 'orange', text: '重试中' },
   needs_input: { tone: 'orange', text: '待补充信息' },
   incomplete: { tone: 'orange', text: '未完成' },
   skipped: { tone: 'gray', text: '已跳过' },

@@ -1,11 +1,20 @@
 import { SaveOutlined } from '../icons';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Button as UIButton, Card, CardContent, CardHeader, CardTitle, Input, Switch, Textarea, notify } from '@/components/ui';
+import { UnderlineTabs } from '@/components/ui/underline-tabs';
 import { api, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
 import AccountApiKeyDialog from '../components/AccountApiKeyDialog';
 import type { UIConfigRead } from '../types';
 import { BrainCircuit, KeyRound, RotateCcw, ShieldCheck } from 'lucide-react';
+import ScheduledTaskMonitorTab from './runtime-settings/ScheduledTaskMonitorTab';
+
+type AdminTab = 'settings' | 'monitor';
+
+const ADMIN_TABS: { value: AdminTab; label: string }[] = [
+  { value: 'settings', label: '运行设置' },
+  { value: 'monitor', label: '任务监控' },
+];
 
 type UiConfigForm = {
   show_thinking_trace: boolean;
@@ -54,6 +63,7 @@ function formatDateOnly(value: string): string {
 }
 
 export default function RuntimeSettingsPage({ currentUser }: { currentUser: EnterpriseAuthUser }) {
+  const [tab, setTab] = useState<AdminTab>('settings');
   const [form, setForm] = useState<UiConfigForm>(DEFAULT_UI_CONFIG);
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState('');
@@ -148,127 +158,155 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
   return (
     <>
       <div className="page-title" style={{ paddingRight: 0 }}>
-        <div><h3>运行设置</h3><p className="text-[12px] text-muted-foreground">统一影响当前租户下所有数字员工的执行行为。</p></div>
-        <div className="!self-end" style={{ alignSelf: 'flex-end' }}>
-          <UIButton disabled={loading || restarting} onClick={() => void save()}>
-            {restarting ? <RotateCcw className="size-[15px] animate-spin" /> : <SaveOutlined />}
-            {restarting ? '等待应用重启' : '保存设置'}
-          </UIButton>
+        <div>
+          <h3>超级管理员</h3>
+          <p className="text-[12px] text-muted-foreground">
+            {tab === 'settings'
+              ? '统一影响当前租户下所有数字员工的执行行为。'
+              : '查看并干预租户下全部定时任务，以及调度运行时（worker / 队列）健康状态。'}
+          </p>
         </div>
-      </div>
-      <Card className="editor-card settings-card">
-        <CardHeader><CardTitle>执行记录与 Agent Loop</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-[16px]">
-          <SwitchRow label="展示思考状态" checked={form.show_thinking_trace} onChange={(next) => update({ show_thinking_trace: next })} />
-          <SwitchRow label="展示执行技能" checked={form.show_skill_trace} onChange={(next) => update({ show_skill_trace: next })} />
-          <SwitchRow label="展示工具调用" checked={form.show_tool_trace} onChange={(next) => update({ show_tool_trace: next })} />
-          <LabeledField label="反思轮数" hint="设为 0 时关闭反思；每轮允许模型检查当前技能和工具结果。"><Input type="number" min={0} max={5} step={1} value={form.reflection_max_rounds} onChange={(e) => update({ reflection_max_rounds: e.target.value })} /></LabeledField>
-          <LabeledField label="单轮最大动作数" hint="限制一次用户输入内连续决策和工具调用的次数，避免无限循环。"><Input type="number" min={1} max={100} step={1} value={form.agent_loop_max_actions} onChange={(e) => update({ agent_loop_max_actions: e.target.value })} /></LabeledField>
-        </CardContent>
-      </Card>
-      <Card className="editor-card settings-card overflow-hidden">
-        <CardHeader className="border-b border-[#edf0f5] bg-[linear-gradient(110deg,#f8fbff_0%,#ffffff_52%,#f6f9ff_100%)]">
-          <div className="flex flex-wrap items-center justify-between gap-[12px]">
-            <div>
-              <CardTitle className="flex items-center gap-[8px]">
-                <span className="flex size-[28px] items-center justify-center rounded-[9px] bg-[#eaf2ff] text-[#1a71ff]">
-                  <BrainCircuit className="size-[15px]" />
-                </span>
-                对话上下文与自动压缩
-              </CardTitle>
-              <p className="mt-[7px] text-[11px] leading-[17px] text-muted-foreground">
-                租户级即时生效；单员工会话和团队成员任务共享这套参数。
-              </p>
-            </div>
-            <UIButton
-              type="button"
-              variant="outline"
-              className="h-[32px] gap-[6px] text-[11px]"
-              onClick={() => update({
-                context_token_budget: DEFAULT_UI_CONFIG.context_token_budget,
-                context_compaction_trigger_ratio: DEFAULT_UI_CONFIG.context_compaction_trigger_ratio,
-                context_recent_round_limit: DEFAULT_UI_CONFIG.context_recent_round_limit,
-                context_long_summary_token_budget: DEFAULT_UI_CONFIG.context_long_summary_token_budget,
-                context_medium_summary_token_budget: DEFAULT_UI_CONFIG.context_medium_summary_token_budget,
-                context_allowed_roles: DEFAULT_UI_CONFIG.context_allowed_roles,
-                context_long_summary_prefix: DEFAULT_UI_CONFIG.context_long_summary_prefix,
-                context_medium_summary_prefix: DEFAULT_UI_CONFIG.context_medium_summary_prefix,
-              })}
-            >
-              <RotateCcw className="size-[13px]" />
-              恢复上下文默认值
+        {tab === 'settings' && (
+          <div className="!self-end" style={{ alignSelf: 'flex-end' }}>
+            <UIButton disabled={loading || restarting} onClick={() => void save()}>
+              {restarting ? <RotateCcw className="size-[15px] animate-spin" /> : <SaveOutlined />}
+              {restarting ? '等待应用重启' : '保存设置'}
             </UIButton>
           </div>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-[18px] pt-[18px]">
-          <div className="rounded-[11px] border border-[#dce8fb] bg-[#f7faff] px-[13px] py-[11px] text-[11px] leading-[18px] text-[#52637d]">
-            当估算上下文达到预算 × 触发比例时，系统会把较早对话压缩为长期与近期摘要，并保留指定的最近轮次。数值越大，历史保留越完整，但模型输入成本也越高。
-          </div>
-          <div className="grid gap-[14px] md:grid-cols-2">
-            <LabeledField label="上下文 Token 预算" hint="完整会话上下文的目标上限，范围 512–262144。">
-              <Input type="number" min={512} max={262144} step={512} value={form.context_token_budget} onChange={(event) => update({ context_token_budget: event.target.value })} />
-            </LabeledField>
-            <LabeledField label="压缩触发比例" hint="达到预算的这个比例后开始压缩，范围 0.10–0.95。">
-              <Input type="number" min={0.1} max={0.95} step={0.05} value={form.context_compaction_trigger_ratio} onChange={(event) => update({ context_compaction_trigger_ratio: event.target.value })} />
-            </LabeledField>
-            <LabeledField label="保留最近对话轮数" hint="压缩时不进入摘要的最近用户轮次，范围 1–50。">
-              <Input type="number" min={1} max={50} step={1} value={form.context_recent_round_limit} onChange={(event) => update({ context_recent_round_limit: event.target.value })} />
-            </LabeledField>
-            <div className="grid grid-cols-2 gap-[10px]">
-              <LabeledField label="长期摘要预算" hint="Token">
-                <Input type="number" min={128} max={32768} step={128} value={form.context_long_summary_token_budget} onChange={(event) => update({ context_long_summary_token_budget: event.target.value })} />
-              </LabeledField>
-              <LabeledField label="近期摘要预算" hint="Token">
-                <Input type="number" min={128} max={32768} step={128} value={form.context_medium_summary_token_budget} onChange={(event) => update({ context_medium_summary_token_budget: event.target.value })} />
-              </LabeledField>
-            </div>
-          </div>
-          <div className="rounded-[11px] border border-[#e6e9f0] bg-[#fbfbfc] px-[13px] py-[12px]">
-            <p className="text-[12px] font-medium text-[#464c5e]">纳入历史上下文的角色</p>
-            <p className="mt-[3px] text-[11px] leading-[16px] text-muted-foreground">至少保留一种角色；图片只随用户消息进入上下文。</p>
-            <div className="mt-[10px] grid gap-[8px] sm:grid-cols-2">
-              <SwitchRow label="用户消息" checked={form.context_allowed_roles.includes('user')} onChange={(checked) => update({ context_allowed_roles: toggleContextRole(form.context_allowed_roles, 'user', checked) })} />
-              <SwitchRow label="数字员工回复" checked={form.context_allowed_roles.includes('assistant')} onChange={(checked) => update({ context_allowed_roles: toggleContextRole(form.context_allowed_roles, 'assistant', checked) })} />
-            </div>
-          </div>
-          <div className="grid gap-[14px] md:grid-cols-2">
-            <LabeledField label="长期摘要前缀" hint="注入长期摘要消息时使用，最多 200 字。">
-              <Textarea rows={3} maxLength={200} value={form.context_long_summary_prefix} onChange={(event) => update({ context_long_summary_prefix: event.target.value })} />
-            </LabeledField>
-            <LabeledField label="近期摘要前缀" hint="注入近期摘要消息时使用，最多 200 字。">
-              <Textarea rows={3} maxLength={200} value={form.context_medium_summary_prefix} onChange={(event) => update({ context_medium_summary_prefix: event.target.value })} />
-            </LabeledField>
-          </div>
-        </CardContent>
-      </Card>
-      <Card className="editor-card settings-card">
-        <CardHeader><CardTitle className="flex items-center gap-[8px]"><ShieldCheck className="size-[16px]" />执行隔离与文件存储</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-[16px]">
-          <SwitchRow label="启用 SRT 沙盒" checked={form.sandbox_enabled} onChange={(next) => update({ sandbox_enabled: next })} hint="仅管理员可修改。打开或关闭后保存将自动重启 StaffDeck。默认关闭。" />
-          <div className={`whitespace-pre-line rounded-md border px-[12px] py-[10px] text-[12px] leading-[18px] ${sandboxStatus.sandbox_status === 'ready' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : sandboxStatus.sandbox_status === 'degraded' ? 'border-red-300 bg-red-50 text-red-900' : sandboxStatus.sandbox_status === 'disabled' ? 'border-slate-200 bg-slate-50 text-slate-700' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
-            <div className="font-medium">沙盒状态：{sandboxStatus.sandbox_status === 'ready' ? '可用' : sandboxStatus.sandbox_status === 'degraded' ? '已降级为无沙盒（高风险）' : sandboxStatus.sandbox_status === 'disabled' ? '未启用' : '不可用'}</div>
-            {sandboxStatus.sandbox_status_message && <div>{sandboxStatus.sandbox_status_message}</div>}
-            {sandboxStatus.sandbox_status_remediation && <div>{sandboxStatus.sandbox_status_remediation}</div>}
-          </div>
-          {setupMessage && <div className="whitespace-pre-line rounded-md border border-amber-200 bg-amber-50 px-[12px] py-[10px] text-[12px] leading-[18px] text-amber-900">{setupMessage}</div>}
-          {!form.sandbox_enabled && <LabeledField label="文件存储目录" hint={`沙盒关闭时，附件、任务文件与生成产物写入此目录。留空使用默认目录${effectiveStoragePath ? `：${effectiveStoragePath}` : ''}。`}><Input value={form.harness_storage_path} onChange={(e) => update({ harness_storage_path: e.target.value })} placeholder={effectiveStoragePath || '/data/staffdeck-files'} /></LabeledField>}
-          {form.sandbox_enabled && <LabeledField label="网络访问" hint="统一影响所有 Harness/SRT 执行。默认联网按运行环境放行；白名单只允许列出的域名；全拒绝禁止外网。">
-            <select className="h-[36px] rounded-md border border-input bg-background px-[10px] text-[13px]" value={form.sandbox_network_mode} onChange={(e) => update({ sandbox_network_mode: e.target.value as UiConfigForm['sandbox_network_mode'] })}>
-              <option value="all">默认联网</option><option value="allowlist">白名单</option><option value="deny">全拒绝</option>
-            </select>
-          </LabeledField>}
-          {form.sandbox_enabled && form.sandbox_network_mode === 'allowlist' && <LabeledField label="允许的域名" hint="每行一个域名，也支持 *.example.com。"><Textarea rows={4} value={form.sandbox_allowed_domains} onChange={(e) => update({ sandbox_allowed_domains: e.target.value })} placeholder="api.example.com\n*.internal.example.com" /></LabeledField>}
-          <p className="text-[11px] leading-[16px] text-muted-foreground">关闭沙盒时，命令仍受 TaskFrame 工作区、运行时长和输出大小限制，但不再使用操作系统级 SRT 隔离。</p>
-          {updatedAt && <span className="text-[12px] text-muted-foreground">最后更新：{formatDateOnly(updatedAt)}</span>}
-        </CardContent>
-      </Card>
-      <Card className="editor-card settings-card">
-        <CardHeader><CardTitle className="flex items-center gap-[8px]"><KeyRound className="size-[16px]" />API 全量密钥</CardTitle></CardHeader>
-        <CardContent className="flex items-center justify-between gap-[20px]">
-          <div><p className="text-[13px] font-medium text-[#2f3442]">管理员账号全量访问</p><p className="mt-[4px] text-[11px] leading-[17px] text-muted-foreground">用于 API 查询当前账号可访问的数字员工与资源。明文密钥只在创建或轮换时展示一次。</p></div>
-          <UIButton variant="outline" onClick={() => setApiKeyOpen(true)}><KeyRound className="size-[15px]" />管理密钥</UIButton>
-        </CardContent>
-      </Card>
+        )}
+      </div>
+
+      <div className="mx-[28px] max-[760px]:mx-[16px]">
+        <UnderlineTabs
+          aria-label="超级管理员"
+          variant="line"
+          value={tab}
+          onChange={setTab}
+          items={ADMIN_TABS}
+        />
+      </div>
+
+      {tab === 'settings' ? (
+        <div className="mx-[28px] max-[760px]:mx-[16px]">
+          <Card className="editor-card settings-card">
+            <CardHeader><CardTitle>执行记录与 Agent Loop</CardTitle></CardHeader>
+            <CardContent className="flex flex-col gap-[16px]">
+              <SwitchRow label="展示思考状态" checked={form.show_thinking_trace} onChange={(next) => update({ show_thinking_trace: next })} />
+              <SwitchRow label="展示执行技能" checked={form.show_skill_trace} onChange={(next) => update({ show_skill_trace: next })} />
+              <SwitchRow label="展示工具调用" checked={form.show_tool_trace} onChange={(next) => update({ show_tool_trace: next })} />
+              <LabeledField label="反思轮数" hint="设为 0 时关闭反思；每轮允许模型检查当前技能和工具结果。"><Input type="number" min={0} max={5} step={1} value={form.reflection_max_rounds} onChange={(e) => update({ reflection_max_rounds: e.target.value })} /></LabeledField>
+              <LabeledField label="单轮最大动作数" hint="限制一次用户输入内连续决策和工具调用的次数，避免无限循环。"><Input type="number" min={1} max={100} step={1} value={form.agent_loop_max_actions} onChange={(e) => update({ agent_loop_max_actions: e.target.value })} /></LabeledField>
+            </CardContent>
+          </Card>
+          <Card className="editor-card settings-card overflow-hidden">
+            <CardHeader className="border-b border-[#edf0f5] bg-[linear-gradient(110deg,#f8fbff_0%,#ffffff_52%,#f6f9ff_100%)]">
+              <div className="flex flex-wrap items-center justify-between gap-[12px]">
+                <div>
+                  <CardTitle className="flex items-center gap-[8px]">
+                    <span className="flex size-[28px] items-center justify-center rounded-[9px] bg-[#eaf2ff] text-[#1a71ff]">
+                      <BrainCircuit className="size-[15px]" />
+                    </span>
+                    对话上下文与自动压缩
+                  </CardTitle>
+                  <p className="mt-[7px] text-[11px] leading-[17px] text-muted-foreground">
+                    租户级即时生效；单员工会话和团队成员任务共享这套参数。
+                  </p>
+                </div>
+                <UIButton
+                  type="button"
+                  variant="outline"
+                  className="h-[32px] gap-[6px] text-[11px]"
+                  onClick={() => update({
+                    context_token_budget: DEFAULT_UI_CONFIG.context_token_budget,
+                    context_compaction_trigger_ratio: DEFAULT_UI_CONFIG.context_compaction_trigger_ratio,
+                    context_recent_round_limit: DEFAULT_UI_CONFIG.context_recent_round_limit,
+                    context_long_summary_token_budget: DEFAULT_UI_CONFIG.context_long_summary_token_budget,
+                    context_medium_summary_token_budget: DEFAULT_UI_CONFIG.context_medium_summary_token_budget,
+                    context_allowed_roles: DEFAULT_UI_CONFIG.context_allowed_roles,
+                    context_long_summary_prefix: DEFAULT_UI_CONFIG.context_long_summary_prefix,
+                    context_medium_summary_prefix: DEFAULT_UI_CONFIG.context_medium_summary_prefix,
+                  })}
+                >
+                  <RotateCcw className="size-[13px]" />
+                  恢复上下文默认值
+                </UIButton>
+              </div>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-[18px] pt-[18px]">
+              <div className="rounded-[11px] border border-[#dce8fb] bg-[#f7faff] px-[13px] py-[11px] text-[11px] leading-[18px] text-[#52637d]">
+                当估算上下文达到预算 × 触发比例时，系统会把较早对话压缩为长期与近期摘要，并保留指定的最近轮次。数值越大，历史保留越完整，但模型输入成本也越高。
+              </div>
+              <div className="grid gap-[14px] md:grid-cols-2">
+                <LabeledField label="上下文 Token 预算" hint="完整会话上下文的目标上限，范围 512–262144。">
+                  <Input type="number" min={512} max={262144} step={512} value={form.context_token_budget} onChange={(event) => update({ context_token_budget: event.target.value })} />
+                </LabeledField>
+                <LabeledField label="压缩触发比例" hint="达到预算的这个比例后开始压缩，范围 0.10–0.95。">
+                  <Input type="number" min={0.1} max={0.95} step={0.05} value={form.context_compaction_trigger_ratio} onChange={(event) => update({ context_compaction_trigger_ratio: event.target.value })} />
+                </LabeledField>
+                <LabeledField label="保留最近对话轮数" hint="压缩时不进入摘要的最近用户轮次，范围 1–50。">
+                  <Input type="number" min={1} max={50} step={1} value={form.context_recent_round_limit} onChange={(event) => update({ context_recent_round_limit: event.target.value })} />
+                </LabeledField>
+                <div className="grid grid-cols-2 gap-[10px]">
+                  <LabeledField label="长期摘要预算" hint="Token">
+                    <Input type="number" min={128} max={32768} step={128} value={form.context_long_summary_token_budget} onChange={(event) => update({ context_long_summary_token_budget: event.target.value })} />
+                  </LabeledField>
+                  <LabeledField label="近期摘要预算" hint="Token">
+                    <Input type="number" min={128} max={32768} step={128} value={form.context_medium_summary_token_budget} onChange={(event) => update({ context_medium_summary_token_budget: event.target.value })} />
+                  </LabeledField>
+                </div>
+              </div>
+              <div className="rounded-[11px] border border-[#e6e9f0] bg-[#fbfbfc] px-[13px] py-[12px]">
+                <p className="text-[12px] font-medium text-[#464c5e]">纳入历史上下文的角色</p>
+                <p className="mt-[3px] text-[11px] leading-[16px] text-muted-foreground">至少保留一种角色；图片只随用户消息进入上下文。</p>
+                <div className="mt-[10px] grid gap-[8px] sm:grid-cols-2">
+                  <SwitchRow label="用户消息" checked={form.context_allowed_roles.includes('user')} onChange={(checked) => update({ context_allowed_roles: toggleContextRole(form.context_allowed_roles, 'user', checked) })} />
+                  <SwitchRow label="数字员工回复" checked={form.context_allowed_roles.includes('assistant')} onChange={(checked) => update({ context_allowed_roles: toggleContextRole(form.context_allowed_roles, 'assistant', checked) })} />
+                </div>
+              </div>
+              <div className="grid gap-[14px] md:grid-cols-2">
+                <LabeledField label="长期摘要前缀" hint="注入长期摘要消息时使用，最多 200 字。">
+                  <Textarea rows={3} maxLength={200} value={form.context_long_summary_prefix} onChange={(event) => update({ context_long_summary_prefix: event.target.value })} />
+                </LabeledField>
+                <LabeledField label="近期摘要前缀" hint="注入近期摘要消息时使用，最多 200 字。">
+                  <Textarea rows={3} maxLength={200} value={form.context_medium_summary_prefix} onChange={(event) => update({ context_medium_summary_prefix: event.target.value })} />
+                </LabeledField>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="editor-card settings-card">
+            <CardHeader><CardTitle className="flex items-center gap-[8px]"><ShieldCheck className="size-[16px]" />执行隔离与文件存储</CardTitle></CardHeader>
+            <CardContent className="flex flex-col gap-[16px]">
+              <SwitchRow label="启用 SRT 沙盒" checked={form.sandbox_enabled} onChange={(next) => update({ sandbox_enabled: next })} hint="仅管理员可修改。打开或关闭后保存将自动重启 StaffDeck。默认关闭。" />
+              <div className={`whitespace-pre-line rounded-md border px-[12px] py-[10px] text-[12px] leading-[18px] ${sandboxStatus.sandbox_status === 'ready' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : sandboxStatus.sandbox_status === 'degraded' ? 'border-red-300 bg-red-50 text-red-900' : sandboxStatus.sandbox_status === 'disabled' ? 'border-slate-200 bg-slate-50 text-slate-700' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+                <div className="font-medium">沙盒状态：{sandboxStatus.sandbox_status === 'ready' ? '可用' : sandboxStatus.sandbox_status === 'degraded' ? '已降级为无沙盒（高风险）' : sandboxStatus.sandbox_status === 'disabled' ? '未启用' : '不可用'}</div>
+                {sandboxStatus.sandbox_status_message && <div>{sandboxStatus.sandbox_status_message}</div>}
+                {sandboxStatus.sandbox_status_remediation && <div>{sandboxStatus.sandbox_status_remediation}</div>}
+              </div>
+              {setupMessage && <div className="whitespace-pre-line rounded-md border border-amber-200 bg-amber-50 px-[12px] py-[10px] text-[12px] leading-[18px] text-amber-900">{setupMessage}</div>}
+              {!form.sandbox_enabled && <LabeledField label="文件存储目录" hint={`沙盒关闭时，附件、任务文件与生成产物写入此目录。留空使用默认目录${effectiveStoragePath ? `：${effectiveStoragePath}` : ''}。`}><Input value={form.harness_storage_path} onChange={(e) => update({ harness_storage_path: e.target.value })} placeholder={effectiveStoragePath || '/data/staffdeck-files'} /></LabeledField>}
+              {form.sandbox_enabled && <LabeledField label="网络访问" hint="统一影响所有 Harness/SRT 执行。默认联网按运行环境放行；白名单只允许列出的域名；全拒绝禁止外网。">
+                <select className="h-[36px] rounded-md border border-input bg-background px-[10px] text-[13px]" value={form.sandbox_network_mode} onChange={(e) => update({ sandbox_network_mode: e.target.value as UiConfigForm['sandbox_network_mode'] })}>
+                  <option value="all">默认联网</option><option value="allowlist">白名单</option><option value="deny">全拒绝</option>
+                </select>
+              </LabeledField>}
+              {form.sandbox_enabled && form.sandbox_network_mode === 'allowlist' && <LabeledField label="允许的域名" hint="每行一个域名，也支持 *.example.com。"><Textarea rows={4} value={form.sandbox_allowed_domains} onChange={(e) => update({ sandbox_allowed_domains: e.target.value })} placeholder="api.example.com\n*.internal.example.com" /></LabeledField>}
+              <p className="text-[11px] leading-[16px] text-muted-foreground">关闭沙盒时，命令仍受 TaskFrame 工作区、运行时长和输出大小限制，但不再使用操作系统级 SRT 隔离。</p>
+              {updatedAt && <span className="text-[12px] text-muted-foreground">最后更新：{formatDateOnly(updatedAt)}</span>}
+            </CardContent>
+          </Card>
+          <Card className="editor-card settings-card">
+            <CardHeader><CardTitle className="flex items-center gap-[8px]"><KeyRound className="size-[16px]" />API 全量密钥</CardTitle></CardHeader>
+            <CardContent className="flex items-center justify-between gap-[20px]">
+              <div><p className="text-[13px] font-medium text-[#2f3442]">管理员账号全量访问</p><p className="mt-[4px] text-[11px] leading-[17px] text-muted-foreground">用于 API 查询当前账号可访问的数字员工与资源。明文密钥只在创建或轮换时展示一次。</p></div>
+              <UIButton variant="outline" onClick={() => setApiKeyOpen(true)}><KeyRound className="size-[15px]" />管理密钥</UIButton>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <div className="mx-[28px] max-[760px]:mx-[16px] flex flex-col">
+          <ScheduledTaskMonitorTab />
+        </div>
+      )}
       <AccountApiKeyDialog account={currentUser} open={apiKeyOpen} onClose={() => setApiKeyOpen(false)} />
     </>
   );

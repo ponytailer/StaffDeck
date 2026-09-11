@@ -159,6 +159,20 @@ def scheduled_task_run_read(row: ScheduledTaskRun, task: ScheduledTask | None = 
     )
 
 
+def _sync_rq_scheduler(task: ScheduledTask) -> None:
+    """把任务变更同步到 rq 调度（仅 SCHEDULER_BACKEND=rq 生效）。
+
+    调度同步失败绝不影响任务本身写入 PG；rq 路径不可用时静默降级，
+    任务仍可通过手动 /run-now 执行。唯一的 rq 触点集中在此，便于整体回退。
+    """
+    try:
+        from app.scheduled_tasks import rq_dispatch
+
+        rq_dispatch.sync_task(task)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def create_scheduled_task(
     db: Session,
     request: ScheduledTaskCreateRequest,
@@ -201,6 +215,7 @@ def create_scheduled_task(
     db.add(row)
     db.commit()
     db.refresh(row)
+    _sync_rq_scheduler(row)
     return row
 
 
@@ -261,6 +276,7 @@ def update_scheduled_task(
     db.add(row)
     db.commit()
     db.refresh(row)
+    _sync_rq_scheduler(row)
     return row
 
 

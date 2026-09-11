@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     # 持锁进程崩溃后锁在 TTL 内自动过期，替代 PG advisory lock 的僵死连接问题
     connector_lock_ttl_seconds: int = 30
 
+    # ---- 定时任务调度后端（PG 主源 + Redis 仅执行触发）----
+    # "rq" = 独立 rq worker 进程经 Redis 调度（默认）；"poll" = 进程内轮询线程（旧实现）。
+    # 切回旧实现只需把此值改为 "poll" 并重启，业务代码零改动。
+    scheduler_backend: str = "rq"
+    scheduled_task_queue: str = "scheduled_tasks"
+    scheduled_task_job_timeout_seconds: int = 600
+
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
         env_file_encoding="utf-8", extra="ignore",

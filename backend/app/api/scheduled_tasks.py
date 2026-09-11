@@ -120,6 +120,13 @@ def archive_enterprise_scheduled_task(
     row.updated_at = utc_now()
     db.add(row)
     db.commit()
+    # 归档后移除 rq 调度中的触发 job（后端非 rq 时静默 no-op）
+    try:
+        from app.scheduled_tasks import rq_dispatch
+
+        rq_dispatch.cancel_task(row.id)
+    except Exception:  # noqa: BLE001
+        pass
     return {"ok": True}
 
 

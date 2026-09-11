@@ -32,9 +32,20 @@ dependencies = [
   "ldap3>=2.9.1",
   # Redis 可选底座：缓存 / 分布式锁 / Pub/Sub（REDIS_HOST 未配置时功能自动禁用）
   "redis>=5.0.0",
+  # 定时任务调度后端（SCHEDULER_BACKEND=rq 时启用；Redis 不可用自动降级为不调度）
+  "rq>=1.16.0",
+  "rq-scheduler>=0.13.0",
   # 远程 PostgreSQL（DATABASE_URL 指向 PG 时必需）
   "psycopg2-binary>=2.9.9",
 ]
+
+# 本地启动便捷入口（uv run 会把本项目装进 .venv 并暴露这两个命令）：
+#   uv run serve       ← 等价 uvicorn single_port_app:app --host 127.0.0.1 --port 5173
+#                        --log-config log.json --reload
+#   uv run rq-worker   ← 定时任务独立 worker 进程（等价 python -m app.scheduled_tasks.rq_worker）
+[project.scripts]
+serve = "app.cli:serve"
+rq-worker = "app.scheduled_tasks.rq_worker:main"
 
 [project.optional-dependencies]
 dev = [

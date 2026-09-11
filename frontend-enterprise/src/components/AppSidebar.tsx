@@ -87,7 +87,7 @@ const CAPABILITY_NAV: NavItem[] = [
 const SYSTEM_NAV: NavItem[] = [
   { route: EnterpriseRoute.Accounts, label: '账号管理', Icon: IconAccounts },
   { route: EnterpriseRoute.ApiKeyApprovals, label: 'API Key 审批', Icon: IconApiKey },
-  { route: EnterpriseRoute.RuntimeSettings, label: '运行设置', Icon: IconSettings },
+  { route: EnterpriseRoute.RuntimeSettings, label: '超级管理员', Icon: IconSettings },
 ];
 
 function IconApiKey({ className, ...props }: { className?: string } & SVGProps<SVGSVGElement>) {
