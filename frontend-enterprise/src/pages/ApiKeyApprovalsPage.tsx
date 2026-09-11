@@ -1070,23 +1070,6 @@ export default function ApiKeyApprovalsPage({
         </div>
       ),
     },
-    {
-      key: 'gateway',
-      title: '网关',
-      width: 120,
-      render: (row) =>
-        row.gateway_name ? (
-          <span className="text-[13px] text-[#464c5e]">{row.gateway_name}</span>
-        ) : (
-          <span className="text-[12px] text-[#c0c6d4]">—</span>
-        ),
-    },
-    {
-      key: 'type',
-      title: '类型',
-      width: 80,
-      render: (row) => <span className="text-[12px] text-[#464c5e]">{row.consumer_type}</span>,
-    },
   ];
 
   const consumerColumns: DataTableColumn<Consumer>[] = [
