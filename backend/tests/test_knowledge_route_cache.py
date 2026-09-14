@@ -2,12 +2,12 @@
 
 覆盖：
 - query_norm 归一聚合（相似问法同 key）
-- route_cache_key 构造边界
-- 缓存命中：跳过 LLM 路由，route_trace 有 route_cache_hit
-- 缓存未命中：LLM 决策成功后写回，route_trace 有 route_cache_stored
-- 词法快速路径结果不回写缓存
-- LLM 失败词法兜底结果不回写缓存
-- 失效调用后缓存清空（下次重新走 LLM）
+- route_cache_slot 构造边界 / 维度与版本参与 key
+- 命中：跳过 LLM 路由，按 max_* 截断
+- 写回：LLM 决策成功后按维度独立写回（另一维失败不影响本维）
+- 词法快速路径 / LLM 失败词法兜底的结果不回写
+- 命中但过滤为空 → 视为失效并回退 LLM（不再静默返回空）
+- 按库精准失效（不误伤其它库 / 其它租户）
 - Redis 不可用（get_redis 返回 None）时全链路与无缓存一致
 """
 
@@ -28,16 +28,17 @@ from app.db.models import (
     Tenant,
 )
 from app.knowledge.route_cache import (
+    ALL_KB_SCOPE,
+    KIND_BUCKET,
+    KIND_DOCUMENT,
+    get_route_decision,
     invalidate_knowledge_base,
     query_norm,
-    route_cache_key,
-    store_route_cache,
+    route_cache_slot,
+    store_route_decision,
 )
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
-from app.object_cache import load_json, store_json
-
-MODEL_ROUTE = None  # placeholder，测试内构造
 
 
 class _FakeRedis:
@@ -45,6 +46,7 @@ class _FakeRedis:
 
     def __init__(self) -> None:
         self.data: dict[str, str] = {}
+        self.sets: dict[str, set[str]] = {}
 
     def get(self, key: str):
         return self.data.get(key)
@@ -55,9 +57,20 @@ class _FakeRedis:
     def delete(self, *keys: str) -> None:
         for key in keys:
             self.data.pop(key, None)
+            self.sets.pop(key, None)
 
     def scan_iter(self, match: str | None = None, count: int | None = None):  # noqa: ARG002
-        return [key for key in list(self.data) if fnmatch.fnmatchcase(key, match)]
+        keys = list(self.data) + list(self.sets)
+        return [key for key in keys if fnmatch.fnmatchcase(key, match)]
+
+    def sadd(self, key: str, *values: str) -> None:
+        self.sets.setdefault(key, set()).update(values)
+
+    def smembers(self, key: str) -> set[str]:
+        return set(self.sets.get(key, set()))
+
+    def expire(self, key: str, seconds: int) -> bool:  # noqa: ARG002
+        return True
 
 
 @pytest.fixture()
@@ -81,17 +94,17 @@ def _test_session():
     return Session(engine)
 
 
-def _seed_ambiguous_fixture(db) -> None:
-    """两个词法同分的文档+桶+chunk，强制走 LLM 路由分支。"""
+def _seed_ambiguous_fixture(db, document_count: int = 2) -> None:
+    """标题词法高度相似的文档+桶+chunk，强制走 LLM 路由分支。"""
 
     db.add(Tenant(id="tenant_demo", name="Demo"))
     db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
-    for index, (title, summary) in enumerate(
-        [
-            ("员工手册", "入职流程与考勤规则说明"),
-            ("员工手册附录", "考勤与假期规则补充"),
-        ]
-    ):
+    titles = [
+        ("员工手册", "入职流程与考勤规则说明"),
+        ("员工手册附录", "考勤与假期规则补充"),
+        ("员工手册补充", "考勤规则补充说明"),
+    ][:document_count]
+    for index, (title, summary) in enumerate(titles):
         document = KnowledgeDocument(
             id=f"kdoc_{index}",
             tenant_id="tenant_demo",
@@ -129,12 +142,49 @@ def _route_model() -> ModelConfig:
     return ModelConfig(id="model_route", tenant_id="tenant_demo", name="Route", model="route")
 
 
+def _doc_slot(query: str = "员工手册", *, version_ids=None):
+    return route_cache_slot(
+        "tenant_demo",
+        None,
+        ["kb_demo"],
+        query,
+        kind=KIND_DOCUMENT,
+        knowledge_base_version_ids=version_ids,
+    )
+
+
+def _bucket_slot(query: str = "员工手册", *, version_ids=None):
+    return route_cache_slot(
+        "tenant_demo",
+        None,
+        ["kb_demo"],
+        query,
+        kind=KIND_BUCKET,
+        knowledge_base_version_ids=version_ids,
+    )
+
+
+def _run_search(db, query: str = "员工手册", **overrides):
+    payload = {
+        "tenant_id": "tenant_demo",
+        "knowledge_base_ids": ["kb_demo"],
+        "query": query,
+        "mode": "chat",
+    }
+    payload.update(overrides)
+    return KnowledgeService(db).search(KnowledgeSearchRequest(**payload), _route_model())
+
+
+def _phases(response) -> list[str]:
+    return [str(item.get("phase")) for item in response.route_trace]
+
+
 # ---------------------------------------------------------------------------
-# 纯函数：query_norm / route_cache_key
+# 纯函数：query_norm / route_cache_slot
 # ---------------------------------------------------------------------------
 
 
-def test_query_norm_aggregates_similar_phoarings() -> None:
+def test_query_norm_aggregates_similar_phrasings() -> None:
     assert query_norm("如何申领电脑") == query_norm("怎么申领电脑")
     assert query_norm("如何申领电脑") == query_norm("我想知道如何申领电脑？")
     assert query_norm("如何申领电脑") == query_norm("申领电脑")
@@ -143,20 +193,54 @@ def test_query_norm_aggregates_similar_phoarings() -> None:
     assert query_norm("Hello World！") == "helloworld"
 
 
-def test_route_cache_key_boundaries() -> None:
+def test_route_cache_slot_boundaries() -> None:
     # 空租户 / 空 query / 纯噪声 query → None
-    assert route_cache_key("", None, ["kb"], "查询") is None
-    assert route_cache_key("tenant", None, ["kb"], "") is None
-    assert route_cache_key("tenant", None, ["kb"], "？？？") is None
-    # 正常构造
-    key = route_cache_key("tenant_demo", "agent_a", ["kb_b", "kb_a"], "如何申领电脑")
-    assert key == f"tenant_demo:agent_a:{route_cache_key('tenant_demo', 'agent_a', ['kb_a', 'kb_b'], '怎么申领电脑').split(':', 2)[2]}"
+    assert route_cache_slot("", None, ["kb"], "查询", kind=KIND_DOCUMENT) is None
+    assert route_cache_slot("tenant", None, ["kb"], "", kind=KIND_DOCUMENT) is None
+    assert route_cache_slot("tenant", None, ["kb"], "？？？", kind=KIND_DOCUMENT) is None
+
+    # 基准：tenant:kind:agent:digest
+    slot = route_cache_slot("tenant_demo", "agent_a", ["kb_b", "kb_a"], "如何申领电脑", kind=KIND_DOCUMENT)
+    assert slot is not None
+    assert slot.key.startswith("tenant_demo:doc:agent_a:")
+    assert slot.kb_scopes == ("kb_a", "kb_b")
+
     # agent 缺省 → "-"
-    assert route_cache_key("tenant_demo", None, ["kb"], "查询").split(":")[1] == "-"
+    assert route_cache_slot("tenant_demo", None, ["kb"], "查询", kind=KIND_DOCUMENT).key.split(":")[2] == "-"
     # kb 顺序无关
-    assert route_cache_key("t", None, ["kb1", "kb2"], "查询") == route_cache_key(
-        "t", None, ["kb2", "kb1"], "查询"
+    assert route_cache_slot("t", None, ["kb1", "kb2"], "查询", kind=KIND_DOCUMENT) == route_cache_slot(
+        "t", None, ["kb2", "kb1"], "查询", kind=KIND_DOCUMENT
     )
+    # query_norm 聚合
+    assert route_cache_slot("t", None, ["kb"], "如何申领电脑", kind=KIND_DOCUMENT) == route_cache_slot(
+        "t", None, ["kb"], "我想知道怎么申领电脑？", kind=KIND_DOCUMENT
+    )
+
+
+def test_route_cache_slot_dimension_and_version_isolate_keys() -> None:
+    """文档/索引两维、以及知识库版本维度都必须产生不同 key。"""
+
+    base = _doc_slot("员工手册")
+    assert base != _bucket_slot("员工手册")  # 维度隔离
+    assert base != _doc_slot("员工手册", version_ids=["kbv_2"])  # 版本隔离
+    assert _doc_slot("员工手册", version_ids=["kbv_2"]) == _doc_slot(
+        "员工手册", version_ids=["kbv_2"]
+    )
+    # 版本顺序无关
+    assert _doc_slot("员工手册", version_ids=["kbv_2", "kbv_1"]) == _doc_slot(
+        "员工手册", version_ids=["kbv_1", "kbv_2"]
+    )
+
+
+def test_route_cache_slot_scope_falls_back_to_all(fake_redis) -> None:
+    """无显式知识库维度时登记到 _all_ scope，仍可被任意库变更失效。"""
+
+    slot = route_cache_slot("tenant_demo", "agent_a", [], "员工手册", kind=KIND_DOCUMENT)
+    assert slot is not None
+    assert slot.kb_scopes == (ALL_KB_SCOPE,)
+    store_route_decision(slot, ["kdoc_0"])
+    invalidate_knowledge_base("tenant_demo", "kb_demo")
+    assert get_route_decision(slot) is None
 
 
 # ---------------------------------------------------------------------------
@@ -170,65 +254,87 @@ def test_route_cache_hit_skips_llm_routing(fake_redis, monkeypatch) -> None:
     def _forbidden(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("LLM routing must not be called on route cache hit")
 
+    store_route_decision(_doc_slot(), ["kdoc_1"])
+    store_route_decision(_bucket_slot(), ["kbucket_1"])
+    monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", _forbidden)
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", _forbidden)
+
     with _test_session() as db:
         _seed_ambiguous_fixture(db)
-        key = route_cache_key("tenant_demo", None, ["kb_demo"], "员工手册")
-        assert key
-        store_route_cache(key, ["kdoc_1"], ["kbucket_1"])
-        monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", _forbidden)
-        monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", _forbidden)
+        response = _run_search(db, "员工手册")
 
-        response = KnowledgeService(db).search(
-            KnowledgeSearchRequest(
-                tenant_id="tenant_demo",
-                knowledge_base_ids=["kb_demo"],
-                query="员工手册",
-                mode="chat",
-            ),
-            _route_model(),
-        )
-
-    phases = [item.get("phase") for item in response.route_trace]
+    phases = _phases(response)
     assert "route_cache_hit" in phases
+    assert "document_route_cache_hit" in phases
+    assert "bucket_route_cache_hit" in phases
     assert "route_cache_stored" not in phases
     assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_1"]
 
 
-def test_route_cache_stored_after_llm_decision(fake_redis, monkeypatch) -> None:
-    """未命中 → LLM 决策成功 → 写回缓存；相同问法第二次搜索命中。"""
+def test_route_cache_hit_truncates_to_max_buckets(fake_redis, monkeypatch) -> None:
+    """命中缓存也要按当次 max_buckets 截断（旧实现会返回上次缓存的全部）。"""
+
+    def _forbidden(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("LLM routing must not be called on route cache hit")
+
+    store_route_decision(_doc_slot(), ["kdoc_0", "kdoc_1", "kdoc_2"])
+    store_route_decision(_bucket_slot(), ["kbucket_0", "kbucket_1", "kbucket_2"])
+    monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", _forbidden)
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", _forbidden)
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db, document_count=3)
+        response = _run_search(db, "员工手册", max_buckets=1)
+
+    assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0"]
+
+
+def test_route_cache_stale_falls_back_to_llm(fake_redis, monkeypatch) -> None:
+    """缓存决策与当前候选集不匹配（全部被过滤）→ 回退 LLM，不再静默返回空。"""
+
+    store_route_decision(_doc_slot(), ["kdoc_已删除"])  # 指向不存在的文档
+    calls: list[str] = []
 
     def fake_select_documents(*args, **kwargs):  # noqa: ANN002, ANN003
-        return ["kdoc_0", "kdoc_1"]
+        calls.append("document")
+        return ["kdoc_0"]
 
     def fake_select_buckets(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append("bucket")
         return ["kbucket_0"]
 
+    monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", fake_select_documents)
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", fake_select_buckets)
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        response = _run_search(db, "员工手册")
+
+    phases = _phases(response)
+    assert "route_cache_stale" in phases
+    assert "document_route_cache_hit" not in phases
+    assert "document" in calls
+    assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0"]
+
+
+def test_route_cache_stored_after_llm_decision(fake_redis, monkeypatch) -> None:
+    """未命中 → LLM 决策成功 → 写回；相同问法第二次搜索命中。"""
+
     monkeypatch.setattr(
-        KnowledgeService, "_select_documents_with_llm", fake_select_documents
+        KnowledgeService, "_select_documents_with_llm", lambda *a, **k: ["kdoc_0", "kdoc_1"]
     )
     monkeypatch.setattr(
-        KnowledgeService, "_select_buckets_with_llm", fake_select_buckets
+        KnowledgeService, "_select_buckets_with_llm", lambda *a, **k: ["kbucket_0"]
     )
 
     with _test_session() as db:
         _seed_ambiguous_fixture(db)
-        response = KnowledgeService(db).search(
-            KnowledgeSearchRequest(
-                tenant_id="tenant_demo",
-                knowledge_base_ids=["kb_demo"],
-                query="员工手册",
-                mode="chat",
-            ),
-            _route_model(),
-        )
-        phases = [item.get("phase") for item in response.route_trace]
-        assert "route_cache_stored" in phases
+        response = _run_search(db, "员工手册")
+        phases = _phases(response)
+        assert phases.count("route_cache_stored") == 2  # 两个维度各自写回
+        assert get_route_decision(_doc_slot()) == ["kdoc_0", "kdoc_1"]
+        assert get_route_decision(_bucket_slot()) == ["kbucket_0"]
 
-        key = route_cache_key("tenant_demo", None, ["kb_demo"], "员工手册")
-        cached = load_json(key, namespace="kroute")
-        assert cached == {"document_ids": ["kdoc_0", "kdoc_1"], "bucket_ids": ["kbucket_0"]}
-
-    # 第二次：噪声词变体同 key，且 LLM 不再被调用
     def _forbidden(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("LLM routing must not be called on route cache hit")
 
@@ -237,18 +343,32 @@ def test_route_cache_stored_after_llm_decision(fake_redis, monkeypatch) -> None:
 
     with _test_session() as db:
         _seed_ambiguous_fixture(db)
-        response = KnowledgeService(db).search(
-            KnowledgeSearchRequest(
-                tenant_id="tenant_demo",
-                knowledge_base_ids=["kb_demo"],
-                query="我想知道员工手册？",
-                mode="chat",
-            ),
-            _route_model(),
-        )
-    phases = [item.get("phase") for item in response.route_trace]
+        response = _run_search(db, "我想知道员工手册？")  # 噪声词变体同 key
+
+    phases = _phases(response)
     assert "route_cache_hit" in phases
     assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0"]
+
+
+def test_route_cache_dimensions_write_independently(fake_redis, monkeypatch) -> None:
+    """文档维走 LLM 成功、索引维 LLM 失败走词法兜底 → 文档决策照样缓存。
+
+    旧实现要求「两路都走 LLM 成功」才写，这种组合一个字都不缓存。
+    """
+
+    monkeypatch.setattr(
+        KnowledgeService, "_select_documents_with_llm", lambda *a, **k: ["kdoc_0"]
+    )
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", lambda *a, **k: None)
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        response = _run_search(db, "员工手册")
+
+    phases = _phases(response)
+    assert "route_cache_stored" in phases
+    assert get_route_decision(_doc_slot()) == ["kdoc_0"]
+    assert get_route_decision(_bucket_slot()) is None  # 词法兜底不回写
 
 
 def test_route_cache_not_written_on_lexical_fast_path(fake_redis, monkeypatch) -> None:
@@ -258,7 +378,6 @@ def test_route_cache_not_written_on_lexical_fast_path(fake_redis, monkeypatch) -
         raise AssertionError("LLM routing must not be called on decisive lexical match")
 
     with _test_session() as db:
-        # 复用双主题 fixture：前端规范 vs 离职办理，词法显著命中走快速路径
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
         document = KnowledgeDocument(
@@ -295,23 +414,14 @@ def test_route_cache_not_written_on_lexical_fast_path(fake_redis, monkeypatch) -
         monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", _forbidden)
         monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", _forbidden)
 
-        response = KnowledgeService(db).search(
-            KnowledgeSearchRequest(
-                tenant_id="tenant_demo",
-                knowledge_base_ids=["kb_demo"],
-                query="前端编码规范",
-                mode="chat",
-            ),
-            _route_model(),
-        )
+        response = _run_search(db, "前端编码规范")
 
-    phases = [item.get("phase") for item in response.route_trace]
+    phases = _phases(response)
     assert "document_route_lexical_fast_path" in phases
     assert "bucket_route_lexical_fast_path" in phases
     assert "route_cache_stored" not in phases
-    # 缓存确实是空的
-    key = route_cache_key("tenant_demo", None, ["kb_demo"], "前端编码规范")
-    assert load_json(key, namespace="kroute") is None
+    assert get_route_decision(_doc_slot("前端编码规范")) is None
+    assert get_route_decision(_bucket_slot("前端编码规范")) is None
 
 
 def test_route_cache_not_written_on_llm_failure_fallback(fake_redis, monkeypatch) -> None:
@@ -322,38 +432,58 @@ def test_route_cache_not_written_on_llm_failure_fallback(fake_redis, monkeypatch
 
     with _test_session() as db:
         _seed_ambiguous_fixture(db)
-        response = KnowledgeService(db).search(
-            KnowledgeSearchRequest(
-                tenant_id="tenant_demo",
-                knowledge_base_ids=["kb_demo"],
-                query="员工手册",
-                mode="chat",
-            ),
-            _route_model(),
-        )
-    phases = [item.get("phase") for item in response.route_trace]
+        response = _run_search(db, "员工手册")
+
+    phases = _phases(response)
     assert "document_route_lexical_fallback" in phases
     assert "route_cache_stored" not in phases
-    key = route_cache_key("tenant_demo", None, ["kb_demo"], "员工手册")
-    assert load_json(key, namespace="kroute") is None
+    assert get_route_decision(_doc_slot()) is None
+    assert get_route_decision(_bucket_slot()) is None
 
 
-def test_route_cache_invalidation_clears_entries(fake_redis) -> None:
-    """失效调用后，该 tenant 的全部路由缓存被清空。"""
+def test_route_cache_invalidation_scoped_to_kb(fake_redis) -> None:
+    """失效按库精准删除：不误伤其它库、其它租户，也不整租户清空。"""
 
-    key_a = route_cache_key("tenant_demo", None, ["kb_demo"], "如何申领电脑")
-    key_b = route_cache_key("tenant_demo", "agent_x", ["kb_demo"], "怎么申领电脑")
-    key_other = route_cache_key("tenant_other", None, ["kb_demo"], "如何申领电脑")
-    store_route_cache(key_a, ["d"], ["b"])
-    store_route_cache(key_b, ["d"], ["b"])
-    store_route_cache(key_other, ["d"], ["b"])
+    slot_a = route_cache_slot("tenant_demo", None, ["kb_a"], "如何申领电脑", kind=KIND_DOCUMENT)
+    slot_a_bucket = route_cache_slot("tenant_demo", None, ["kb_a"], "如何申领电脑", kind=KIND_BUCKET)
+    slot_b = route_cache_slot("tenant_demo", None, ["kb_b"], "如何申领电脑", kind=KIND_DOCUMENT)
+    slot_agent = route_cache_slot("tenant_demo", "agent_x", [], "如何申领电脑", kind=KIND_DOCUMENT)
+    slot_other_tenant = route_cache_slot(
+        "tenant_other", None, ["kb_a"], "如何申领电脑", kind=KIND_DOCUMENT
+    )
+    for slot, ids in (
+        (slot_a, ["d_a"]),
+        (slot_a_bucket, ["b_a"]),
+        (slot_b, ["d_b"]),
+        (slot_agent, ["d_all"]),
+        (slot_other_tenant, ["d_other"]),
+    ):
+        assert store_route_decision(slot, ids) is True
 
-    invalidate_knowledge_base("tenant_demo", "kb_demo")
+    invalidate_knowledge_base("tenant_demo", "kb_a")
 
-    assert load_json(key_a, namespace="kroute") is None
-    assert load_json(key_b, namespace="kroute") is None
-    # 其他租户不受影响
-    assert load_json(key_other, namespace="kroute") is not None
+    assert get_route_decision(slot_a) is None
+    assert get_route_decision(slot_a_bucket) is None
+    assert get_route_decision(slot_agent) is None  # _all_ scope 一并失效
+    assert get_route_decision(slot_b) == ["d_b"]  # 其它库不受影响
+    assert get_route_decision(slot_other_tenant) == ["d_other"]  # 其它租户不受影响
+
+
+def test_route_cache_invalidation_without_kb_clears_tenant(fake_redis) -> None:
+    """不指定库时按租户全量失效（保留给「整库清空」类调用）。"""
+
+    slot_a = route_cache_slot("tenant_demo", None, ["kb_a"], "如何申领电脑", kind=KIND_DOCUMENT)
+    slot_b = route_cache_slot("tenant_demo", None, ["kb_b"], "如何申领电脑", kind=KIND_DOCUMENT)
+    slot_other = route_cache_slot("tenant_other", None, ["kb_a"], "如何申领电脑", kind=KIND_DOCUMENT)
+    store_route_decision(slot_a, ["d_a"])
+    store_route_decision(slot_b, ["d_b"])
+    store_route_decision(slot_other, ["d_other"])
+
+    invalidate_knowledge_base("tenant_demo", None)
+
+    assert get_route_decision(slot_a) is None
+    assert get_route_decision(slot_b) is None
+    assert get_route_decision(slot_other) == ["d_other"]
 
 
 def test_route_cache_search_works_without_redis(monkeypatch) -> None:
@@ -371,16 +501,9 @@ def test_route_cache_search_works_without_redis(monkeypatch) -> None:
 
     with _test_session() as db:
         _seed_ambiguous_fixture(db)
-        response = KnowledgeService(db).search(
-            KnowledgeSearchRequest(
-                tenant_id="tenant_demo",
-                knowledge_base_ids=["kb_demo"],
-                query="员工手册",
-                mode="chat",
-            ),
-            _route_model(),
-        )
-    phases = [item.get("phase") for item in response.route_trace]
+        response = _run_search(db, "员工手册")
+
+    phases = _phases(response)
     assert "route_cache_hit" not in phases
     assert "route_cache_stored" not in phases
     assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0"]

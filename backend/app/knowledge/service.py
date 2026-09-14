@@ -46,10 +46,12 @@ from app.knowledge.okf import (
     upsert_concepts,
 )
 from app.knowledge.route_cache import (
-    get_route_cache,
+    KIND_BUCKET,
+    KIND_DOCUMENT,
+    get_route_decision,
     invalidate_knowledge_base,
-    route_cache_key,
-    store_route_cache,
+    route_cache_slot,
+    store_route_decision,
 )
 from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
 from app.llm import LLMClient, LLMError
@@ -232,6 +234,27 @@ def validate_discovered_skill(payload: dict[str, Any]) -> SkillCard:
 
 class KnowledgeIngestCancelled(RuntimeError):
     """Raised inside the ingest worker when a persisted job is cancelled."""
+
+
+def _cache_route_decision(
+    slot: Any,
+    ids: list[str],
+    dimension: str,
+    route_trace: list[dict[str, Any]],
+) -> None:
+    """LLM 路由决策成功后写回该维度缓存；Redis 不可用/空结果时静默跳过。"""
+
+    if slot is None or not ids:
+        return
+    if store_route_decision(slot, ids):
+        route_trace.append(
+            {
+                "phase": "route_cache_stored",
+                "dimension": dimension,
+                "message": "模型路由决策已缓存",
+                "count": len(ids),
+            }
+        )
 
 
 class KnowledgeService:
@@ -632,33 +655,43 @@ class KnowledgeService:
             route_trace.append({"phase": "no_visible_knowledge", "message": "当前智能体没有可见知识"})
             return KnowledgeSearchResponse(trace=route_trace, route_trace=route_trace)
 
-        # LLM 路由决策缓存（2026-09-09）：重复问法直接复用上次的 document/bucket
-        # 选择，跳过两次 LLM 路由（bucket_route 实测 12-74s/次）。失效由知识库
-        # 写路径按 (tenant, kb) 模式删除 + 30min TTL 兜底。只缓存 LLM 决策，
-        # 词法快速路径与词法打分不受影响。
-        self._route_cache_key = None
-        self._route_cache_hit: dict[str, Any] | None = None
+        # LLM 路由决策缓存（2026-09-09，2026-09-14 拆两维）：document 与 bucket
+        # 各自独立读写——任一路走 LLM 成功即可缓存该路决策，不再要求「两路都走
+        # LLM」。命中后按当前候选集过滤、按 max_* 截断；过滤为空视为缓存失效并
+        # 回退 LLM（旧实现会直接返回「没有相关的知识」并静默持续到 TTL 到期）。
+        # key 含知识库版本维度，换版本不会命中旧决策。
+        self._doc_cache_slot = None
+        self._bucket_cache_slot = None
+        self._doc_cache_ids: list[str] | None = None
+        self._bucket_cache_ids: list[str] | None = None
         if model_config is not None:
-            cache_key = route_cache_key(
+            self._doc_cache_slot = route_cache_slot(
                 request.tenant_id,
                 request.agent_id,
                 request.knowledge_base_ids,
                 query,
+                kind=KIND_DOCUMENT,
+                knowledge_base_version_ids=request.knowledge_base_version_ids,
             )
-            if cache_key:
-                # key 只要能构造就先记下（未命中时供写回使用）；命中与否单独记
-                self._route_cache_key = cache_key
-                cached = get_route_cache(cache_key)
-                if cached is not None:
-                    self._route_cache_hit = cached
-                    route_trace.append(
-                        {
-                            "phase": "route_cache_hit",
-                            "message": "命中路由决策缓存，跳过模型路由",
-                            "cached_document_count": len(cached.get("document_ids") or []),
-                            "cached_bucket_count": len(cached.get("bucket_ids") or []),
-                        }
-                    )
+            self._bucket_cache_slot = route_cache_slot(
+                request.tenant_id,
+                request.agent_id,
+                request.knowledge_base_ids,
+                query,
+                kind=KIND_BUCKET,
+                knowledge_base_version_ids=request.knowledge_base_version_ids,
+            )
+            self._doc_cache_ids = get_route_decision(self._doc_cache_slot)
+            self._bucket_cache_ids = get_route_decision(self._bucket_cache_slot)
+            if self._doc_cache_ids is not None or self._bucket_cache_ids is not None:
+                route_trace.append(
+                    {
+                        "phase": "route_cache_hit",
+                        "message": "命中路由决策缓存，跳过对应模型路由",
+                        "cached_document_count": len(self._doc_cache_ids or []),
+                        "cached_bucket_count": len(self._bucket_cache_ids or []),
+                    }
+                )
 
         with observed_span("knowledge_span", "knowledge.load_concepts") as span:
             concepts = self._load_concepts_for_search(request)
@@ -710,16 +743,30 @@ class KnowledgeService:
             strategy="llm" if model_config else "lexical",
         ) as span:
             selected_document_ids: list[str] = []
-            llm_document_route_ok = False
             if model_config:
-                cached_document_ids = (
-                    [str(item) for item in (self._route_cache_hit or {}).get("document_ids") or []]
-                    if self._route_cache_hit is not None
-                    else None
-                )
-                if cached_document_ids is not None:
-                    allowed = {row.id for row in documents}
-                    selected_document_ids = [item for item in cached_document_ids if item in allowed]
+                # 命中缓存：按当前候选集过滤 + 按 max 截断；过滤后为空视为失效
+                allowed = {row.id for row in documents}
+                cached_document_ids = [
+                    item for item in (self._doc_cache_ids or []) if item in allowed
+                ][:5]
+                if self._doc_cache_ids is not None and not cached_document_ids:
+                    route_trace.append(
+                        {
+                            "phase": "route_cache_stale",
+                            "dimension": "document",
+                            "message": "缓存决策与当前候选集不匹配，改用模型路由",
+                            "cached_count": len(self._doc_cache_ids),
+                        }
+                    )
+                if cached_document_ids:
+                    selected_document_ids = cached_document_ids
+                    route_trace.append(
+                        {
+                            "phase": "document_route_cache_hit",
+                            "message": "复用缓存的文档路由决策（跳过模型路由）",
+                            "selected_count": len(selected_document_ids),
+                        }
+                    )
                 else:
                     scored_documents = _score_documents_with_scores(query, documents)
                     fast_path_documents = _lexical_fast_path_top(
@@ -758,7 +805,13 @@ class KnowledgeService:
                             )
                         else:
                             selected_document_ids = llm_document_ids
-                            llm_document_route_ok = True
+                            # 文档决策独立写回：即使 bucket 走了词法路径也照样缓存
+                            _cache_route_decision(
+                                self._doc_cache_slot,
+                                selected_document_ids,
+                                "document",
+                                route_trace,
+                            )
             else:
                 selected_document_ids = [row.id for row in _score_documents(query, documents)[:5]]
                 route_trace.append(
@@ -813,16 +866,30 @@ class KnowledgeService:
             strategy="llm" if model_config else "lexical",
         ) as span:
             selected_ids: list[str] = []
-            llm_bucket_route_ok = False
             if model_config:
-                cached_bucket_ids = (
-                    [str(item) for item in (self._route_cache_hit or {}).get("bucket_ids") or []]
-                    if self._route_cache_hit is not None
-                    else None
-                )
-                if cached_bucket_ids is not None:
-                    allowed_bucket_ids = {bucket.id for bucket in buckets}
-                    selected_ids = [item for item in cached_bucket_ids if item in allowed_bucket_ids]
+                # 命中缓存：按当前候选集过滤 + 按 max_buckets 截断；空则视为失效
+                allowed_bucket_ids = {bucket.id for bucket in buckets}
+                cached_bucket_ids = [
+                    item for item in (self._bucket_cache_ids or []) if item in allowed_bucket_ids
+                ][: request.max_buckets]
+                if self._bucket_cache_ids is not None and not cached_bucket_ids:
+                    route_trace.append(
+                        {
+                            "phase": "route_cache_stale",
+                            "dimension": "bucket",
+                            "message": "缓存决策与当前候选集不匹配，改用模型路由",
+                            "cached_count": len(self._bucket_cache_ids),
+                        }
+                    )
+                if cached_bucket_ids:
+                    selected_ids = cached_bucket_ids
+                    route_trace.append(
+                        {
+                            "phase": "bucket_route_cache_hit",
+                            "message": "复用缓存的内部索引路由决策（跳过模型路由）",
+                            "selected_count": len(selected_ids),
+                        }
+                    )
                 else:
                     scored_buckets = _score_buckets_with_scores(
                         query, buckets, request.query_type
@@ -905,7 +972,13 @@ class KnowledgeService:
                             )
                         else:
                             selected_ids = llm_bucket_ids
-                            llm_bucket_route_ok = True
+                            # 内部索引决策独立写回（bucket_route 才是耗时大头）
+                            _cache_route_decision(
+                                self._bucket_cache_slot,
+                                selected_ids,
+                                "bucket",
+                                route_trace,
+                            )
             else:
                 selected_ids = [
                     bucket.id
@@ -922,28 +995,8 @@ class KnowledgeService:
                 )
             span.finish(selected_count=len(selected_ids))
 
-        # LLM 决策成功产出后写入路由缓存（词法/快速路径/缓存命中/LLM 失败词法
-        # 兜底的选择不回写，避免把非 LLM 决策固化 30 分钟）。
-        if (
-            model_config is not None
-            and self._route_cache_key is not None
-            and self._route_cache_hit is None
-            and llm_document_route_ok
-            and llm_bucket_route_ok
-            and selected_document_ids
-            and selected_ids
-        ):
-            store_ok = store_route_cache(self._route_cache_key, selected_document_ids, selected_ids)
-            if store_ok:
-                route_trace.append(
-                    {
-                        "phase": "route_cache_stored",
-                        "message": "模型路由决策已缓存",
-                        "document_count": len(selected_document_ids),
-                        "bucket_count": len(selected_ids),
-                    }
-                )
-
+        # 写回已在各自维度内完成（见 _cache_route_decision）：只有 LLM 决策成功
+        # 的维度才写，词法快速路径/词法兜底/缓存命中的选择不回写。
         bucket_by_id = {bucket.id: bucket for bucket in buckets}
         selected_buckets = [bucket_by_id[bucket_id] for bucket_id in selected_ids if bucket_id in bucket_by_id]
         if not selected_buckets and not selected_concepts:

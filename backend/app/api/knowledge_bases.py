@@ -47,6 +47,7 @@ from app.knowledge.schema import (
     KnowledgeBaseRollbackRequest,
     KnowledgeBaseUpdateRequest,
 )
+from app.knowledge.route_cache import invalidate_knowledge_base
 from app.knowledge.okf import (
     build_okf_for_document,
     export_okf_bundle,
@@ -606,6 +607,7 @@ def delete_knowledge_base(
         db.add(branch)
         db.add(binding)
         db.commit()
+        invalidate_knowledge_base(tenant_id, knowledge_base_id)
         return {"status": "hidden"}
     row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
     if agent and agent.is_overall:
@@ -616,6 +618,7 @@ def delete_knowledge_base(
         ensure_open_gallery_admin(tenant_id, current_user)
         hide_open_gallery_binding(db, tenant_id, "knowledge_base", row.id)
         db.commit()
+        invalidate_knowledge_base(tenant_id, row.id)
         return {"status": "hidden"}
     ensure_open_gallery_admin(tenant_id, current_user)
     for model in (
@@ -647,6 +650,7 @@ def delete_knowledge_base(
         db.delete(binding)
     db.delete(row)
     db.commit()
+    invalidate_knowledge_base(tenant_id, row.id)
     return {"status": "deleted"}
 
 

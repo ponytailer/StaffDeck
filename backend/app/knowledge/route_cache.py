@@ -1,27 +1,47 @@
 """知识路由决策缓存（cache-aside，Redis 可选底座）。
 
-缓存 LLM 路由（knowledge.document_route / knowledge.bucket_route）的决策结果：
-(key) = tenant + agent + 授权知识库集合 + 归一化查询 → (value) = 选中的 ID 列表。
+缓存 LLM 路由（``knowledge.document_route`` / ``knowledge.bucket_route``）的
+决策结果，让重复问法跳过 2~74s 的模型路由调用。
 
-- 命中：跳过一次 10-25s 的 LLM 路由调用（deepseek-v4-flash 实测 document_route
-  2s、bucket_route 12-74s）；重复问法（含「怎么/如何/我想知道」等噪声词差异）
-  经 query_norm 归一后共享同一 key。
-- 失效：知识库写路径（上传/更新/入库完成）按 (tenant, kb_id) 模式删除；
-  TTL 30 分钟兜底，漏失效时最长 30 分钟后自动新鲜。
-- Redis 不可用 → 全部函数静默降级，行为与无缓存一致（get 返回 None）。
-- 只缓存 LLM 的「选择决策」，不缓存词法结果——语义纠偏能力保留。
+2026-09-14 重构要点：
+
+1. **两维独立**：document 与 bucket 各有独立 key、独立写回条件。任一路走 LLM
+   成功即可缓存该路决策；旧实现要求「两路都走 LLM 成功」才写，导致
+   「doc 走词法快速路径 + bucket 走 LLM」这类组合一个字都不缓存。
+2. **key 含版本维度**：``knowledge_base_version_ids`` 参与 key 指纹。换版本后
+   候选集合整体变化，不会命中旧版本的决策。
+3. **失效安全**：命中后按当前候选集过滤、按 ``max_*`` 截断；过滤为空视为缓存
+   失效，回退 LLM。旧实现过滤为空直接返回「没有相关的知识」并静默持续到过期。
+4. **精准失效**：写回时按 (tenant, kb_id) 登记索引集合，知识库写路径按库删除，
+   不再整租户清空；TTL 因此可以放大（默认 12 小时），仅作兜底。
+5. Redis 不可用 → 全部函数静默降级，行为与无缓存一致。
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
-from typing import Any
+from dataclasses import dataclass
 
-from app.object_cache import load_json, store_json, invalidate_namespace_pattern
+from app import object_cache
+
+logger = logging.getLogger(__name__)
 
 NAMESPACE = "kroute"
-ROUTE_CACHE_TTL_SECONDS = 1800
+INDEX_NAMESPACE = "krouteidx"
+_FULL_PREFIX = f"staffdeck:{NAMESPACE}:"
+
+# 兜底 TTL（秒）。知识库写路径会精准失效，正常不会靠过期兜底，
+# 所以给一个足够长的值以拉高命中率；漏失效时最长 12 小时后自动新鲜。
+ROUTE_CACHE_TTL_SECONDS = 12 * 3600
+
+# 无显式知识库维度（agent 全局范围）时的索引 scope 名。
+ALL_KB_SCOPE = "_all"
+
+# 缓存维度：文档路由 / 内部索引路由
+KIND_DOCUMENT = "doc"
+KIND_BUCKET = "bucket"
 
 # 查询噪声词：纯提问方式差异，不影响路由语义。归一时剔除以聚合相似问法。
 # 扩充自 app/knowledge/service.py QUERY_NOISE_PHRASES（那是打分用，这里是 key 归一）。
@@ -46,6 +66,21 @@ _ROUTE_NOISE_PHRASES = (
 )
 
 
+@dataclass(frozen=True)
+class RouteCacheSlot:
+    """一条路由决策缓存位点：key + 失效索引所需的租户/知识库范围。"""
+
+    key: str
+    tenant_id: str
+    kb_scopes: tuple[str, ...]
+
+    @property
+    def full_key(self) -> str:
+        """Redis 中的完整键（含 ``staffdeck:kroute:`` 前缀）。"""
+
+        return _FULL_PREFIX + self.key
+
+
 def query_norm(query: str) -> str:
     """查询归一：去标点空白、去提问噪声词、小写。
 
@@ -63,69 +98,144 @@ def query_norm(query: str) -> str:
     return text.strip()
 
 
-def route_cache_key(
+def _unique_sorted(values) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    return sorted({str(item).strip() for item in values if str(item).strip()})
+
+
+def _ttl_seconds() -> int:
+    """缓存 TTL：优先读配置，异常/未配置时用模块默认值。"""
+
+    try:
+        from app.config import get_settings
+
+        configured = int(getattr(get_settings(), "knowledge_route_cache_ttl_seconds", 0) or 0)
+    except Exception:
+        configured = 0
+    return configured if configured > 0 else ROUTE_CACHE_TTL_SECONDS
+
+
+def route_cache_slot(
     tenant_id: str,
     agent_id: str | None,
     knowledge_base_ids: list[str] | None,
     query: str,
-) -> str | None:
-    """构造路由缓存 key；无法构造时返回 None（调用方跳过缓存）。"""
+    *,
+    kind: str,
+    knowledge_base_version_ids: list[str] | None = None,
+) -> RouteCacheSlot | None:
+    """构造缓存位点；无法构造（缺租户/查询归一后为空）时返回 None。"""
 
     tenant = (tenant_id or "").strip()
-    if not tenant or not (query or "").strip():
+    normalized = query_norm(query or "")
+    if not tenant or not normalized:
         return None
     agent = (agent_id or "").strip() or "-"
-    kb_part = ",".join(sorted({str(kb).strip() for kb in (knowledge_base_ids or []) if str(kb).strip()}))
-    normalized = query_norm(query)
-    if not normalized:
+    kb_ids = _unique_sorted(knowledge_base_ids)
+    version_ids = _unique_sorted(knowledge_base_version_ids)
+    fingerprint = "|".join(
+        (
+            ",".join(kb_ids),
+            ",".join(version_ids),
+            normalized,
+        )
+    )
+    digest = hashlib.md5(fingerprint.encode("utf-8")).hexdigest()[:12]
+    key = f"{tenant}:{kind}:{agent}:{digest}"
+    scopes = tuple(kb_ids) if kb_ids else (ALL_KB_SCOPE,)
+    return RouteCacheSlot(key=key, tenant_id=tenant, kb_scopes=scopes)
+
+
+def get_route_decision(slot: RouteCacheSlot | None) -> list[str] | None:
+    """读该维度的路由决策 ID 列表；未命中/不可用/结构异常返回 None。"""
+
+    if slot is None:
         return None
-    query_hash = hashlib.md5(f"{kb_part}|{normalized}".encode("utf-8")).hexdigest()[:12]
-    return f"{tenant}:{agent}:{query_hash}"
-
-
-def get_route_cache(key: str | None) -> dict[str, Any] | None:
-    """读路由决策缓存；未命中/不可用返回 None。"""
-
-    if not key:
-        return None
-    data = load_json(key, namespace=NAMESPACE)
+    data = object_cache.load_json(slot.key, namespace=NAMESPACE)
     if not isinstance(data, dict):
         return None
-    if not isinstance(data.get("document_ids"), list) or not isinstance(data.get("bucket_ids"), list):
+    ids = data.get("ids")
+    if not isinstance(ids, list):
         return None
-    return data
+    return [str(item) for item in ids]
 
 
-def store_route_cache(
-    key: str | None,
-    document_ids: list[str],
-    bucket_ids: list[str],
-    ttl_seconds: int = ROUTE_CACHE_TTL_SECONDS,
-) -> bool:
-    """写路由决策缓存；返回是否真正写入（Redis 不可用时返回 False）。"""
+def store_route_decision(slot: RouteCacheSlot | None, ids: list[str] | None) -> bool:
+    """写该维度的路由决策；返回是否真正写入（Redis 不可用/空结果返回 False）。"""
 
-    if not key:
+    if slot is None or not ids:
         return False
-    return store_json(
-        key,
-        {"document_ids": list(document_ids), "bucket_ids": list(bucket_ids)},
-        ttl_seconds=ttl_seconds,
+    ttl = _ttl_seconds()
+    written = object_cache.store_json(
+        slot.key,
+        {"ids": [str(item) for item in ids]},
+        ttl_seconds=ttl,
         namespace=NAMESPACE,
     )
+    if written:
+        _register_index(slot, ttl)
+    return written
 
 
-def invalidate_knowledge_base(tenant_id: str, knowledge_base_ids: list[str] | str) -> None:
-    """知识库内容变更时，删除该库相关的全部路由缓存。
+def _index_key(tenant_id: str, scope: str) -> str:
+    return f"staffdeck:{INDEX_NAMESPACE}:{tenant_id}:{scope}"
 
-    key 中 query_hash 含 kb_ids 排序串，因此按「tenant:agent:*」模式扫描后
-    在应用侧过滤——SCAN 模式无法反向匹配 query_hash 里的 kb 组合，
-    采用 tenant + agent 前缀扫描、解析 value 校对 kb_ids。
 
-    简化取舍：直接按 tenant 前缀全删（同一 tenant 的路由缓存规模有限，
-    通常数十条，全删成本低于逐条解析校对）。
+def _register_index(slot: RouteCacheSlot, ttl_seconds: int) -> None:
+    """把该缓存键登记到所属的知识库索引集合，供按库精准失效。"""
+
+    client = object_cache.get_redis()
+    if client is None:
+        return
+    try:
+        for scope in slot.kb_scopes:
+            index_key = _index_key(slot.tenant_id, scope)
+            client.sadd(index_key, slot.full_key)
+            client.expire(index_key, ttl_seconds)
+    except Exception:
+        # 索引登记失败不影响缓存本身可用，最多退化为「该条不参与精准失效」
+        logger.warning("路由缓存索引登记失败：%s", slot.key)
+
+
+def invalidate_knowledge_base(
+    tenant_id: str, knowledge_base_ids: list[str] | str | None = None
+) -> None:
+    """知识库内容变更时，删除该库相关的路由缓存。
+
+    按写入时登记的索引集合删除，**不再整租户清空**：
+
+    - 指定 kb：删除这些库的索引 + ``_all_``（agent 全局范围）索引；
+    - 未指定：扫描并删除该租户的全部路由缓存索引（租户级全量失效）。
+
+    索引集合用完即删；集合中残留的已删除键在 ``DEL`` 时是 no-op，不影响正确性。
     """
 
     tenant = (tenant_id or "").strip()
     if not tenant:
         return
-    invalidate_namespace_pattern(NAMESPACE, f"{tenant}:*")
+    client = object_cache.get_redis()
+    if client is None:
+        return
+
+    kb_ids = _unique_sorted(knowledge_base_ids)
+    if kb_ids:
+        scopes = sorted(set(kb_ids) | {ALL_KB_SCOPE})
+        index_keys = [_index_key(tenant, scope) for scope in scopes]
+    else:
+        index_keys = list(
+            client.scan_iter(match=f"staffdeck:{INDEX_NAMESPACE}:{tenant}:*", count=200)
+        )
+
+    for index_key in index_keys:
+        try:
+            members = client.smembers(index_key)
+            batch = list(members)
+            # 分批删除，避免单条命令参数过长阻塞 Redis
+            for start in range(0, len(batch), 500):
+                client.delete(*batch[start : start + 500])
+            client.delete(index_key)
+        except Exception:
+            logger.warning("路由缓存失效失败：%s", index_key)

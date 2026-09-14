@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     # connector 进程锁（Redis 模式）的 TTL 与续期间隔（秒）；
     # 持锁进程崩溃后锁在 TTL 内自动过期，替代 PG advisory lock 的僵死连接问题
     connector_lock_ttl_seconds: int = 30
+    # 知识路由决策缓存 TTL（秒）。知识库写路径会按库精准失效，此值仅作兜底，
+    # 因此默认给 12 小时以拉高命中率；漏失效时最长 12 小时后自动新鲜。
+    knowledge_route_cache_ttl_seconds: int = 12 * 3600
 
     # ---- 定时任务调度后端（PG 主源 + Redis 仅执行触发）----
     # "rq" = 独立 rq worker 进程经 Redis 调度（默认）；"poll" = 进程内轮询线程（旧实现）。
