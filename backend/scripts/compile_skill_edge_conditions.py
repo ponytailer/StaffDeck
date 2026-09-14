@@ -22,7 +22,7 @@
     # 4. 复核覆盖情况（只读）
     .venv/bin/python scripts/compile_skill_edge_conditions.py --verify
 
-    # 缩小范围 / 走 rq 异步
+    # 缩小范围 / 走 rq 异步（**异步一定要带 --apply**：worker 侧是真的写库）
     .venv/bin/python scripts/compile_skill_edge_conditions.py --apply --tenant tenant_demo --skill sop_xxx
     .venv/bin/python scripts/compile_skill_edge_conditions.py --apply --queue
 
@@ -30,15 +30,21 @@
 ----
 - ``--tenant`` / ``--skill`` / ``--limit``：范围裁剪（可组合）。
 - ``--apply``：真正写库；不加则 dry-run。``--dry-run`` 是它的显式反面。
-- ``--no-llm``：禁用 LLM，只做前端预设 / 无条件边的确定性直译。
+- ``--no-llm``：**仅限 dry-run**——只做前端预设 / 无条件边的确定性直译，
+  用来先估零成本能覆盖多少。配 ``--apply`` 会被拒绝：禁用 LLM 落库会把非预设边
+  固化成 ``llm_judge``，而 ``llm_judge`` 算「已覆盖」，后续补跑 LLM 也不会重编。
 - ``--force``：连已有编译结果的边一起重编（默认跳过已覆盖的）。
 - ``--queue``：不本地执行，把每个技能丢给 rq 的 ``skill_compile`` 队列
-  （适合大租户；需要 ``uv run rq-worker`` 在跑）。
+  （适合大租户；需要 ``uv run rq-worker`` 在跑）。worker 侧会**真实写库**，
+  因此必须与 ``--apply`` 同时使用，且不能与 ``--dry-run`` 组合（退出码 2）。
 - ``--verify``：不编译，只读表统计覆盖率（可与 ``--apply`` 一起用）。
+- ``--quiet``：不逐技能输出，只看汇总。
 - ``--json``：额外输出一份机器可读的汇总。
 
 退出码：``--apply`` 后仍有 ``failed`` / ``pending`` 时返回 1，便于 CI / 发布
-前卡口；``llm_judge`` 不算失败——那是「确实需要模型语义判断」的正常结果。
+前卡口；``--queue`` 时只要有目标入队失败也返回 1（rq 不可用不再静默）；
+参数组合非法返回 2。``llm_judge`` 不算失败——那是「确实需要模型语义判断」的
+正常结果。
 """
 
 from __future__ import annotations
@@ -257,7 +263,9 @@ def run_apply(targets: list[Target], *, allow_llm: bool, force: bool, verbose: b
             target.tenant_id,
             target.skill_id,
             target.agent_id,
-            force=force or not allow_llm,
+            # 不在 allow_llm=False 时隐式 force：那会用「只有预设直译」的结果覆盖掉
+            # 已有的 LLM 编译产物（非预设边退化成 llm_judge），是纯粹的降级。
+            force=force,
         )
         status = str(summary.get("status") or "")
         if status == "missing":
@@ -400,18 +408,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, help="最多处理多少个技能（含分支）")
     parser.add_argument("--apply", action="store_true", help="真正写入 skill_edge_conditions")
     parser.add_argument("--dry-run", action="store_true", help="只统计不写库（默认行为）")
-    parser.add_argument("--no-llm", action="store_true", help="禁用 LLM，只做确定性直译")
+    parser.add_argument("--no-llm", action="store_true", help="只做确定性直译（仅限 dry-run 预览）")
     parser.add_argument("--force", action="store_true", help="连已有编译结果的边一起重编")
-    parser.add_argument("--queue", action="store_true", help="交给 rq worker 异步执行")
+    parser.add_argument("--queue", action="store_true", help="交给 rq worker 异步执行（必须配 --apply）")
     parser.add_argument("--verify", action="store_true", help="只读复核覆盖率")
+    parser.add_argument("--quiet", action="store_true", help="只打印汇总，不逐技能输出")
     parser.add_argument("--json", action="store_true", help="额外输出机器可读汇总")
     args = parser.parse_args(argv)
 
-    # allow_llm = not args.no_llm
-    allow_llm = True
-    # --verify 单独出现时只复核；与 --apply 同时出现则「先写后核」
+    allow_llm = not args.no_llm
+    verbose = not args.quiet
     do_apply = bool(args.apply) and not args.dry_run
-    verbose = True
+
+    # --- 模式互斥校验：把「看起来只读、其实写库」的组合全部挡在入口 ---
+    if args.queue and (args.dry_run or not args.apply):
+        # queue 模式由 worker 执行 run_edge_condition_compile，**一定会写库**；
+        # --dry-run 在这里没有任何拦截能力，必须显式要求 --apply。
+        print(
+            "✗ --queue 会把任务交给 worker 真实写库，不能与 --dry-run 合用，"
+            "也不能省略 --apply。\n"
+            "  只预览请去掉 --queue；真要异步落库请用：--apply --queue",
+            file=sys.stderr,
+        )
+        return 2
+    if args.no_llm and do_apply:
+        # 禁用 LLM 时非预设边只能落 llm_judge，而 llm_judge 在 has_uncompiled_edge
+        # 眼里算「已覆盖」→ 之后补跑 LLM 也不会重编这些边，等于把图永久冻在半成品。
+        # 所以 --no-llm 只作为「先看零成本能覆盖多少」的预览工具。
+        print(
+            "✗ --no-llm 只用于 dry-run 预览：禁用 LLM 落库会把非预设边永久固化成 llm_judge，"
+            "后续补跑也不会重编。\n"
+            "  想看零成本覆盖请用：--no-llm（不加 --apply）",
+            file=sys.stderr,
+        )
+        return 2
 
     with Session(engine) as session:
         targets = _collect_targets(
@@ -426,11 +456,15 @@ def main(argv: list[str] | None = None) -> int:
         print("没有需要处理的目标。")
         return 0
 
-    if args.queue and not args.verify:
-        print("\n[QUEUE] 投递到 rq skill_compile 队列")
+    if args.queue:
+        print("\n[QUEUE] 投递到 rq skill_compile 队列（worker 侧会真实写库）")
         totals = run_queue(targets)
         if args.json:
             print(json.dumps({"mode": "queue", "rows": totals.rows}, ensure_ascii=False, indent=2))
+        failed = sum(1 for row in totals.rows if not row.get("job_id"))
+        if failed:
+            print(f"\n⚠ {failed}/{len(totals.rows)} 个目标入队失败（rq 不可用？看上面的 job=None）。")
+            return 1
         return 0
 
     totals = Totals()

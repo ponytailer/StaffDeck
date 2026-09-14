@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 from datetime import datetime
 from typing import Any
@@ -199,6 +200,33 @@ def cancel_task(task_id: str) -> bool:
     return True
 
 
+def _resolve_job_func(func_path: str) -> tuple[str, Any] | None:
+    """归一化并**在生产端**解析入队函数，返回 ``(点分路径, 可调用对象)``。
+
+    rq 的 ``import_attribute`` 只接受点分路径 ``pkg.mod.func``；冒号形式
+    ``pkg.mod:func``（pytest / entry-point 风格）是常见笔误。写错时 rq 在
+    **入队阶段毫不报错**，任务排进 Redis，直到 worker 取出来执行才抛
+    ``ValueError: Invalid attribute name`` —— 那时调用方早已返回，请求线程
+    上看不到任何异常，只剩一个「编译永远不生效」的哑弹。
+
+    所以这里统一归一化（``:`` → ``.``）并就地解析一次：解析不了就返回 ``None``，
+    由调用方降级到兜底通道（进程内异步队列），而不是排出注定失败的任务。
+    """
+
+    path = func_path.replace(":", ".", 1) if ":" in func_path else func_path
+    module_name, _, attr_name = path.rpartition(".")
+    if not module_name or not attr_name:
+        return None
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:  # noqa: BLE001 - 路径写错只该降级，不该炸调用方
+        return None
+    func = getattr(module, attr_name, None)
+    if func is None or not callable(func):
+        return None
+    return path, func
+
+
 def enqueue_job(
     queue_name: str,
     func_path: str,
@@ -208,16 +236,27 @@ def enqueue_job(
 ) -> str | None:
     """把一次性后台工作塞进指定 rq 队列；不可用时返回 ``None``（调用方兜底）。
 
-    ``func_path`` 是 ``"module:qualname"`` 字符串——不能传函数对象，否则 pickle
-    出来的 worker 侧需要能 import 调用方的局部状态；字符串路径保证跨进程可解析。
+    ``func_path`` 是**点分**的模块级函数路径（``"app.pkg.mod.func"``）。因为 rq
+    序列化的是函数**名字**而不是函数对象，传字符串才能跨进程解析（传函数对象会
+    让 worker 侧依赖 pickled 状态的可用性）。冒号形式会被自动归一化，但更推荐
+    直接写点分。
+
+    入队前会先解析一次函数路径（见 :func:`_resolve_job_func`）：路径写错时返回
+    ``None`` 而不是排一个注定在 worker 侧报错的任务。
 
     这是本模块对外暴露的**通用**入队口（除定时任务触发外），保持「rq 只在
     ``rq_dispatch`` 里出现」这条边界不被打破。Redis 未配置 / 连不上 /
-    ``scheduler_backend != "rq"`` 时一律返回 ``None``，由调用方决定降级方式。
+    ``scheduler_backend != "rq"`` / 函数路径不可解析时一律返回 ``None``，
+    由调用方决定降级方式。
     """
 
     if get_settings().scheduler_backend != "rq":
         return None
+    resolved = _resolve_job_func(func_path)
+    if resolved is None:
+        logger.warning("rq 入队跳过：函数路径不可解析 func=%s queue=%s", func_path, queue_name)
+        return None
+    path, _func = resolved
     conn = _redis_connection()
     if conn is None:
         return None
@@ -226,7 +265,7 @@ def enqueue_job(
 
         queue = Queue(queue_name, connection=conn)
         job = queue.enqueue(
-            func_path,
+            path,
             *args,
             job_timeout=timeout_seconds
             or get_settings().scheduled_task_job_timeout_seconds,
@@ -234,7 +273,7 @@ def enqueue_job(
         )
         return job.id
     except Exception:  # noqa: BLE001 - 入队失败不影响调用方主流程
-        logger.warning("rq 入队失败 queue=%s func=%s", queue_name, func_path, exc_info=True)
+        logger.warning("rq 入队失败 queue=%s func=%s", queue_name, path, exc_info=True)
         return None
 
 

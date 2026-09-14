@@ -11,9 +11,9 @@
   - **③ 运行时求值（场景 G）**：`sop_step_executor` 用槽位 + 上一步能力调用结果 + 用户消息求值，**唯一命中即直判，零 LLM**；只要有一条边求值未知就整体交还 LLM（未知 ≠ 不命中），有编译产物时不再退回无条件边兜底（否则等于擅自走 else）。未编译的图行为与改造前**完全一致**（场景 D 保留为兜底）
   - **异步编译**：写路径（create / update / publish / 回滚 / 删除清理）只入队不等待；rq 独立 `skill_compile` 队列，Redis 不可用自动降级进程内异步队列；按条件指纹跳过已编译边，重复入队零成本
   - **产物存储**：`skill_edge_conditions` 表 + `(tenant_id, skill_id, condition_fingerprint)` 唯一键——不写回 `content_json`（前端 TS 类型与 SkillEditor 局部改写会把无类型字段静默丢掉）；指纹含「边端点 + 条件原文 + 源节点必填字段」，条件一改旧结果自然失效
-  - **人工复核数据面**：`GET /{skill_id}/edge-conditions` 返回每条条件边的 status / kind / 可读描述 / 置信度 / 模型理由；`POST /{skill_id}/edge-conditions/compile` 支持异步或 `sync=true` 排障
+  - **人工复核数据面**
   - **历史回填脚本**
-  - 实测（真实库 30 个技能/分支、176 条非无条件边）：`--no-llm` 零成本直译 24 条（另有无条件边 13 条本来就可直判）
+  - 实测（真实库 30 个技能/分支、176 条非无条件边，全量带 LLM）：结构化 **116 条（67%）**、`llm_judge` 58 条、无条件边 15 条；LLM 调用 28 次（每技能/分支 1 次批量）
   - 测试：新增 `test_edge_condition_spec.py`(55) + `test_edge_condition_compiler.py`(20) + `test_edge_condition_jobs.py`(18)，`test_sop_step_executor.py` 扩到 67 例（含场景 G / 抽取后直判 / 未知边否决 / 集成透传），相关回归 155 例全绿
 - **性能：知识路由缓存重构（两维独立 + 精准失效 + 长 TTL）**
   - **两维独立**：document 与 bucket 拆成独立 key、独立写回条件，任一路走 LLM 成功即可缓存该路决策；旧实现要求「两路都走 LLM 成功」才写，「doc 词法快速路径 + bucket LLM」这类组合一个字都不缓存

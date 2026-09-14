@@ -155,14 +155,62 @@ def test_rq_worker_consumes_both_queues() -> None:
 
 
 def test_job_func_path_is_importable() -> None:
-    """rq 用 "module:qualname" 字符串跨进程取函数——路径必须真的能 import。"""
+    """rq 用点分字符串路径跨进程取函数——必须能被 **rq 自己的解析器** 解析出来。
 
-    import importlib
+    这里刻意不自己 ``split(".")`` 再 ``getattr``：那样写只能证明「路径长得像
+    点分」，证明不了 rq 认它。历史上这个常量写成过 ``module:qualname``，手工
+    拆分解析不了的用例照样绿，直到 worker 侧抛
+    ``ValueError: Invalid attribute name`` 才暴露。
+    """
 
-    module_name, qualname = JOB_FUNC_PATH.split(":", 1)
-    module = importlib.import_module(module_name)
-    target = getattr(module, qualname)
+    from rq.utils import import_attribute
+
+    target = import_attribute(JOB_FUNC_PATH)
     assert callable(target)
+    assert target.__name__ == "run_edge_condition_compile"
+
+
+def test_resolve_job_func_normalizes_colon_path() -> None:
+    """兼容写法 ``module:func`` 要被归一化成点分，而不是排一个注定失败的任务。"""
+
+    from app.scheduled_tasks.rq_dispatch import _resolve_job_func
+
+    resolved = _resolve_job_func("app.skills.edge_condition_jobs:run_edge_condition_compile")
+    assert resolved is not None
+    path, func = resolved
+    assert path == "app.skills.edge_condition_jobs.run_edge_condition_compile"
+    assert callable(func)
+
+
+def test_resolve_job_func_rejects_bad_paths() -> None:
+    from app.scheduled_tasks.rq_dispatch import _resolve_job_func
+
+    assert _resolve_job_func("app.skills.edge_condition_jobs.no_such_func") is None
+    assert _resolve_job_func("app.no_such_module.func") is None
+    assert _resolve_job_func("no_dot_at_all") is None
+    # 目录不是函数（不可调用）也要挡住
+    assert _resolve_job_func("app.skills.edge_condition_jobs") is None
+
+
+def test_enqueue_job_fails_fast_on_unresolvable_func(monkeypatch) -> None:
+    """路径写错时必须在**生产端**就返回 None，而不是排进队列变哑弹。
+
+    用「碰 Redis 就炸」替身证明短路点在连接之前：若代码没做前置解析，就会走到
+    ``_redis_connection`` 而触发断言。
+    """
+
+    from app.scheduled_tasks import rq_dispatch
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("函数路径不可解析时不应触碰 Redis")
+
+    monkeypatch.setattr(rq_dispatch, "_redis_connection", _boom)
+    rq_dispatch.reset_caches()
+    try:
+        bad = "app.skills.edge_condition_jobs:definitely_missing"
+        assert rq_dispatch.enqueue_job("any_queue", bad) is None
+    finally:
+        rq_dispatch.reset_caches()
 
 
 # ---------------------------------------------------------------------------

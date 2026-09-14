@@ -40,8 +40,11 @@ from app.skills.edge_condition_spec import condition_fingerprint, is_uncondition
 logger = logging.getLogger(__name__)
 
 JOB_NAME = "skill.edge_condition_compile"
-# rq 用 pickle 传函数：必须是模块级 "module:qualname" 字符串路径
-JOB_FUNC_PATH = "app.skills.edge_condition_jobs:run_edge_condition_compile"
+# rq 的 import_attribute 只认**点分**路径（``pkg.mod.func``）。写成冒号形式
+# （``pkg.mod:func``，pytest / entry-point 风格）入队阶段完全不报错，任务排进
+# 队列后才在 worker 侧抛 ``ValueError: Invalid attribute name``——所以这里必须
+# 是点分，并且由 ``tests/test_edge_condition_jobs.py`` 用 rq 自己的解析器守卫。
+JOB_FUNC_PATH = "app.skills.edge_condition_jobs.run_edge_condition_compile"
 
 
 # ---------------------------------------------------------------------------
