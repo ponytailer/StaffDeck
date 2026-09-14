@@ -1,7 +1,7 @@
-"""SOP 确定性步骤执行器（P1）。
+"""SOP 确定性步骤执行器（P1 / P3 / P4 / P5）。
 
 Harness 循环里每个节点推进都要一整轮 task_action LLM 决策（25-187s/轮），
-但其中三类场景的决策是纯代码可判定的——SOP 图结构（skill_schema.SkillCard）
+但其中大部分场景的决策是纯代码可判定的——SOP 图结构（skill_schema.SkillCard）
 在 TaskRequirement 编译期已包含全部判定所需信息：
 
 - **C 预检索**：节点声明了强制知识库且槽位齐 → 直接产出 knowledge_search
@@ -11,10 +11,23 @@ Harness 循环里每个节点推进都要一整轮 task_action LLM 决策（25-1
   编译下一节点继续，整个节点零 LLM。
 - **A 缺槽直通**：节点缺槽位且无强制能力 → 直接 finish(awaiting_user)，
   问话用模板文案（LLM 原本那轮只为把这句话说得更自然，P2 再用轻量模型润色）。
+- **D 决策直判**（P3）：`decision` 节点的分支条件能用槽位取值直接证定时，
+  用**条件中文词元的双向包含**做保守匹配，命中唯一才直判。
+- **E 工具直组**（P3）：`tool_call` 节点的 input_schema 必填参数全有同名槽位
+  → 直接产出 tool 动作，省掉 capability_describe + LLM 组参两轮。
+- **F 转人工直通**（P4）：handoff 终点且无出边 → 直接 finish(handoff)。
+- **G 条件求值直判**（P5，本文件新增）：边条件若已被**离线编译器**
+  （``app/skills/edge_condition_compiler.py``）编译成结构化契约
+  （``EdgeConditionSpec``），直接用槽位取值 + 上一步调用结果 + 用户消息
+  求值——命中唯一即直判，**零 LLM**。这是把「每次推进都让模型重新理解一遍
+  中文条件」换成「编译一次、跑无数次」的关键一步。
 
 设计约束：
-- 只走无条件边（condition 为空/default/else）；condition 是自由文本
-  （如「需要外部商品数据」），无法静态求值，一律降级。
+- 场景 G 只在**恰好一条**边命中、且没有「未知」的互斥边时才直判；只要存在
+  一条无法求值的边（含 ``llm_judge``、未编译的自由文本、字段无从解析），
+  一律交还 LLM——**未知不等于不命中**。
+- 场景 D 是场景 G 的**兜底**：只在「这些边一条都没编译过」且节点类型是
+  ``decision`` 时启用，保证未编译的历史技能行为完全不变。
 - 断点恢复到同一步骤（same_step）时不介入，避免重复动作。
 - 任何异常返回空列表，harness 侧静默回退现有 LLM 决策链路。
 - 返回动作 dict（HarnessAction 兼容），由 harness_agent 侧
@@ -24,9 +37,17 @@ Harness 循环里每个节点推进都要一整轮 task_action LLM 决策（25-1
 from __future__ import annotations
 
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Mapping
 
 from app.core.graph_rules import GraphRules
+from app.skills.edge_condition_spec import (
+    EdgeConditionSpec,
+    EdgeEvalContext,
+    condition_fingerprint,
+    evaluate_edge_condition,
+    spec_from_payload,
+)
 
 # 允许确定性直通的出边条件（与 GraphRules.edge_condition 的空值语义一致）
 _UNCONDITIONAL_EDGE_CONDITIONS = {"", "default", "else"}
@@ -66,10 +87,11 @@ def plan_sop_prefill_actions(
     satisfied_required_knowledge_ids: set[str] | None = None,
     trace_sink: Any = None,
     slot_extraction_model: Any = None,
+    edge_condition_specs: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """为 sop TaskRequirement 产出确定性动作序列；不可判定时返回空列表。
 
-    动作以 dict 形式返回（HarnessAction.model_validate 兼容），三个场景
+    动作以 dict 形式返回（HarnessAction.model_validate 兼容），各场景
     互斥，按 C → B → A 优先级取第一个命中的。场景 A 会用
     slot_extraction_model（轻量意图模型优先）做一次槽位抽取——用户首条
     消息往往已带齐信息，避免「已提供还要求补全」的错误询问。
@@ -77,6 +99,11 @@ def plan_sop_prefill_actions(
     resumed_awaiting_user：断点恢复到同一步骤且上次终点是本执行器发出的
     awaiting_user（等槽位）。此时用户回来补信息正是槽位抽取的主场景，
     放行场景 A；预检索/流转（C/B）仍不介入，避免重复动作。
+
+    edge_condition_specs：``{条件指纹: EdgeConditionSpec 载荷}``，由 harness
+    侧按技能加载（``app/skills/edge_condition_jobs`` 的编译产物）。**不放进
+    TaskRequirement**——那份对象每轮都会整包发给模型，塞进去会白白撑大
+    prompt。缺省/为空时全部退回场景 D 与 LLM 决策，行为与改造前一致。
     """
 
     try:
@@ -178,6 +205,19 @@ def plan_sop_prefill_actions(
                 }
         merged_slots = {**known_slots, **fresh_slots} if fresh_slots else known_slots
 
+        # 出边的结构化求值（场景 G 的证据）：一次算好，供 F/G/B 复用。
+        # 找不到任何编译产物时 spec 全为 None，等价于改造前的行为。
+        allowed_transitions = list(getattr(requirement, "allowed_transitions", []) or [])
+        edge_conditions = _evaluate_edges(
+            allowed_transitions,
+            step=step,
+            specs=edge_condition_specs,
+            slots=merged_slots,
+            user_message=source_message,
+            allowed_fields=set(slot_fields),
+            last_result_ok=_last_result_ok(requirement),
+        )
+
         if required_slots:
             # 场景 A（P2 增强）：缺槽时先尝试轻量 LLM 槽位抽取——
             # 用户首条消息往往已带齐信息（如「申请OA管理员权限，工号3012」），
@@ -203,7 +243,9 @@ def plan_sop_prefill_actions(
             }
             missing = [slot for slot in required_slots if slot not in extracted]
             if not missing:
-                # 抽齐：槽位缺口解除 → 重走 C/B 判定（此时 kb 必为空，实际走 B）
+                # 抽齐：槽位缺口解除 → 用**抽出后的完整槽位**重算条件边，
+                # 再走 C/G/B 判定（「信息齐了就走 X 分支」这类最常见条件正
+                # 是在这里被直判掉的；缺了这一步它只能回落 LLM）。
                 return _plan_prefetch_or_passthrough(
                     requirement,
                     required_knowledge_ids=required_knowledge_ids,
@@ -212,6 +254,15 @@ def plan_sop_prefill_actions(
                     step=step,
                     trace_sink=trace_sink,
                     scene_suffix="_after_extraction",
+                    edge_conditions=_evaluate_edges(
+                        allowed_transitions,
+                        step=step,
+                        specs=edge_condition_specs,
+                        slots={**known_slots, **extracted},
+                        user_message=source_message,
+                        allowed_fields=set(slot_fields),
+                        last_result_ok=_last_result_ok(requirement),
+                    ),
                 )
             # 部分/未抽到：问缺的，已抽到的值随 slot_updates 落库防重复问
             action = _await_user_action(step, missing)
@@ -233,7 +284,7 @@ def plan_sop_prefill_actions(
         # 跳过纯协议 task_action LLM 轮（实测 12-17s/轮，转交节点连烧 3 轮）。
         if (
             str(step.get("type") or "").strip() == _HANDOFF_NODE_TYPE
-            and not (getattr(requirement, "allowed_transitions", None) or [])
+            and not allowed_transitions
         ):
             return _plan_handoff_passthrough(
                 step,
@@ -242,11 +293,15 @@ def plan_sop_prefill_actions(
                 allowed_fields=set(slot_fields),
             )
 
-        # 场景 D（P3）：decision 节点的分支条件能用槽位取值直接证定时，
-        # 跳过 LLM 决策轮（此前该轮还常附带多余的 capability_describe/建单）
-        if str(step.get("type") or "").strip() == _DECISION_NODE_TYPE:
+        # 场景 D（P3，场景 G 的兜底）：decision 节点的分支条件能用槽位取值直接
+        # 证定时跳过 LLM 决策轮。**只在这些边一条都没编译过时启用**——已有结构化
+        # 条件的边由场景 G 说了算，两套判据混用会互相打架。
+        if (
+            str(step.get("type") or "").strip() == _DECISION_NODE_TYPE
+            and not any(item.has_spec for item in edge_conditions)
+        ):
             next_target = _decision_direct_next(
-                getattr(requirement, "allowed_transitions", []) or [],
+                allowed_transitions,
                 merged_slots,
                 user_message=source_message,
                 allowed_fields=set(slot_fields),
@@ -263,7 +318,8 @@ def plan_sop_prefill_actions(
                     next_node_id=next_target,
                 )
 
-        # 场景 B：纯流转直通（A2 抽到的新值随 slot_updates 落库覆盖旧值）
+        # 场景 B（+ 场景 G 的条件求值直判）：纯流转直通。
+        # A2 抽到的新值随 slot_updates 落库覆盖旧值。
         return _plan_prefetch_or_passthrough(
             requirement,
             required_knowledge_ids=[],
@@ -272,6 +328,7 @@ def plan_sop_prefill_actions(
             step=step,
             trace_sink=trace_sink,
             scene_suffix="",
+            edge_conditions=edge_conditions,
         )
     except Exception:  # noqa: BLE001 - 执行器绝不阻断主链路，一律降级
         return []
@@ -286,11 +343,16 @@ def _plan_prefetch_or_passthrough(
     step: dict[str, Any],
     trace_sink: Any,
     scene_suffix: str,
+    edge_conditions: list[_EdgeCondition] | None = None,
 ) -> list[dict[str, Any]]:
-    """槽位无缺口后的两个确定性分支：C 预检索 / B 纯流转直通。
+    """槽位无缺口后的确定性分支：C 预检索 → G 条件求值直判 → B 纯流转直通。
 
     场景 A 抽齐槽位后也走这里（scene_suffix="_after_extraction" 供观测
-    区分抽取后直通的次数）。
+    区分抽取后直通的次数），并用抽出后的完整槽位重算 ``edge_conditions``，
+    因此「槽位齐了就该走某条条件分支」也能被场景 G 直接判定。
+
+    ``edge_conditions`` 为空时按「未编译」处理（只认无条件边），与改造前
+    的行为完全一致。
     """
 
     # C：预检索
@@ -309,10 +371,33 @@ def _plan_prefetch_or_passthrough(
             )
         return []
 
-    # B：纯流转直通（抽取值随 slot_updates 落库）
-    next_node_id = _unique_unconditional_next(
-        getattr(requirement, "allowed_transitions", []) or []
+    edges = (
+        edge_conditions
+        if edge_conditions is not None
+        else _edges_without_specs(list(getattr(requirement, "allowed_transitions", []) or []))
     )
+
+    # G：结构化条件求值直判（零 LLM）。
+    if any(item.has_spec for item in edges):
+        spec_next = _route_direct_next(edges)
+        if spec_next:
+            action = _passthrough_action(step, spec_next)
+            if extracted_slots:
+                action["slot_updates"] = extracted_slots
+            return _emit(
+                trace_sink,
+                f"condition_spec_direct_eval{scene_suffix}",
+                [action],
+                next_node_id=spec_next,
+                kinds=[item.kind for item in edges if item.has_spec],
+            )
+        # 图上有编译产物、但无法唯一判定（多条命中 / 存在未知边）→ **整段交还
+        # LLM**，绝不继续走 B：B 会挑中那条 `always` 兜底边，等于在没排除其它
+        # 条件分支的前提下擅自走了 else，分支语义就错了。
+        return []
+
+    # B：纯流转直通（未编译的图——历史行为完全不变；抽取值随 slot_updates 落库）
+    next_node_id = _unique_unconditional_next(edges)
     if next_node_id:
         action = _passthrough_action(step, next_node_id)
         if extracted_slots:
@@ -327,19 +412,195 @@ def _plan_prefetch_or_passthrough(
     return []
 
 
-def _unique_unconditional_next(allowed_transitions: list[Any]) -> str:
-    """唯一无条件出边时返回目标节点；有歧义或全是条件边则返回空串。"""
+@dataclass(frozen=True)
+class _EdgeCondition:
+    """一条出边 + 它的结构化条件（未编译时为 ``None``）与求值结果。"""
 
-    unconditional: list[str] = []
+    target: str
+    condition_text: str
+    spec: EdgeConditionSpec | None
+    value: bool | None
+
+    @property
+    def kind(self) -> str:
+        return self.spec.kind if self.spec is not None else ""
+
+    @property
+    def has_spec(self) -> bool:
+        return self.spec is not None
+
+    @property
+    def is_always(self) -> bool:
+        """无条件边：编译后是 ``always``，或未编译但条件文本就是空/default/else。"""
+
+        if self.kind == "always":
+            return True
+        if self.spec is not None:
+            return False
+        return self.condition_text.strip().lower() in _UNCONDITIONAL_EDGE_CONDITIONS
+
+
+def _evaluate_edges(
+    allowed_transitions: list[Any],
+    *,
+    step: dict[str, Any],
+    specs: Mapping[str, Any] | None,
+    slots: Mapping[str, Any],
+    user_message: str,
+    allowed_fields: set[str],
+    last_result_ok: bool | None,
+) -> list[_EdgeCondition]:
+    """把当前节点的出边与结构化条件对齐并求值。
+
+    证据口径与场景 D 一致：槽位只取技能声明的字段（``allowed_fields``），
+    隔离会话历史遗留的脏槽位。
+    """
+
+    source_node_id = str(step.get("node_id") or step.get("step_id") or "").strip()
+    required_fields = [
+        str(item).strip()
+        for item in (step.get("expected_user_info") or [])
+        if str(item).strip()
+    ]
+    scoped_slots = {
+        str(key): value
+        for key, value in (slots or {}).items()
+        if not allowed_fields or str(key).strip() in allowed_fields
+    }
+    context = EdgeEvalContext(
+        slots=scoped_slots,
+        node_required_fields=tuple(required_fields),
+        user_message=user_message,
+        last_result_ok=last_result_ok,
+    )
+    edges: list[_EdgeCondition] = []
     for edge in allowed_transitions:
         if not isinstance(edge, dict):
             continue
-        condition = str(edge.get("condition") or "").strip().lower()
-        if condition not in _UNCONDITIONAL_EDGE_CONDITIONS:
+        target = str(edge.get("next_node_id") or "").strip()
+        if not target:
+            continue
+        spec = _spec_for_edge(
+            edge,
+            source_node_id=source_node_id,
+            target=target,
+            required_fields=required_fields,
+            specs=specs,
+        )
+        edges.append(
+            _EdgeCondition(
+                target=target,
+                condition_text=str(edge.get("condition") or "").strip(),
+                spec=spec,
+                value=evaluate_edge_condition(spec, context),
+            )
+        )
+    return edges
+
+
+def _spec_for_edge(
+    edge: dict[str, Any],
+    *,
+    source_node_id: str,
+    target: str,
+    required_fields: list[str],
+    specs: Mapping[str, Any] | None,
+) -> EdgeConditionSpec | None:
+    """取一条边的结构化条件：边内嵌优先，其次按指纹查编译产物表。"""
+
+    embedded = spec_from_payload(edge.get("condition_spec"))
+    if embedded is not None:
+        return embedded
+    if not specs or not source_node_id:
+        return None
+    fingerprint = condition_fingerprint(
+        source_node_id,
+        target,
+        edge.get("condition"),
+        required_fields,
+    )
+    return spec_from_payload(specs.get(fingerprint))
+
+
+def _edges_without_specs(allowed_transitions: list[Any]) -> list[_EdgeCondition]:
+    """未接入编译产物时的降级视图（等价于改造前的「只看无条件边」）。"""
+
+    edges: list[_EdgeCondition] = []
+    for edge in allowed_transitions:
+        if not isinstance(edge, dict):
             continue
         target = str(edge.get("next_node_id") or "").strip()
-        if target and target not in unconditional:
-            unconditional.append(target)
+        if not target:
+            continue
+        edges.append(
+            _EdgeCondition(
+                target=target,
+                condition_text=str(edge.get("condition") or "").strip(),
+                spec=None,
+                value=None,
+            )
+        )
+    return edges
+
+
+def _last_result_ok(requirement: Any) -> bool | None:
+    """上一步能力/检索调用是否成功（供 ``result_ok`` / ``result_failed`` 求值）。
+
+    取 ``prior_task_results`` 里**最近一条带能力调用结果**的记录；没有则返回
+    ``None``——「没有结果可依据」与「结果失败」是两回事，后者会让模型辛苦
+    建立的错误分支被错误地当成命中。
+    """
+
+    results = getattr(requirement, "prior_task_results", None) or []
+    for item in reversed(list(results)):
+        if not isinstance(item, dict):
+            continue
+        capability_results = item.get("capability_results")
+        if not isinstance(capability_results, list) or not capability_results:
+            continue
+        last = capability_results[-1]
+        if not isinstance(last, dict) or "success" not in last:
+            return None
+        return bool(last.get("success"))
+    return None
+
+
+def _route_direct_next(edges: list[_EdgeCondition]) -> str:
+    """场景 G：结构化条件求值后选唯一命中边；任何「未知」都交还 LLM。
+
+    规则（保守优先）：
+    - 一条边都没编译过 → 返回空串（交场景 D / LLM）；
+    - 存在求值未知的**条件边**（未编译的自由文本、``llm_judge``、字段无从
+      解析）→ 返回空串：无法排除它比命中边更该走；
+    - 恰好一条条件边为真 → 它（``always`` 边视为兜底，此时让位）；
+    - 没有条件边为真、且只有一条 ``always`` 边为真 → 走它（等价 if/else）；
+    - 其余（多条为真 / 全都为假）→ 返回空串。
+    """
+
+    if not any(item.has_spec for item in edges):
+        return ""
+    specific_true = [item for item in edges if item.value is True and not item.is_always]
+    unknown = [item for item in edges if item.value is None and not item.is_always]
+    if unknown:
+        return ""
+    if len(specific_true) == 1:
+        return specific_true[0].target
+    if not specific_true:
+        always_true = [item for item in edges if item.value is True]
+        if len(always_true) == 1:
+            return always_true[0].target
+    return ""
+
+
+def _unique_unconditional_next(edges: list[_EdgeCondition]) -> str:
+    """唯一无条件出边时返回目标节点；有歧义或全是条件边则返回空串。"""
+
+    unconditional: list[str] = []
+    for edge in edges:
+        if not edge.is_always:
+            continue
+        if edge.target not in unconditional:
+            unconditional.append(edge.target)
     if len(unconditional) == 1:
         return unconditional[0]
     return ""

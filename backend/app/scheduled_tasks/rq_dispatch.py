@@ -199,6 +199,59 @@ def cancel_task(task_id: str) -> bool:
     return True
 
 
+def enqueue_job(
+    queue_name: str,
+    func_path: str,
+    *args: Any,
+    timeout_seconds: int | None = None,
+    job_result_ttl: int = 600,
+) -> str | None:
+    """把一次性后台工作塞进指定 rq 队列；不可用时返回 ``None``（调用方兜底）。
+
+    ``func_path`` 是 ``"module:qualname"`` 字符串——不能传函数对象，否则 pickle
+    出来的 worker 侧需要能 import 调用方的局部状态；字符串路径保证跨进程可解析。
+
+    这是本模块对外暴露的**通用**入队口（除定时任务触发外），保持「rq 只在
+    ``rq_dispatch`` 里出现」这条边界不被打破。Redis 未配置 / 连不上 /
+    ``scheduler_backend != "rq"`` 时一律返回 ``None``，由调用方决定降级方式。
+    """
+
+    if get_settings().scheduler_backend != "rq":
+        return None
+    conn = _redis_connection()
+    if conn is None:
+        return None
+    try:
+        from rq import Queue
+
+        queue = Queue(queue_name, connection=conn)
+        job = queue.enqueue(
+            func_path,
+            *args,
+            job_timeout=timeout_seconds
+            or get_settings().scheduled_task_job_timeout_seconds,
+            result_ttl=job_result_ttl,
+        )
+        return job.id
+    except Exception:  # noqa: BLE001 - 入队失败不影响调用方主流程
+        logger.warning("rq 入队失败 queue=%s func=%s", queue_name, func_path, exc_info=True)
+        return None
+
+
+def consume_queue_names() -> list[str]:
+    """rq worker 需要消费的队列名列表（定时任务触发 + 通用后台工作）。
+
+    集中在这里返回，``rq_worker`` 只负责把结果交给 ``Worker``——新增队列时
+    不必再改 worker 进程的装配代码。
+    """
+
+    settings = get_settings()
+    names = [settings.scheduled_task_queue]
+    if settings.skill_compile_queue not in names:
+        names.append(settings.skill_compile_queue)
+    return names
+
+
 def sync_all_on_startup(db: Session) -> int:
     """启动时按 PG 全量重建 rq 调度（Redis 重启 / 清空后自愈）。
 

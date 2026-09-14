@@ -1185,6 +1185,382 @@ def test_harness_full_message_turn_completes_without_task_action_llm(monkeypatch
     # task_action LLM 轮次数：0（轻量抽取不算 task_action）
 
 
+# ---------------------------------------------------------------------------
+# 场景 G：结构化边条件求值直判（离线编译产物 + 零 LLM）
+# ---------------------------------------------------------------------------
+
+
+def _resolved_spec(kind: str, **kwargs: Any) -> dict[str, Any]:
+    """模拟离线编译产物（``skill_edge_conditions.spec_json``）的载荷。"""
+
+    return {"kind": kind, **kwargs}
+
+
+def _specs_from_transitions(transitions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """按 ``condition_fingerprint`` 把条件装进指纹表——运行时真正的取用方式。"""
+
+    from app.skills.edge_condition_spec import condition_fingerprint
+
+    specs: dict[str, dict[str, Any]] = {}
+    for edge in transitions:
+        spec = edge.get("condition_spec")
+        if not isinstance(spec, dict):
+            continue
+        fingerprint = condition_fingerprint(
+            "n2", str(edge["next_node_id"]), edge.get("condition"), ["device_model", "urgency"]
+        )
+        specs[fingerprint] = spec
+    return specs
+
+
+def test_spec_direct_eval_prefers_the_specific_branch_over_always() -> None:
+    """if / else-if / else 语义：条件边命中时 `always` 兜底边让位。"""
+
+    events = _events()
+    transitions = [
+        {
+            "next_node_id": "n9",
+            "condition": "所有必填信息都收集完成后进入",
+            "condition_spec": _resolved_spec("slots_all", fields=["device_model", "urgency"]),
+        },
+        {"next_node_id": "n3", "condition": "", "condition_spec": _resolved_spec("always")},
+    ]
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(allowed_transitions=transitions, known_slots={"device_model": "X1", "urgency": "高"}),
+        edge_condition_specs=_specs_from_transitions(transitions),
+        trace_sink=lambda t, p: events.append((t, p)),
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "n9"
+    assert [p["scene"] for t, p in events if t == TRACE_EVENT] == ["condition_spec_direct_eval"]
+
+
+def test_spec_direct_eval_falls_back_to_always_when_no_specific_matches() -> None:
+    transitions = [
+        {
+            "next_node_id": "n9",
+            "condition": "所有必填信息都收集完成后进入",
+            "condition_spec": _resolved_spec("slots_all", fields=["device_model", "urgency"]),
+        },
+        {"next_node_id": "n3", "condition": "", "condition_spec": _resolved_spec("always")},
+    ]
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(allowed_transitions=transitions, known_slots={}),
+        edge_condition_specs=_specs_from_transitions(transitions),
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "n3"
+
+
+def test_spec_always_edge_is_unconditional_even_with_free_text() -> None:
+    """无条件性由编译结果决定，不再依赖条件文本是不是空串。"""
+
+    transitions = [
+        {
+            "next_node_id": "n3",
+            "condition": "总是可进入",
+            "condition_spec": _resolved_spec("always"),
+        }
+    ]
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(allowed_transitions=transitions, known_slots={}),
+        edge_condition_specs=_specs_from_transitions(transitions),
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "n3"
+
+
+def test_result_ok_edge_uses_previous_capability_result() -> None:
+    transitions = [
+        {
+            "next_node_id": "n9",
+            "condition": "上一步工具调用成功后进入",
+            "condition_spec": _resolved_spec("result_ok"),
+        },
+        {
+            "next_node_id": "n8",
+            "condition": "上一步工具调用失败后进入",
+            "condition_spec": _resolved_spec("result_failed"),
+        },
+    ]
+    specs = _specs_from_transitions(transitions)
+    ok = plan_sop_prefill_actions(
+        _sop_requirement(
+            allowed_transitions=transitions,
+            prior_task_results=[{"capability_results": [{"tool_name": "x", "success": True}]}],
+        ),
+        edge_condition_specs=specs,
+    )
+    assert [action["next_step_id"] for action in ok] == ["n9"]
+    failed = plan_sop_prefill_actions(
+        _sop_requirement(
+            allowed_transitions=transitions,
+            prior_task_results=[{"capability_results": [{"tool_name": "x", "success": False}]}],
+        ),
+        edge_condition_specs=specs,
+    )
+    assert [action["next_step_id"] for action in failed] == ["n8"]
+
+
+def test_result_edge_defers_when_there_is_no_previous_result() -> None:
+    """没有上一步调用结果 → 未知，绝不猜测（否则会把流程带到错误分支）。"""
+
+    transitions = [
+        {"next_node_id": "n9", "condition": "上一步工具调用成功后进入", "condition_spec": _resolved_spec("result_ok")},
+        {"next_node_id": "n8", "condition": "上一步工具调用失败后进入", "condition_spec": _resolved_spec("result_failed")},
+    ]
+    assert (
+        plan_sop_prefill_actions(
+            _sop_requirement(allowed_transitions=transitions),
+            edge_condition_specs=_specs_from_transitions(transitions),
+        )
+        == []
+    )
+
+
+def test_user_confirmed_edge_uses_current_message() -> None:
+    transitions = [
+        {"next_node_id": "n9", "condition": "用户明确确认后进入", "condition_spec": _resolved_spec("user_confirmed")},
+        {"next_node_id": "n8", "condition": "用户明确拒绝后进入", "condition_spec": _resolved_spec("user_rejected")},
+    ]
+    specs = _specs_from_transitions(transitions)
+    confirmed = plan_sop_prefill_actions(
+        _sop_requirement(allowed_transitions=transitions, source_user_message="好的，确认提交"),
+        edge_condition_specs=specs,
+    )
+    assert [action["next_step_id"] for action in confirmed] == ["n9"]
+    rejected = plan_sop_prefill_actions(
+        _sop_requirement(allowed_transitions=transitions, source_user_message="不用了，取消"),
+        edge_condition_specs=specs,
+    )
+    assert [action["next_step_id"] for action in rejected] == ["n8"]
+
+
+def test_unknown_edge_blocks_direct_eval() -> None:
+    """有一条边求不出值（未编译 / llm_judge）→ 整体交还 LLM。"""
+
+    transitions = [
+        {
+            "next_node_id": "n9",
+            "condition": "所有必填信息都收集完成后进入",
+            "condition_spec": _resolved_spec("slots_all", fields=["device_model"]),
+        },
+        {
+            "next_node_id": "n8",
+            "condition": "需要外部商品数据时进入",
+            "condition_spec": _resolved_spec("llm_judge"),
+        },
+    ]
+    assert (
+        plan_sop_prefill_actions(
+            _sop_requirement(allowed_transitions=transitions, known_slots={"device_model": "X1"}),
+            edge_condition_specs=_specs_from_transitions(transitions),
+        )
+        == []
+    )
+
+
+def test_edge_without_compiled_spec_blocks_direct_eval() -> None:
+    """部分编译的图同样不能直判——没编译的那条边可能才是该走的。"""
+
+    transitions = [
+        {
+            "next_node_id": "n9",
+            "condition": "所有必填信息都收集完成后进入",
+            "condition_spec": _resolved_spec("slots_all", fields=["device_model"]),
+        },
+        {"next_node_id": "n8", "condition": "需要外部商品数据时进入"},
+    ]
+    assert (
+        plan_sop_prefill_actions(
+            _sop_requirement(allowed_transitions=transitions, known_slots={"device_model": "X1"}),
+            edge_condition_specs=_specs_from_transitions(transitions),
+        )
+        == []
+    )
+
+
+def test_two_specific_matches_defer_to_llm() -> None:
+    transitions = [
+        {"next_node_id": "n9", "condition": "a", "condition_spec": _resolved_spec("always")},
+        {"next_node_id": "n8", "condition": "b", "condition_spec": _resolved_spec("user_confirmed")},
+        {"next_node_id": "n7", "condition": "c", "condition_spec": _resolved_spec("slots_missing", fields=["device_model"])},
+    ]
+    # user_confirmed 命中（消息含「确认」），slots_missing 也命中（device_model 为空）
+    assert (
+        plan_sop_prefill_actions(
+            _sop_requirement(
+                allowed_transitions=transitions,
+                source_user_message="确认一下",
+                known_slots={},
+            ),
+            edge_condition_specs=_specs_from_transitions(transitions),
+        )
+        == []
+    )
+
+
+def test_decision_node_with_compiled_edges_skips_legacy_token_matching() -> None:
+    """编译过的 decision 节点走场景 G，不再用中文词元包含做匹配。"""
+
+    transitions = [
+        {
+            "next_node_id": "n9",
+            "condition": "当前节点没有任何缺失字段时进入",
+            "condition_spec": _resolved_spec("slots_all", fields=["device_model"]),
+        },
+        {"next_node_id": "n8", "condition": "device_model 缺失时进入"},
+    ]
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            allowed_transitions=transitions,
+            known_slots={"device_model": "X1"},
+            expected_user_info=[],
+        ),
+        edge_condition_specs=_specs_from_transitions(transitions),
+    )
+    # n8 未编译 → 未知 → 交还 LLM（旧场景 D 会凭 "device_model" 词元误判成 n8）
+    assert actions == []
+
+
+def test_legacy_decision_direct_eval_still_works_without_specs() -> None:
+    """一条都没编译过时，旧场景 D 行为保持不变（兼容未回填的历史技能）。"""
+
+    transitions = [
+        {"next_node_id": "n9", "condition": "生产环境管理员"},
+        {"next_node_id": "n8", "condition": "普通权限"},
+    ]
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            allowed_transitions=transitions,
+            known_slots={"access_level": "生产环境管理员"},
+            expected_user_info=[],
+            sop_context={
+                "skill_id": "sop-1",
+                "step": {
+                    "node_id": "n2",
+                    "type": "decision",
+                    "name": "判断",
+                    "expected_user_info": [],
+                },
+            },
+        )
+    )
+    assert [action["next_step_id"] for action in actions] == ["n9"]
+
+
+def test_after_extraction_uses_collected_slots_for_condition_eval(monkeypatch) -> None:
+    """槽位抽齐后立刻用完整槽位求值条件边——最常见分支模式不再回落 LLM。"""
+
+    import app.core.sop_step_executor as executor_module
+
+    monkeypatch.setattr(
+        executor_module,
+        "_extract_slots_llm",
+        lambda *args, **kwargs: {"device_model": "X1", "urgency": "高"},
+    )
+    transitions = [
+        {
+            "next_node_id": "n9",
+            "condition": "所有必填信息都收集完成后进入",
+            "condition_spec": _resolved_spec("slots_all", fields=["device_model", "urgency"]),
+        },
+        {"next_node_id": "n2", "condition": "", "condition_spec": _resolved_spec("always")},
+    ]
+    events = _events()
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            allowed_transitions=transitions,
+            required_slots=["device_model", "urgency"],
+            expected_user_info=["device_model", "urgency"],
+        ),
+        slot_extraction_model="fake-model",
+        edge_condition_specs=_specs_from_transitions(transitions),
+        trace_sink=lambda t, p: events.append((t, p)),
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "n9"
+    assert actions[0]["slot_updates"] == {"device_model": "X1", "urgency": "高"}
+    assert [p["scene"] for t, p in events if t == TRACE_EVENT] == [
+        "condition_spec_direct_eval_after_extraction"
+    ]
+
+
+def test_scene_g_does_not_fire_before_slot_extraction() -> None:
+    """槽位还没抽齐时不直判（先把信息收齐，别抢跑）。"""
+
+    transitions = [
+        {
+            "next_node_id": "n9",
+            "condition": "所有必填信息都收集完成后进入",
+            "condition_spec": _resolved_spec("slots_all", fields=["device_model"]),
+        }
+    ]
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            allowed_transitions=transitions,
+            required_slots=["device_model"],
+            expected_user_info=["device_model"],
+        ),
+        edge_condition_specs=_specs_from_transitions(transitions),
+    )
+    # 无抽取模型 → 走场景 A 的模板询问，不是条件直判
+    assert actions and actions[0]["status"] == "awaiting_user"
+
+
+def test_broken_specs_payload_degrades_to_llm() -> None:
+    """编译产物载荷损坏（脏数据）时按「未编译」处理，不抛异常。"""
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(allowed_transitions=[{"next_node_id": "n9", "condition": "用户确认后"}]),
+        edge_condition_specs={"deadbeef": {"kind": "不存在的类型"}},
+    )
+    assert actions == []
+
+
+def test_harness_agent_passes_edge_condition_specs_to_executor() -> None:
+    """集成：HarnessTaskAgent 必须把编译产物透传到执行器（否则场景 G 空转）。"""
+
+    captured: list[Any] = []
+    import app.core.harness_agent as harness_module
+    from app.db.models import ModelConfig
+
+    original = harness_module.plan_sop_prefill_actions
+
+    def _spy(requirement, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(kwargs.get("edge_condition_specs"))
+        return original(requirement, **kwargs)
+
+    harness_module.plan_sop_prefill_actions = _spy  # type: ignore[assignment]
+    try:
+        transitions = [
+            {
+                "next_node_id": "n9",
+                "condition": "所有必填信息都收集完成后进入",
+                "condition_spec": _resolved_spec("slots_all", fields=["device_model"]),
+            }
+        ]
+        specs = _specs_from_transitions(transitions)
+        result = HarnessTaskAgent().run(
+            _sop_requirement(
+                allowed_transitions=transitions,
+                known_slots={"device_model": "X1"},
+            ),
+            ModelConfig(
+                tenant_id="t", name="m", provider="openai", base_url="http://x/v1",
+                api_key_encrypted="x", model_name="gpt", purpose="chat",
+            ),
+            lambda name, args: {"success": True, "data": {}},
+            max_actions=1,
+            edge_condition_specs=specs,
+        )
+    finally:
+        harness_module.plan_sop_prefill_actions = original  # type: ignore[assignment]
+
+    assert captured == [specs]
+    assert result.next_step_id == "n9"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])
 

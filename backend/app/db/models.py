@@ -358,6 +358,51 @@ class SkillVersion(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class SkillEdgeCondition(SQLModel, table=True):
+    """SOP 边条件的**结构化编译结果**（离线编译产物，见 app/skills/edge_condition_spec.py）。
+
+    为什么不写回 ``skills.content_json``：SkillCard 的 JSON 会被前端 SkillCard
+    类型、SkillEditor 的局部改写来回搬运，边缘字段没有对应的 TS 类型就会被
+    静默丢掉。改成按**条件指纹**独立存表：
+
+    - 唯一键 ``(tenant_id, skill_id, condition_fingerprint)``——同一条边条件
+      （端点 + 条件原文 + 源节点必填字段）在任何版本下复用同一份编译结果；
+    - 条件原文一变指纹就变 → 旧行自然失效，不需要显式清理；
+    - ``status`` 三态：``compiled`` 已结构化 / ``llm_judge`` 仍需模型语义判断
+      / ``failed`` 编译失败（保留 ``condition`` 自由文本，运行时照旧回落 LLM）。
+    """
+
+    __tablename__ = "skill_edge_conditions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "skill_id",
+            "condition_fingerprint",
+            name="uq_skill_edge_condition_fingerprint",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("edgecond"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    skill_id: str = Field(index=True)
+    # 最近一次编译时技能所处的版本，仅作参考（复用不受版本约束）
+    version: str = "1.0.0"
+    source_node_id: str = Field(index=True)
+    next_node_id: str
+    condition_text: str = ""
+    condition_fingerprint: str = Field(index=True)
+    # compiled / llm_judge / failed
+    status: str = Field(default="compiled", index=True)
+    kind: str = ""
+    spec_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # preset / llm / manual
+    source: str = "llm"
+    confidence: float = 1.0
+    error: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class AgentSkillBranch(SQLModel, table=True):
     __tablename__ = "agent_skill_branches"
     __table_args__ = (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from copy import deepcopy
 from typing import Any
@@ -104,6 +105,8 @@ def _turn_planner_message(
 
 # 意图识别结果会话级缓存 TTL：同一 (会话, 全量 planner 输入) 指纹 10 分钟内
 # 复用同一 TurnPlan，省一次轻量模型调用（省钱 + 降低首字延迟）。
+logger = logging.getLogger(__name__)
+
 INTENT_CACHE_TTL_SECONDS = 600
 
 # conversation 帧（标准路径兜底时）的动作预算上限：问答/闲聊类帧不需要
@@ -1164,6 +1167,16 @@ class HarnessV2Engine:
             if frame.kind == "sop"
             else None
         )
+        # 边条件的结构化编译产物（离线编译器写入 skill_edge_conditions）。
+        # 每帧读一次、帧内各次外层迭代复用：图在同一次执行里不会变，而这张
+        # 表按 (tenant, skill_id) 建了索引、行数就是图上条件边的条数。
+        # 加载失败一律当「没有编译结果」，运行时回落 LLM 决策链路。
+        edge_condition_specs = _load_edge_condition_specs(
+            self.db,
+            request.tenant_id,
+            active_skill,
+            frame.kind,
+        )
         self.events.record(
             request.tenant_id,
             session.id,
@@ -1316,6 +1329,7 @@ class HarnessV2Engine:
                 step_timeout_seconds=step_timeout_seconds,
                 checkpoint=loop_checkpoint,
                 lightweight_model_config=lightweight_model_config,
+                edge_condition_specs=edge_condition_specs,
             )
             deferred_continuation = False
             if frame.kind == "sop":
@@ -2312,6 +2326,32 @@ def _restore_session_state(
     session.context_state_json = deepcopy(state.get("context_state_json") or {})
     session.summary = state.get("summary")
     session.last_agent_question = state.get("last_agent_question")
+
+
+def _load_edge_condition_specs(
+    db: Any,
+    tenant_id: str,
+    active_skill: Skill | None,
+    frame_kind: str,
+) -> dict[str, Any]:
+    """加载 SOP 边条件结构化编译产物，键为条件指纹。
+
+    只在 sop 帧、有技能时查库；任何异常返回空字典——编译产物是**加速项**，
+    缺失时运行时自然回落到 LLM 决策，不应该让一次查询失败影响对话。
+    """
+
+    if frame_kind != "sop" or active_skill is None:
+        return {}
+    skill_id = str(getattr(active_skill, "skill_id", "") or "")
+    if not skill_id:
+        return {}
+    try:
+        from app.skills.edge_condition_compiler import load_edge_condition_specs
+
+        return load_edge_condition_specs(db, tenant_id, skill_id)
+    except Exception:  # noqa: BLE001 - 加速项加载失败不阻断主链路
+        logger.debug("SOP 边条件编译产物加载失败 skill=%s", skill_id, exc_info=True)
+        return {}
 
 
 def _prior_result(result: TaskExecutionResult) -> dict[str, Any]:

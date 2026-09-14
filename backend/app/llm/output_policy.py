@@ -21,6 +21,9 @@ OPERATION_JSON_REPAIR_ATTEMPTS: dict[str, int] = {
     # 慢模型上一次修复重试就是十几秒，不值得（2026-09-09 实测抽取
     # 平均 40s 主要来自 json_attempt 串行重试）。
     "sop.slot_extraction": 0,
+    # 边条件离线编译（rq 异步）：一次编译覆盖整张图的条件边，失败保持自由文本
+    # 即可（运行时回落 LLM），多轮修 JSON 只是白烧 token。
+    "sop.edge_condition_compile": 1,
 }
 
 
@@ -37,6 +40,9 @@ OPERATION_TIMEOUT_SECONDS: dict[str, float] = {
     "sop.slot_extraction": 30.0,
     "session.title": 30.0,
     "memory.capture": 30.0,
+    # 离线编译跑在 rq worker 里、不在对话关键路径上，可以给足时间；但必须有
+    # 上限，否则上游网关挂死会把整个 worker 卡住（rq 单 worker 串行消费）。
+    "sop.edge_condition_compile": 180.0,
 }
 
 

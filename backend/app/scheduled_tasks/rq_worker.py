@@ -7,12 +7,16 @@
 进程职责：
 1. 初始化 DB 与种子数据（与 API 进程同一套 ``DATABASE_URL``）；
 2. 后台线程运行 rq Scheduler：把到期的 scheduled job 从 Redis 有序集移入执行队列；
-3. 主线程运行 rq Worker：消费执行队列，调 ``rq_dispatch.run_task`` 执行任务。
+3. 主线程运行 rq Worker：消费 :func:`rq_dispatch.consume_queue_names` 给出的全部
+   队列——定时任务触发（``scheduled_tasks``）+ SOP 边条件离线编译
+   （``skill_compile``）等通用后台工作。
 
 与 FastAPI（``single_port_app``）进程互相独立：API 只负责写时同步 / 启动全量同步，
 本进程只负责按点触发与执行，二者共享同一个 Redis 与 PG。
 
 扩容：rq 单 worker 同时只处理一个 job，需要并发就多起几个本进程（共享同一队列）。
+需要把编译工作与定时任务隔离时，可以另起一个进程并让 ``Worker`` 只监听
+``skill_compile`` 队列。
 """
 
 from __future__ import annotations
@@ -77,13 +81,24 @@ def main() -> None:
         logger.error("未安装 rq / rq-scheduler，请先安装依赖（pip install rq rq-scheduler）。")
         sys.exit(1)
 
-    queue = Queue(settings.scheduled_task_queue, connection=conn)
+    # 消费队列集中由 rq_dispatch 给出（定时任务触发 + SOP 边条件离线编译等
+    # 通用后台工作）；新增队列时只改 rq_dispatch.consume_queue_names，不动这里。
+    queue_names = rq_dispatch.consume_queue_names()
+    queues = [Queue(name, connection=conn) for name in queue_names]
     scheduler = Scheduler(queue_name=settings.scheduled_task_queue, connection=conn)
 
     threading.Thread(target=_start_scheduler, args=(scheduler,), name="rq-scheduler", daemon=True).start()
-    logger.info("rq worker 已启动：queue=%s redis=%s:%s", settings.scheduled_task_queue, settings.redis_host, settings.redis_port)
+    logger.info(
+        "rq worker 已启动：queues=%s redis=%s:%s",
+        ",".join(queue_names),
+        settings.redis_host,
+        settings.redis_port,
+    )
 
-    worker = Worker([queue], connection=conn)
+    # 多队列按声明顺序取：定时任务队列优先，编译队列次之。单 worker 同时只跑
+    # 一个 job，编译（秒级到十几秒）会短暂占用消费能力——需要隔离就多起一个
+    # 进程并只监听 skill_compile 队列。
+    worker = Worker(queues, connection=conn)
     worker.work()  # 阻塞；SIGTERM / SIGINT 触发优雅退出
     logger.info("rq worker 已停止。")
 

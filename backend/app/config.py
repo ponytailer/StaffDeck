@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     scheduler_backend: str = "rq"
     scheduled_task_queue: str = "scheduled_tasks"
     scheduled_task_job_timeout_seconds: int = 600
+    # SOP 边条件离线编译队列。跑在同一个 rq worker 进程上（见 rq_worker），
+    # 但用独立队列名，方便单独扩容 / 观察积压；Redis 不可用时自动降级为
+    # 进程内异步队列（app.async_jobs），编译永远不会阻塞用户请求。
+    skill_compile_queue: str = "skill_compile"
+    skill_compile_job_timeout_seconds: int = 600
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

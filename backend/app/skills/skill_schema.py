@@ -268,6 +268,35 @@ class SkillVersionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SkillEdgeConditionRead(BaseModel):
+    """一条 SOP 边条件的编译结果（人工复核视图，见 edge_condition_jobs）。"""
+
+    edge_index: int = 0
+    source_node_id: str
+    source_node_name: str = ""
+    next_node_id: str
+    condition: str = ""
+    # compiled / llm_judge / failed / pending
+    status: str = "pending"
+    kind: str = ""
+    kind_label: str = ""
+    readable: str = ""
+    source: str = ""
+    confidence: float = 0.0
+    rationale: str = ""
+    error: Optional[str] = None
+
+
+class SkillEdgeConditionReview(BaseModel):
+    skill_id: str
+    version: str = ""
+    conditions: list[SkillEdgeConditionRead] = Field(default_factory=list)
+    stats: dict[str, int] = Field(default_factory=dict)
+    # 图上还有多少条条件边没有可用编译结果（仍在队列里 / 编译失败）
+    pending: int = 0
+    total: int = 0
+
+
 class SkillDistillRequest(BaseModel):
     tenant_id: str
     agent_id: Optional[str] = None

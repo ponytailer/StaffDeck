@@ -7,6 +7,7 @@ import zipfile
 from collections.abc import Iterator
 from io import BytesIO
 from time import sleep
+from typing import Any
 from xml.etree import ElementTree
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -43,6 +44,7 @@ from app.db.models import (
     GeneralSkill,
     ModelConfig,
     Skill,
+    SkillEdgeCondition,
     SkillFeedback,
     SkillVersion,
     Tool,
@@ -64,6 +66,7 @@ from app.skills.skill_schema import (
     SkillCreateRequest,
     SkillDistillRequest,
     SkillDistillResponse,
+    SkillEdgeConditionReview,
     SkillFileExtractRequest,
     SkillFileExtractResponse,
     SkillRead,
@@ -72,6 +75,11 @@ from app.skills.skill_schema import (
     SkillVersionRead,
     SkillUpdateRequest,
     skill_card_from_persisted,
+)
+from app.skills.edge_condition_jobs import (
+    edge_condition_review,
+    has_conditional_edges,
+    schedule_edge_condition_compile,
 )
 from app.skills.stream_jobs import SkillStreamEvent, SkillStreamJob, stream_jobs
 from app.skills.step_ids import skill_card_with_unique_step_ids
@@ -139,6 +147,24 @@ def skill_read(
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
+
+
+def _schedule_edge_condition_compile(
+    tenant_id: str,
+    skill_id: str,
+    content: Any,
+    agent_id: str | None = None,
+) -> None:
+    """技能图写入后异步编译边条件（不阻塞请求）。
+
+    纯线性 SOP（边上全是无条件条件）不需要编译——无条件边的结构化结果是
+    恒真，运行时本来就能直接判定，入队只会产生空跑任务，因此这里先短路。
+    编译失败 / 队列不可用都不影响本次写入结果，运行时回落 LLM 决策。
+    """
+
+    if not has_conditional_edges(content):
+        return
+    schedule_edge_condition_compile(tenant_id, skill_id, agent_id=agent_id)
 
 
 def skill_version_read(
@@ -386,6 +412,12 @@ def create_skill(
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
+    _schedule_edge_condition_compile(
+        request.tenant_id,
+        row.skill_id,
+        content,
+        agent.id if agent and not agent.is_overall else None,
+    )
     stats = _skill_stats(db, request.tenant_id)
     if branch:
         row = project_skill_with_branch(row, branch, binding_status)
@@ -460,6 +492,12 @@ def update_skill(
             normalized_content.model_dump(),
         )
         db.commit()
+        _schedule_edge_condition_compile(
+            request.tenant_id,
+            row.skill_id,
+            normalized_content.model_dump(mode="json"),
+            agent.id,
+        )
         projected = project_skill_with_branch(row, branch, binding.status)
         stats = _skill_stats(db, request.tenant_id)
         return skill_read(projected, stats, _recent_skill_stats(db, request.tenant_id, stats))
@@ -477,6 +515,7 @@ def update_skill(
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
+    _schedule_edge_condition_compile(request.tenant_id, row.skill_id, row.content_json)
     stats = _skill_stats(db, request.tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, request.tenant_id, stats))
 
@@ -517,6 +556,9 @@ def publish_skill(
         _sync_skill_tool_bindings(db, tenant_id, row.skill_id, branch.content_json)
         ensure_private_resource_binding(db, tenant_id, agent.id, "skill", row.id, "active")
         db.commit()
+        # 发布是「编译一次、跑无数次」的最佳时机：发布前攒下的草稿改动在这里
+        # 一次性编译成结构化条件，之后每次对话推进都不再需要模型理解条件。
+        _schedule_edge_condition_compile(tenant_id, row.skill_id, branch.content_json, agent.id)
         projected = project_skill_with_branch(row, branch, "active")
         stats = _skill_stats(db, tenant_id)
         return skill_read(projected, stats, _recent_skill_stats(db, tenant_id, stats))
@@ -531,6 +573,7 @@ def publish_skill(
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
+    _schedule_edge_condition_compile(tenant_id, row.skill_id, row.content_json)
     stats = _skill_stats(db, tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, tenant_id, stats))
 
@@ -655,6 +698,16 @@ def delete_skill(
     ).all()
     for version_row in version_rows:
         db.delete(version_row)
+    # 边条件编译产物随技能一起清理：技能没了，指纹表里的行不会被任何运行时
+    # 查询命中，留着只是垃圾。
+    edge_condition_rows = db.exec(
+        select(SkillEdgeCondition).where(
+            SkillEdgeCondition.tenant_id == tenant_id,
+            SkillEdgeCondition.skill_id == skill_id,
+        )
+    ).all()
+    for edge_condition_row in edge_condition_rows:
+        db.delete(edge_condition_row)
     db.delete(row)
     db.commit()
     return {"status": "deleted"}
@@ -755,6 +808,7 @@ def rollback_skill_version(
     if agent and not agent.is_overall:
         branch = rollback_branch(db, tenant_id, agent.id, skill_id, version)
         db.commit()
+        _schedule_edge_condition_compile(tenant_id, skill_id, branch.content_json, agent.id)
         skill = _get_skill(db, tenant_id, skill_id)
         projected = project_skill_with_branch(skill, branch)
         stats = _skill_stats(db, tenant_id)
@@ -782,8 +836,63 @@ def rollback_skill_version(
     db.add(row)
     db.commit()
     db.refresh(row)
+    # 回滚到的历史版本图上可能已有条件边，且指纹与当前值不同 → 需要重新编译；
+    # 相同指纹的编译结果按设计直接复用，不会重复消耗 LLM。
+    _schedule_edge_condition_compile(tenant_id, row.skill_id, row.content_json)
     stats = _skill_stats(db, tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, tenant_id, stats))
+
+
+@router.get(
+    "/{skill_id}/edge-conditions",
+    response_model=SkillEdgeConditionReview,
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
+def get_skill_edge_conditions(
+    skill_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = None,
+    db: Session = Depends(get_session),
+) -> SkillEdgeConditionReview:
+    """边条件结构化编译结果（人工复核用）。"""
+
+    _get_visible_skill_for_scope(db, tenant_id, skill_id, agent_id)
+    return SkillEdgeConditionReview.model_validate(
+        edge_condition_review(db, tenant_id=tenant_id, skill_id=skill_id, agent_id=agent_id)
+    )
+
+
+@router.post("/{skill_id}/edge-conditions/compile", response_model=SkillEdgeConditionReview)
+def compile_skill_edge_conditions(
+    skill_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = None,
+    force: bool = Query(False),
+    sync: bool = Query(False),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> SkillEdgeConditionReview:
+    """触发一次边条件编译。
+
+    - 默认**异步**（``sync=false``）：只入队就返回，不阻塞请求；
+    - ``force=true``：忽略已有编译结果强制重编；
+    - ``sync=true``：在当前进程里同步执行完再返回——保留给排障 / 运维
+      （会占用一个 API worker 直到编译结束，不要在页面上默认使用）。
+    """
+
+    ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
+    row = _get_skill(db, tenant_id, skill_id)
+    if sync:
+        from app.skills.edge_condition_jobs import run_edge_condition_compile
+
+        run_edge_condition_compile(tenant_id, skill_id, agent_id, force=force)
+        db.expire_all()
+        row = _get_skill(db, tenant_id, skill_id)
+    else:
+        schedule_edge_condition_compile(tenant_id, skill_id, agent_id=agent_id)
+    return SkillEdgeConditionReview.model_validate(
+        edge_condition_review(db, tenant_id=tenant_id, skill_id=skill_id, agent_id=agent_id)
+    )
 
 
 @router.post("/files/extract", response_model=SkillFileExtractResponse)

@@ -78,6 +78,7 @@ class HarnessTaskAgent:
         step_timeout_seconds: int | None = None,
         checkpoint: dict[str, Any] | None = None,
         lightweight_model_config: ModelConfig | None = None,
+        edge_condition_specs: dict[str, Any] | None = None,
     ) -> TaskExecutionResult:
         max_actions = max(1, min(int(max_actions), 100))
         checkpoint = dict(checkpoint or {})
@@ -139,6 +140,7 @@ class HarnessTaskAgent:
             satisfied_required_knowledge_ids=set(satisfied_required_knowledge_ids),
             trace_sink=trace_sink,
             slot_extraction_model=lightweight_model_config or model_config,
+            edge_condition_specs=edge_condition_specs,
         )
         if prefill_actions:
             pending_actions.extend(
