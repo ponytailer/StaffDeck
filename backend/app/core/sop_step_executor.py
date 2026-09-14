@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from app.core.graph_rules import GraphRules
+from app.core.slot_display import join_slot_labels, slot_label
 from app.skills.edge_condition_spec import (
     EdgeConditionSpec,
     EdgeEvalContext,
@@ -131,6 +132,13 @@ def plan_sop_prefill_actions(
         )
 
         required_slots = [str(item) for item in getattr(requirement, "required_slots", []) or []]
+        # 字段显示名（技能自报，内置词典兜底）——只用于拼**用户可见回复**，
+        # 不参与任何判定。缺省时全部走内置词典 / 原样返回。
+        slot_labels: Mapping[str, Any] = {}
+        if isinstance(sop_context, dict):
+            declared = sop_context.get("slot_labels")
+            if isinstance(declared, Mapping):
+                slot_labels = declared
         required_capabilities = [
             str(item) for item in getattr(requirement, "required_capability_names", []) or []
         ]
@@ -265,7 +273,7 @@ def plan_sop_prefill_actions(
                     ),
                 )
             # 部分/未抽到：问缺的，已抽到的值随 slot_updates 落库防重复问
-            action = _await_user_action(step, missing)
+            action = _await_user_action(step, missing, labels=slot_labels)
             action["slot_updates"] = extracted
             return _emit(
                 trace_sink,
@@ -291,6 +299,7 @@ def plan_sop_prefill_actions(
                 merged_slots,
                 trace_sink,
                 allowed_fields=set(slot_fields),
+                labels=slot_labels,
             )
 
         # 场景 D（P3，场景 G 的兜底）：decision 节点的分支条件能用槽位取值直接
@@ -872,12 +881,15 @@ def _plan_handoff_passthrough(
     trace_sink: Any,
     *,
     allowed_fields: set[str] | None = None,
+    labels: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """场景 F：handoff 终点节点直通，零 LLM 发起转人工。
 
     status 直接置 handoff（引擎据 result.status 建人工请求并挂起会话）；
     回复模板带槽位摘要，只展示技能声明字段（slot_fields）——历史遗留
     的脏槽位（如上一轮的 permission_preference）不会出现在用户回复里。
+    摘要里的字段名走 slot_display（中文显示名），用户看到的是
+    「员工工号：1001」而不是「employee_id：1001」。
     """
     allowed = {str(item).strip() for item in (allowed_fields or set()) if str(item).strip()}
     filled = {
@@ -886,7 +898,9 @@ def _plan_handoff_passthrough(
         if (not allowed or str(key).strip() in allowed)
         and value not in (None, "", [], {})
     }
-    summary = "；".join(f"{key}：{value}" for key, value in filled.items())
+    summary = "；".join(
+        f"{slot_label(key, labels)}：{value}" for key, value in filled.items()
+    )
     reply = (
         f"已根据您提供的信息（{summary}）发起人工处理，会有工作人员跟进。"
         if summary
@@ -908,13 +922,20 @@ def _plan_handoff_passthrough(
     )
 
 
-def _await_user_action(step: dict[str, Any], required_slots: list[str]) -> dict[str, Any]:
+def _await_user_action(
+    step: dict[str, Any],
+    required_slots: list[str],
+    *,
+    labels: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     step_name = str(step.get("name") or "").strip()
     # 只问调用方传入的缺失字段（expected_user_info 里可能有些字段已满足，
     # 全量罗列会重现「已提供还要求补全」的错误询问）
     missing = [str(item).strip() for item in required_slots if str(item).strip()]
     step_part = f"继续「{step_name}」" if step_name else "继续当前步骤"
-    reply = f"为了{step_part}，请提供：{'、'.join(missing)}。"
+    # 字段名转中文显示名：这轮是零 LLM 模板回复，模型没机会润色，
+    # 直接把 employee_id 抛给用户等于没说话。
+    reply = f"为了{step_part}，请提供：{join_slot_labels(missing, labels)}。"
     return {
         "action": "finish",
         "status": "awaiting_user",

@@ -23,6 +23,8 @@ import { employeeDisplayName } from '../employee';
 import { copyTextToClipboard } from '../lib/clipboard';
 import type { AgentProfileRead } from '../types';
 
+import { ConfirmDialog } from './ConfirmDialog';
+
 type KeyAccess = 'runtime';
 type CredentialAccess = KeyAccess | 'full_access';
 
@@ -70,6 +72,7 @@ export default function EmployeeApiKeyDialog({
   const [creating, setCreating] = useState<KeyAccess | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<AgentApiCredentialCreated | null>(null);
+  const [pendingRevoke, setPendingRevoke] = useState<AgentApiCredential | null>(null);
   const [copied, setCopied] = useState(false);
   const revealedKeyRef = useRef<HTMLInputElement | null>(null);
   const displayName = useMemo(() => (agent ? employeeDisplayName(agent) : '数字员工'), [agent]);
@@ -139,7 +142,7 @@ export default function EmployeeApiKeyDialog({
   }
 
   async function revokeCredential(row: AgentApiCredential) {
-    if (!agent || !window.confirm(`确认禁用「${row.name}」？禁用后调用会立即失败。`)) return;
+    if (!agent) return;
     setActingId(row.id);
     try {
       await api.post(
@@ -153,6 +156,7 @@ export default function EmployeeApiKeyDialog({
       notify.error(error instanceof Error ? error.message : '禁用 API 密钥失败');
     } finally {
       setActingId(null);
+      setPendingRevoke(null);
     }
   }
 
@@ -171,7 +175,8 @@ export default function EmployeeApiKeyDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next && !creating && !actingId) onClose(); }}>
+    <>
+      <Dialog open={open} onOpenChange={(next) => { if (!next && !creating && !actingId) onClose(); }}>
       <DialogContent
         aria-describedby="employee-api-key-description"
         data-i18n-ignore
@@ -285,7 +290,7 @@ export default function EmployeeApiKeyDialog({
                       <RefreshCw className={actingId === row.id ? 'size-[12px] animate-spin' : 'size-[12px]'} />
                       轮换
                     </Button>
-                    <Button type="button" variant="outline" disabled={row.status !== 'active' || Boolean(actingId)} onClick={() => void revokeCredential(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
+                    <Button type="button" variant="outline" disabled={row.status !== 'active' || Boolean(actingId)} onClick={() => setPendingRevoke(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
                       <Ban className="size-[12px]" />
                       禁用
                     </Button>
@@ -301,7 +306,18 @@ export default function EmployeeApiKeyDialog({
           </section>
         </div>
       </DialogContent>
-    </Dialog>
+      </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(pendingRevoke)}
+        onOpenChange={(next) => { if (!next) setPendingRevoke(null); }}
+        title={<>确认禁用「{pendingRevoke?.name}」？</>}
+        description="禁用后该密钥的所有调用会立即失败，且无法恢复；如需继续使用请重新创建。"
+        confirmText="禁用"
+        onConfirm={() => { if (pendingRevoke) void revokeCredential(pendingRevoke); }}
+        loading={Boolean(actingId)}
+      />
+    </>
   );
 }
 

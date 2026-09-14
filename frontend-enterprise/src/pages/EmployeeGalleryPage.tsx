@@ -23,9 +23,13 @@ import {
   isMyEmployeeAgent,
   visibleEmployeeAgents,
 } from '../employee';
+import {
+  emitAgentRosterRefresh,
+  emitAgentScopeChange,
+  ENTERPRISE_AGENT_STORAGE_KEY,
+  onAgentRosterRefresh,
+} from '../lib/agent-scope-storage';
 import type { AgentProfileRead, TeamRead } from '../types';
-
-const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 type GalleryScope = 'all' | 'mine' | 'teams' | 'gallery';
 
@@ -81,6 +85,17 @@ export default function EmployeeGalleryPage({
     void load();
     void loadTeams();
   }, []);
+
+  // 员工列表按页面各自拉取：创建 / 编辑 / 上下线 / 删除发生在别的页面或 App
+  // 侧边栏弹窗时，本页收不到任何信号，会一直显示 mount 时的旧快照。订阅花名册
+  // 广播，避免新建员工后必须手动刷新页面才能看到。
+  useEffect(
+    () =>
+      onAgentRosterRefresh(() => {
+        void load();
+      }),
+    [],
+  );
 
   // Keep these tabs aligned with the rest of the app:
   // - 所有员工: employees the current user can access and chat with
@@ -171,8 +186,8 @@ export default function EmployeeGalleryPage({
         metadata: row.metadata || {},
       });
       notify.success(status === 'active' ? '员工已上线' : '员工已下线');
-      await load();
-      window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+      // 本页也订阅了该事件，会自行重新拉取，无需再单独 await load()。
+      emitAgentRosterRefresh();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '更新员工状态失败');
     }
@@ -195,8 +210,8 @@ export default function EmployeeGalleryPage({
         metadata,
       });
       notify.success(published ? '已发布到广场' : '已从广场下架');
-      await load();
-      window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+      // 本页也订阅了该事件，会自行重新拉取，无需再单独 await load()。
+      emitAgentRosterRefresh();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '更新广场状态失败');
     }
@@ -213,16 +228,16 @@ export default function EmployeeGalleryPage({
           || availableAgents.find((item) => item.id !== row.id);
         if (nextAgent) {
           window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, nextAgent.id);
-          window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: nextAgent.id } }));
+          emitAgentScopeChange(nextAgent.id);
         } else {
           window.localStorage.removeItem(ENTERPRISE_AGENT_STORAGE_KEY);
-          window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: '' } }));
+          emitAgentScopeChange('');
         }
       }
       notify.success('员工已删除');
       setDeleteTarget(null);
-      await load();
-      window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+      // 本页也订阅了该事件，会自行重新拉取，无需再单独 await load()。
+      emitAgentRosterRefresh();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '删除员工失败');
     } finally {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, KeyRound, Lock } from 'lucide-react';
+import { ChevronLeft, KeyRound } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -22,7 +22,6 @@ import IconEdit from '@/assets/icons/edit.svg?react';
 import IconChevronDown from '@/assets/icons/chevron-down.svg?react';
 import IconLogout from '@/assets/icons/logout.svg?react';
 import AccountApiKeyDialog from '@/components/AccountApiKeyDialog';
-import ChangePasswordDialog from '@/components/ChangePasswordDialog';
 import EditDepartmentDialog from '@/components/EditDepartmentDialog';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 
@@ -202,15 +201,6 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
                 API 全量密钥
               </DropdownMenuItem>
             )}
-            {user && (
-              <DropdownMenuItem
-                onSelect={() => setChangePasswordOpen(true)}
-                className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
-              >
-                <Lock className="size-[16px]" />
-                修改密码
-              </DropdownMenuItem>
-            )}
             <DropdownMenuItem
               onSelect={logout}
               className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
@@ -225,10 +215,6 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
         account={user ?? null}
         open={apiKeyOpen}
         onClose={() => setApiKeyOpen(false)}
-      />
-      <ChangePasswordDialog
-        open={changePasswordOpen}
-        onClose={() => setChangePasswordOpen(false)}
       />
       <EditDepartmentDialog
         open={editDepartmentOpen}

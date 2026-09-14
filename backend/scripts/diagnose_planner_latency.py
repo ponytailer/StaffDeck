@@ -99,7 +99,7 @@ def _check_route_cache_support() -> None:
     slim_spans = 0
     total_bucket_routes = 0
     planner_chars: list[tuple[str, int]] = []
-    task_action_chars: list[tuple[str, int, float]] = []
+    task_action_chars: list[tuple[str, int, float, int]] = []
     try:
         # 每段查询独立开连接：第一条查询若失败会把连接置为 invalid，
         # 复用同一连接的后续查询会报 "This Connection is closed"
@@ -131,7 +131,12 @@ def _check_route_cache_support() -> None:
                 planner_chars.append((bj_hms(as_datetime(row[1])), int(chars)))
             if op == "harness.task_action" and isinstance(chars, (int, float)):
                 task_action_chars.append(
-                    (bj_hms(as_datetime(row[1])), int(chars), float(payload.get("duration_ms") or 0))
+                    (
+                        bj_hms(as_datetime(row[1])),
+                        int(chars),
+                        float(payload.get("duration_ms") or 0),
+                        int(payload.get("json_max_attempts") or 0),
+                    )
                 )
             trace_json = json.dumps(payload, ensure_ascii=False)
             if "route_cache_hit" in trace_json:
@@ -259,23 +264,40 @@ def _check_route_cache_support() -> None:
                 f"  task_action payload：最近 {len(task_action_chars)} 条带 payload_chars"
                 "（新观测；响应生成链 91-187s 瓶颈拆解用）"
             )
-            for ts, chars, dur in task_action_chars[:5]:
+            for ts, chars, dur, _max_attempts in task_action_chars[:5]:
                 flag = "  ← 大 payload" if chars > 50_000 else ""
                 print(f"    [{ts}] payload_chars={chars} dur={dur / 1000:.1f}s{flag}")
-            # 超时收紧部署判定：harness.task_action 收紧为 90s，
-            # 单次 dur 超过上限说明该环境未部署/未重启新代码
+            # 部署判定改用「JSON 修复上限」这个硬信号：output_policy 收紧后
+            # harness.task_action 的 json_max_attempts 应为 2（= 1 次修复 + 首次尝试）。
+            # 早期版本用「dur 是否超过上限」判断，结论是错的——OpenAI SDK 默认
+            # max_retries=2 会在超时后自动重试，一次 span 的墙钟时间可以合法地
+            # 超过单次上限（实测 90s 上限 → 104.4s = 90s 超时 + 14.4s 重试成功）。
+            # 判定必须只看「最近一条」：200-span 窗口可能横跨数天（实测 09-07 → 09-14，
+            # 因为 llm_call_finished 稀疏，200 条只覆盖 53 个 span），用 max() 会被窗口里
+            # 收紧之前的历史 span 骗到，误报「未部署」。task_action_chars 按时间倒序，取首个非零。
+            latest_attempts = next((a for _, _, _, a in task_action_chars if a), 0)
             timeout_cap = OPERATION_TIMEOUT_SECONDS.get("harness.task_action")
-            if timeout_cap:
-                over = [d for _, _, d in task_action_chars if d > timeout_cap * 1000]
+            if not latest_attempts:
+                print("  [i] task_action span 未带 json_max_attempts，无法判定 output_policy 是否收紧")
+            elif latest_attempts >= 4:
+                print(
+                    f"  [!] 最近一条 harness.task_action json_max_attempts={latest_attempts}"
+                    "（收紧后应为 2） → output_policy 收紧代码未部署或进程未重启"
+                )
+            else:
+                print(
+                    f"  [OK] output_policy 收紧已生效（最近一条 json_max_attempts={latest_attempts}）"
+                )
+            if timeout_cap and latest_attempts and latest_attempts < 4:
+                over = [d for _, _, d, _ in task_action_chars if d > timeout_cap * 1000]
                 if over:
                     print(
-                        f"  [!] {len(over)} 次 task_action dur 超过 {timeout_cap:.0f}s 收紧上限"
-                        " → 交互超时收紧代码未部署或进程未重启"
+                        f"  [!] {len(over)} 次 task_action dur 超过 {timeout_cap:.0f}s 单次上限"
+                        " → 上限已生效，超限来自 SDK 层重试/分段读把单次上限放大"
+                        "（见 app/llm/client.py 的 max_retries），非部署问题"
                     )
                 else:
-                    print(
-                        f"  [OK] 交互超时收紧生效（全部 dur ≤ {timeout_cap:.0f}s 上限）"
-                    )
+                    print(f"  [OK] 全部 task_action dur ≤ {timeout_cap:.0f}s 单次上限")
         else:
             print("  task_action payload：无 payload_chars → 观测代码未部署")
     except Exception as exc:  # noqa: BLE001
@@ -396,7 +418,7 @@ def main() -> None:
                 FROM agent_events
                 WHERE event_type = 'user_message_received'
                 ORDER BY created_at DESC
-                LIMIT 1
+                LIMIT 8
                 """
             )
         ).fetchall()

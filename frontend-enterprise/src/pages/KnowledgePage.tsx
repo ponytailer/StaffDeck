@@ -326,6 +326,20 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       .catch(() => setModelConfigs([]));
   }, []);
 
+  // 入库期间轮询文档进度：目录索引/知识图谱/引用来源三块产物都在入库**最后一步**
+  // 才写库，此前接口只会返回 0。没有轮询时，用户对着 0/0/0 等 3~10 分钟，会判定
+  // 「文档处理失败」并删库重传（2026-09-14 实测真实发生）。
+  // 依赖只取 id/status 两个原始值：状态转为 ready/failed 后本效果自然停止续期。
+  useEffect(() => {
+    const target = selectedDocument;
+    if (!target) return;
+    if (!['queued', 'pending', 'processing', 'cancel_requested'].includes(String(target.status || ''))) {
+      return;
+    }
+    const timer = window.setTimeout(() => void refreshDocumentProgress(target), INGEST_POLL_INTERVAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [selectedDocument?.id, selectedDocument?.status]);
+
   useEffect(() => {
     if (searchParams.get('add') !== 'plaza') return;
     if (agents.length === 0) return;
@@ -484,6 +498,35 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       notify.error(error instanceof Error ? error.message : '加载知识图谱失败');
     } finally {
       if (showLoading) setOkfLoading(false);
+    }
+  }
+
+  /**
+   * 入库期间的单文档增量刷新：只重取当前文档 + 它的桶与知识页，不触发整页 reload。
+   *
+   * 刻意不复用 `refresh()`——那个会 setLoading(true)，每 5 秒闪一次全页加载态。
+   * 失败静默吞掉：下一轮 tick 会自然重试，不该为一次网络抖动弹错误提示。
+   */
+  async function refreshDocumentProgress(document: KnowledgeDocumentRead) {
+    const suffix = effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    try {
+      const fresh = await api.get<KnowledgeDocumentRead>(
+        `/api/enterprise/knowledge/documents/${document.id}?tenant_id=${TENANT_ID}${suffix}`,
+      );
+      setDocuments((prev) => prev.map((item) => (item.id === fresh.id ? fresh : item)));
+      setSelectedDocument((prev) => (prev && prev.id === fresh.id ? fresh : prev));
+      const [bucketRows, conceptRows] = await Promise.all([
+        api.get<KnowledgeBucketRead[]>(
+          `/api/enterprise/knowledge/documents/${document.id}/buckets?tenant_id=${TENANT_ID}${suffix}`,
+        ),
+        api.get<KnowledgeConceptRead[]>(
+          `/api/enterprise/knowledge-bases/${document.knowledge_base_id}/okf/concepts?tenant_id=${TENANT_ID}${suffix}`,
+        ),
+      ]);
+      setBuckets(bucketRows);
+      setOkfConcepts(conceptRows);
+    } catch {
+      // 轮询失败不打扰用户：保持上一次状态，等下一轮
     }
   }
 
@@ -2184,6 +2227,10 @@ type KnowledgeDetailView = 'document' | 'sections' | 'wiki' | 'evidence';
 type KnowledgeContentView = 'sections' | 'wiki' | 'evidence';
 const STRUCTURE_PREVIEW_LIMIT = 8;
 const OKF_PREVIEW_LIMIT = 8;
+// 入库中三块内容都还没写库，此时「暂无目录索引」是误导性的说法
+const INGESTING_EMPTY_HINT = '正在生成，稍后自动刷新';
+// 入库期间轮询间隔：一次 23 页 PDF 入库实测约 3~10 分钟，5s 足够及时又不打扰
+const INGEST_POLL_INTERVAL_MS = 5000;
 
 type WikiIndexGroup = {
   key: string;
@@ -2229,6 +2276,12 @@ function 目录索引Overview({
   const [wikiViewMode, setWikiViewMode] = useState<'graph' | 'cards'>('graph');
   const metadata = document.metadata || {};
   const documentCard = isRecord(metadata.document_card) ? metadata.document_card : {};
+  // 入库中：正文卡片在「documenting」阶段就已经能渲染，但目录索引/知识图谱/引用来源
+  // 三块产物要到入库最后一步才写库。不区分这两者的直接后果，就是用户长时间看到
+  // 0/0/0 并判定「文档处理失败」（2026-09-14 实测真实发生）。
+  const documentStatus = String(document.status || 'ready');
+  const isIngesting = ['queued', 'pending', 'processing', 'cancel_requested'].includes(documentStatus);
+  const documentCount = (value: number) => (isIngesting ? '—' : value);
   const wikiStructureConcepts = useMemo(() => sortWikiConcepts(okfConcepts), [okfConcepts]);
   const wikiIndexGroups = useMemo(() => buildWikiIndexGroups(wikiStructureConcepts), [wikiStructureConcepts]);
   const previewWikiStructure = wikiIndexGroups.slice(0, STRUCTURE_PREVIEW_LIMIT);
@@ -2275,7 +2328,8 @@ function 目录索引Overview({
     {
       title: string;
       description: string;
-      count: number;
+      // 入库中显示占位符「—」而不是 0，避免被当成「什么都没生成」
+      count: number | string;
       emptyText: string;
       items: KnowledgeOverviewItem[];
     }
@@ -2283,8 +2337,8 @@ function 目录索引Overview({
     sections: {
       title: '目录索引',
       description: '按目录结构组织知识范围，先看主题，再进入知识图谱。',
-      count: wikiIndexGroups.length,
-      emptyText: '暂无目录索引',
+      count: documentCount(wikiIndexGroups.length),
+      emptyText: isIngesting ? INGESTING_EMPTY_HINT : '暂无目录索引',
       items: previewWikiStructure.map((group) => ({
         key: group.key,
         title: group.title,
@@ -2295,8 +2349,8 @@ function 目录索引Overview({
     wiki: {
       title: '知识图谱',
       description: '可读知识页，用于长期沉淀、跨文档综合和数字员工复制。',
-      count: okfConcepts.length,
-      emptyText: '暂无知识图谱',
+      count: documentCount(okfConcepts.length),
+      emptyText: isIngesting ? INGESTING_EMPTY_HINT : '暂无知识图谱',
       items: previewConcepts.map((concept) => ({
         key: concept.id,
         title: concept.title || concept.concept_id,
@@ -2307,8 +2361,8 @@ function 目录索引Overview({
     evidence: {
       title: '引用来源',
       description: '保留切片内容、原文片段和来源路径，用于回答溯源。',
-      count: totalChunkCount,
-      emptyText: '暂无引用来源',
+      count: documentCount(totalChunkCount),
+      emptyText: isIngesting ? INGESTING_EMPTY_HINT : '暂无引用来源',
       items: previewEvidence,
     },
   };
@@ -2318,11 +2372,19 @@ function 目录索引Overview({
     <div className="knowledge-pageindex">
       <div className="knowledge-pageindex-card">
         <div className="knowledge-document-card-body">
-          <span className="text-[13px] text-[#858b9c]">文档卡片</span>
+          <span className="flex items-center gap-[8px]">
+            <span className="text-[13px] text-[#858b9c]">文档卡片</span>
+            {documentStatus !== 'ready' && statusTag(documentStatus)}
+          </span>
           <h5 className="my-[4px] text-[15px] font-semibold text-foreground">{documentTitle}</h5>
           <div className="knowledge-document-card-markdown is-preview">
             <MarkdownPreview markdown={documentSummary} />
           </div>
+          {isIngesting && (
+            <p className="mt-[8px] mb-0 text-[12px] leading-[1.6] text-[#858b9c]">
+              正在入库：系统正在生成目录索引、知识图谱与引用来源，完成后会自动刷新。
+            </p>
+          )}
         </div>
         <div className="knowledge-pageindex-actions">
           <UIButton variant="outline" className={OUTLINE_ACTION_BUTTON_SM_CLASS} onClick={() => openDetail('document')}>
@@ -2342,7 +2404,7 @@ function 目录索引Overview({
             onClick={() => setActiveContentView('sections')}
           >
             <span>目录索引</span>
-            <strong>{wikiIndexGroups.length}</strong>
+            <strong>{documentCount(wikiIndexGroups.length)}</strong>
           </button>
           <button
             type="button"
@@ -2351,7 +2413,7 @@ function 目录索引Overview({
             onClick={() => setActiveContentView('wiki')}
           >
             <span>知识图谱</span>
-            <strong>{okfConcepts.length}</strong>
+            <strong>{documentCount(okfConcepts.length)}</strong>
           </button>
           <button
             type="button"
@@ -2360,7 +2422,7 @@ function 目录索引Overview({
             onClick={() => setActiveContentView('evidence')}
           >
             <span>引用来源</span>
-            <strong>{totalChunkCount}</strong>
+            <strong>{documentCount(totalChunkCount)}</strong>
           </button>
         </div>
       </div>
@@ -3106,6 +3168,9 @@ function statusTag(status: string) {
     confirmed: { color: 'green', label: '已确认' },
     failed: { color: 'red', label: '失败' },
     pending: { color: 'gold', label: '待处理' },
+    // 文档入库状态：KnowledgeDocument.status 用的是 processing，缺这条会直接
+    // 把英文标识符当标签渲染出来
+    processing: { color: 'processing', label: '入库中' },
     running: { color: 'processing', label: '处理中' },
     queued: { color: 'gold', label: '排队中' },
     cancel_requested: { color: 'gold', label: '取消中' },

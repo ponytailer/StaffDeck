@@ -23,7 +23,6 @@ from app.agents.branching import (
     visible_knowledge_base_versions,
     visible_knowledge_base_version_ids,
 )
-from app.async_jobs import enqueue_async_job
 from app.db import get_session
 from app.db.models import (
     KnowledgeBucket,
@@ -38,6 +37,7 @@ from app.db.models import (
     User,
     utc_now,
 )
+from app.knowledge.ingest_jobs import schedule_knowledge_ingest
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.knowledge.route_cache import invalidate_knowledge_base
 from app.knowledge.schema import (
@@ -120,11 +120,12 @@ def upload_document(
             metadata=creator_metadata,
         )
     )
-    enqueue_async_job(
-        "knowledge_ingest",
-        service.run_ingest_job,
+    # 后台执行：rq 优先（独立 worker 进程，不占 web 线程池、可重启恢复），
+    # Redis 不可用时自动降级到进程内队列。
+    schedule_knowledge_ingest(
         job.id,
-        metadata={"tenant_id": request.tenant_id, "filename": request.filename},
+        tenant_id=request.tenant_id,
+        filename=request.filename,
     )
     return job_read(job)
 

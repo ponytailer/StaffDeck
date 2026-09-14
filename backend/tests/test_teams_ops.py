@@ -421,7 +421,7 @@ def test_blackboard_promote_creates_ingest_job_idempotent(
         db.refresh(entry)
         enqueued: list[tuple[tuple, dict]] = []
         monkeypatch.setattr(
-            teams_api, "enqueue_async_job",
+            teams_api, "schedule_knowledge_ingest",
             lambda *args, **kw: enqueued.append((args, kw)),
         )
 
@@ -449,10 +449,11 @@ def test_blackboard_promote_creates_ingest_job_idempotent(
         assert entry.citation_json["knowledge_base_id"] == resp.knowledge_base_id
         assert entry.citation_json["ingest_job_id"] == job.id
         assert entry.citation_json["task_id"] == task.id  # 既有引用保留
-        # 异步执行复用知识库 ingest 队列
+        # 异步执行复用知识库 ingest 调度口（内部按 rq 优先 / 进程内兜底 二选一）
         assert len(enqueued) == 1
-        assert enqueued[0][0][0] == "knowledge_ingest"
-        assert enqueued[0][0][2] == job.id
+        assert enqueued[0][0][0] == job.id
+        assert enqueued[0][1]["tenant_id"] == "tenant_demo"
+        assert enqueued[0][1]["filename"] == f"team-blackboard-{entry.id}.md"
 
         # 重复 promote:返回既有引用,不重复建 job
         resp2 = teams_api.promote_blackboard_entry(

@@ -152,6 +152,13 @@ class LLMClient:
                 api_key=api_key,
                 base_url=self.base_url,
                 timeout=self.timeout_seconds,
+                # SDK 自带重试会把「单次超时上限」悄悄放大成「上限 ×(1+max_retries)」。
+                # 实测：harness.task_action 上限 90s 却跑了 104.4s（= 90s 超时 + 14.4s
+                # 重试成功），sop.slot_extraction 上限 30s 却跑了 33.9s（= 30s + 3.9s）。
+                # 调用方自身已有 json_repair / 空响应重试与确定性兜底，这里必须关掉
+                # SDK 重试，否则 output_policy 的超时收紧在生产上不成立。
+                # Anthropic 分支同理（早已显式设 0）。
+                max_retries=0,
                 default_headers=self.custom_headers or None,
             )
             self.driver = (

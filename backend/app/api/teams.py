@@ -11,7 +11,6 @@ from app.api.sessions import (
     _safe_filename_part,
     _session_details_payload,
 )
-from app.async_jobs import enqueue_async_job
 from app.core import AgentLoop
 from app.db import get_session
 from app.db.models import (
@@ -29,6 +28,7 @@ from app.db.models import (
     new_id,
     utc_now,
 )
+from app.knowledge.ingest_jobs import schedule_knowledge_ingest
 from app.knowledge.service import IngestPayload, KnowledgeService
 from app.security.auth import get_current_user
 from app.security.permissions import is_admin_user as _is_admin_user
@@ -1323,12 +1323,11 @@ def promote_blackboard_entry(
     db.add(entry)
     db.commit()
     db.refresh(entry)
-    # 异步执行与知识库文档上传同款:进程内 AsyncJob 队列
-    enqueue_async_job(
-        "knowledge_ingest",
-        service.run_ingest_job,
+    # 异步执行与知识库文档上传同款：rq 优先，Redis 不可用时降级进程内队列
+    schedule_knowledge_ingest(
         job.id,
-        metadata={"tenant_id": team.tenant_id, "filename": filename},
+        tenant_id=team.tenant_id,
+        filename=filename,
     )
     return TeamBlackboardPromoteResponse(
         entry=_blackboard_entry_read(entry),

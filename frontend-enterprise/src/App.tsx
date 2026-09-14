@@ -89,9 +89,11 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { notify } from "@/components/ui/app-toast";
 import {
+  emitAgentRosterRefresh,
   emitAgentScopeChange,
   ENTERPRISE_AGENT_STORAGE_KEY,
   isTeamScope,
+  onAgentRosterRefresh,
   persistSharedAgentScope,
   teamIdFromScope,
   toTeamScope,
@@ -243,15 +245,7 @@ function Shell({
     const onAgentRefresh = () => {
       void loadAgents();
     };
-    window.addEventListener(
-      "ultrarag-enterprise-agent-scope-refresh",
-      onAgentRefresh,
-    );
-    return () =>
-      window.removeEventListener(
-        "ultrarag-enterprise-agent-scope-refresh",
-        onAgentRefresh,
-      );
+    return onAgentRosterRefresh(onAgentRefresh);
   }, []);
 
   useEffect(() => {
@@ -477,7 +471,10 @@ function Shell({
             : baseMetadata,
         },
       );
-      await loadAgents();
+      // 广播「花名册已变更」而不是只刷新本组件：员工列表是各页各自拉取的
+      // （数字员工页 / 员工广场），只更新 App 自己的 agents 会让已挂载的页面
+      // 一直显示 mount 时的旧快照。App 自己也订阅了该事件，故这里无需重复拉取。
+      emitAgentRosterRefresh();
       changeAgentScope(created.id);
       setAgentCreateOpen(false);
       notify.success("数字员工创建成功");

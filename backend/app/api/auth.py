@@ -46,11 +46,6 @@ class UserUpdateRequest(BaseModel):
     role: Optional[Literal["admin", "member"]] = None
 
 
-class ChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str = Field(..., min_length=6)
-
-
 class UpdateProfileRequest(BaseModel):
     """个人资料自改:允许修改自己的显示名和部门(管理员改他人走 /users/{id})。"""
 
@@ -459,24 +454,6 @@ def revoke_account_api_credential(
     db.commit()
     db.refresh(row)
     return _account_api_credential_read(row, current_user.id)
-
-
-@router.post("/me/change-password")
-def change_my_password(
-    request: ChangePasswordRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_session),
-) -> Response:
-    # 旧密码校验直读 DB：current_user 可能来自 Redis 缓存（password_hash 为占位空串）
-    db_user = db.get(User, current_user.id)
-    if not db_user or not verify_password(request.old_password, db_user.password_hash):
-        raise HTTPException(status_code=401, detail="旧密码不正确")
-    db_user.password_hash = hash_password(request.new_password)
-    db_user.updated_at = utc_now()
-    db.add(db_user)
-    db.commit()
-    invalidate_user_cache(db_user.id)
-    return Response(status_code=204)
 
 
 @router.put("/me/profile", response_model=UserRead)

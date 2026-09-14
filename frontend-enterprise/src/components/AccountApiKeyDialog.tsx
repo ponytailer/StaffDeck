@@ -22,6 +22,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { copyTextToClipboard } from '../lib/clipboard';
 
+import { ConfirmDialog } from './ConfirmDialog';
+
 export type AccountApiKeySubject = {
   id: string;
   username: string;
@@ -59,6 +61,7 @@ export default function AccountApiKeyDialog({
   const [creating, setCreating] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<AccountApiCredentialCreated | null>(null);
+  const [pendingRevoke, setPendingRevoke] = useState<AccountApiCredential | null>(null);
   const [copied, setCopied] = useState(false);
   const revealedKeyRef = useRef<HTMLInputElement | null>(null);
   const displayName = useMemo(
@@ -129,7 +132,7 @@ export default function AccountApiKeyDialog({
   }
 
   async function revokeCredential(row: AccountApiCredential) {
-    if (!account || !window.confirm(`确认禁用「${row.name}」？禁用后调用会立即失败。`)) return;
+    if (!account) return;
     setActingId(row.id);
     try {
       await api.post(
@@ -143,6 +146,7 @@ export default function AccountApiKeyDialog({
       notify.error(error instanceof Error ? error.message : '禁用账号 API 密钥失败');
     } finally {
       setActingId(null);
+      setPendingRevoke(null);
     }
   }
 
@@ -161,7 +165,8 @@ export default function AccountApiKeyDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next && !creating && !actingId) onClose(); }}>
+    <>
+      <Dialog open={open} onOpenChange={(next) => { if (!next && !creating && !actingId) onClose(); }}>
       <DialogContent
         aria-describedby="account-api-key-description"
         data-i18n-ignore
@@ -267,7 +272,7 @@ export default function AccountApiKeyDialog({
                       <RefreshCw className={actingId === row.id ? 'size-[12px] animate-spin' : 'size-[12px]'} />
                       轮换
                     </Button>
-                    <Button type="button" variant="outline" disabled={row.status !== 'active' || Boolean(actingId)} onClick={() => void revokeCredential(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
+                    <Button type="button" variant="outline" disabled={row.status !== 'active' || Boolean(actingId)} onClick={() => setPendingRevoke(row)} className="h-[29px] rounded-[9px] border-[#f0d8d8] px-[9px] text-[10px] text-[#bd4141] hover:bg-[#fff1f1] hover:text-[#a62d2d]">
                       <Ban className="size-[12px]" />
                       禁用
                     </Button>
@@ -283,7 +288,18 @@ export default function AccountApiKeyDialog({
           </section>
         </div>
       </DialogContent>
-    </Dialog>
+      </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(pendingRevoke)}
+        onOpenChange={(next) => { if (!next) setPendingRevoke(null); }}
+        title={<>确认禁用「{pendingRevoke?.name}」？</>}
+        description="禁用后该密钥的所有调用会立即失败，且无法恢复；如需继续使用请重新创建。"
+        confirmText="禁用"
+        onConfirm={() => { if (pendingRevoke) void revokeCredential(pendingRevoke); }}
+        loading={Boolean(actingId)}
+      />
+    </>
   );
 }
 

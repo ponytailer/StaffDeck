@@ -8,15 +8,16 @@
 1. 初始化 DB 与种子数据（与 API 进程同一套 ``DATABASE_URL``）；
 2. 后台线程运行 rq Scheduler：把到期的 scheduled job 从 Redis 有序集移入执行队列；
 3. 主线程运行 rq Worker：消费 :func:`rq_dispatch.consume_queue_names` 给出的全部
-   队列——定时任务触发（``scheduled_tasks``）+ SOP 边条件离线编译
-   （``skill_compile``）等通用后台工作。
+   队列——定时任务触发（``scheduled_tasks``）、SOP 边条件离线编译
+   （``skill_compile``）、知识库文档入库（``knowledge_ingest``）等通用后台工作。
 
 与 FastAPI（``single_port_app``）进程互相独立：API 只负责写时同步 / 启动全量同步，
 本进程只负责按点触发与执行，二者共享同一个 Redis 与 PG。
 
-扩容：rq 单 worker 同时只处理一个 job，需要并发就多起几个本进程（共享同一队列）。
-需要把编译工作与定时任务隔离时，可以另起一个进程并让 ``Worker`` 只监听
-``skill_compile`` 队列。
+扩容：rq 单 worker 同时只处理一个 job，需要并发就多起几个本进程（共享同一队列，
+rq 会把新 job 交给空闲的那个）。**知识库入库是分钟级长任务**，一个入库就会独占
+worker 到跑完，期间定时任务要排队——生产上建议再起一个本进程（或只监听
+``knowledge_ingest`` 的专用进程），把长任务与定时任务隔离开。
 """
 
 from __future__ import annotations
@@ -81,8 +82,9 @@ def main() -> None:
         logger.error("未安装 rq / rq-scheduler，请先安装依赖（pip install rq rq-scheduler）。")
         sys.exit(1)
 
-    # 消费队列集中由 rq_dispatch 给出（定时任务触发 + SOP 边条件离线编译等
-    # 通用后台工作）；新增队列时只改 rq_dispatch.consume_queue_names，不动这里。
+    # 消费队列集中由 rq_dispatch 给出（定时任务触发 + SOP 边条件离线编译 +
+    # 知识库入库等通用后台工作）；新增队列时只改 rq_dispatch.consume_queue_names，
+    # 不动这里。
     queue_names = rq_dispatch.consume_queue_names()
     queues = [Queue(name, connection=conn) for name in queue_names]
     scheduler = Scheduler(queue_name=settings.scheduled_task_queue, connection=conn)
@@ -95,9 +97,9 @@ def main() -> None:
         settings.redis_port,
     )
 
-    # 多队列按声明顺序取：定时任务队列优先，编译队列次之。单 worker 同时只跑
-    # 一个 job，编译（秒级到十几秒）会短暂占用消费能力——需要隔离就多起一个
-    # 进程并只监听 skill_compile 队列。
+    # 多队列按声明顺序取：定时任务队列优先，编译 / 入库队列次之。单 worker 同时
+    # 只跑一个 job，知识库入库（分钟级）会长时间独占消费能力——需要隔离就再起
+    # 一个本进程，两个 worker 监听同一组队列，rq 会把新 job 派给空闲的那个。
     worker = Worker(queues, connection=conn)
     worker.work()  # 阻塞；SIGTERM / SIGINT 触发优雅退出
     logger.info("rq worker 已停止。")

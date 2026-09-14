@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -1332,12 +1333,22 @@ class KnowledgeService:
                 for bucket in buckets
             ],
         }
+        started = time.monotonic()
         try:
             with llm_operation("knowledge.discovery", bucket_count=len(buckets)):
                 raw = LLMClient(model_config).generate_json(
                     DISCOVERY_PROMPT.read_text(encoding="utf-8"), payload
                 )
-        except (LLMError, Exception):
+        except (LLMError, Exception) as exc:
+            # 发现阶段只产出「可确认的 SOP/工具建议」，失败不影响入库结果，
+            # 但必须留痕，否则用户只觉得「这次入库怎么没建议」。
+            logger.warning(
+                "知识发现（SOP/工具建议）跳过 buckets=%d elapsed=%.1fs model=%s: %s",
+                len(buckets),
+                time.monotonic() - started,
+                getattr(model_config, "model", "?"),
+                exc,
+            )
             return
         self._raise_if_ingest_cancelled(job)
         discoveries = raw.get("discoveries") if isinstance(raw, dict) else None
@@ -1407,15 +1418,34 @@ class KnowledgeService:
                 for node in section_nodes[:60]
             ]
         }
+        started = time.monotonic()
         try:
             with llm_operation("knowledge.ingest_bucket", section_count=len(section_nodes)):
                 raw = LLMClient(model_config).generate_json(
                     BUCKET_PROMPT.read_text(encoding="utf-8"), payload
                 )
-        except (LLMError, Exception):
+        except (LLMError, Exception) as exc:
+            # 失败/超时会退化成「按章节结构建桶」——产物仍然完整（切片与知识页照建），
+            # 只是主题变粗。这条日志是排查「为什么这份知识库只有 1 个主题」的唯一线索；
+            # 以前这里静默 return []，外部完全看不出发生过降级（2026-09-14 补）。
+            logger.warning(
+                "知识主题规划（LLM）失败，退回结构化分桶 sections=%d payload_chars=%d elapsed=%.1fs model=%s: %s",
+                len(section_nodes),
+                len(json.dumps(payload, ensure_ascii=False)),
+                time.monotonic() - started,
+                getattr(model_config, "model", "?"),
+                exc,
+            )
             return []
         buckets = raw.get("buckets") if isinstance(raw, dict) else None
-        return [item for item in buckets if isinstance(item, dict)] if isinstance(buckets, list) else []
+        if not isinstance(buckets, list):
+            logger.warning(
+                "知识主题规划（LLM）返回结构异常，退回结构化分桶 elapsed=%.1fs model=%s",
+                time.monotonic() - started,
+                getattr(model_config, "model", "?"),
+            )
+            return []
+        return [item for item in buckets if isinstance(item, dict)]
 
     def _load_documents_for_search(self, request: KnowledgeSearchRequest) -> list[KnowledgeDocument]:
         stmt = select(KnowledgeDocument).where(

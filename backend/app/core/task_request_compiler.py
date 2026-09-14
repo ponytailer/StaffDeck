@@ -297,21 +297,33 @@ def _goal(
 def _sop_context(skill: Skill | None, current_node: dict[str, Any] | None) -> dict[str, Any]:
     if skill is None:
         return {}
+    content = skill.content_json or {}
     # 全图声明的槽位字段并集（保持图内出现顺序）：确定性执行器用它隔离
     # 会话历史遗留的脏槽位（不在白名单内的槽位不作路由证据/不进回复摘要）
     slot_fields: list[str] = []
-    for node in (skill.content_json or {}).get("nodes") or []:
+    for node in content.get("nodes") or []:
         if not isinstance(node, dict):
             continue
         for item in node.get("expected_user_info") or []:
             field = str(item).strip()
             if field and field not in slot_fields:
                 slot_fields.append(field)
+    # 字段的显示名（拼用户可见回复用）。只带**技能自己声明过**的条目：内置
+    # 词典在 slot_display 里兜底，无需抄进来。这样 sop_context 不会因为标签
+    # 而膨胀（它每轮都会随 TaskRequirement 发给模型）。
+    declared = content.get("slot_labels")
+    slot_labels: dict[str, str] = {}
+    if isinstance(declared, dict):
+        for field in slot_fields:
+            text = str(declared.get(field) or "").strip()
+            if text:
+                slot_labels[field] = text
     return {
         "skill_id": skill.skill_id,
         "skill_name": skill.name,
         "step": current_node or {},
         "slot_fields": slot_fields,
+        "slot_labels": slot_labels,
     }
 
 

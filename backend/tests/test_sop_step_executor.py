@@ -160,8 +160,11 @@ def test_await_user_on_missing_slots_without_required_capabilities() -> None:
     action = actions[0]
     assert action["action"] == "finish"
     assert action["status"] == "awaiting_user"
-    assert "device_model" in action["reply_fragment"]
-    assert "urgency" in action["reply_fragment"]
+    # 字段名在回复里必须是中文显示名：这轮是零 LLM 模板回复，
+    # 直接把 device_model 抛给用户等于没说话
+    assert "设备型号" in action["reply_fragment"]
+    assert "紧急程度" in action["reply_fragment"]
+    assert "device_model" not in action["reply_fragment"]
     assert "提交申请" in action["reply_fragment"]
     assert events[0][1]["scene"] == "await_user_for_slots"
 
@@ -171,7 +174,31 @@ def test_await_user_uses_required_slots_when_expected_info_empty() -> None:
     requirement.sop_context["step"]["expected_user_info"] = []
     actions = plan_sop_prefill_actions(requirement)
     assert len(actions) == 1
-    assert "device_model" in actions[0]["reply_fragment"]
+    assert "设备型号" in actions[0]["reply_fragment"]
+    assert "device_model" not in actions[0]["reply_fragment"]
+
+
+def test_await_user_honours_skill_declared_slot_labels() -> None:
+    """技能自己声明的 slot_labels 优先于内置词典。"""
+
+    requirement = _sop_requirement(required_slots=["employee_id", "device_model"])
+    requirement.sop_context["slot_labels"] = {"employee_id": "工号（HR 系统）"}
+    actions = plan_sop_prefill_actions(requirement)
+    assert len(actions) == 1
+    reply = actions[0]["reply_fragment"]
+    assert "工号（HR 系统）" in reply
+    # 未声明的字段回落到内置词典
+    assert "设备型号" in reply
+
+
+def test_await_user_keeps_unknown_field_identifier() -> None:
+    """词典没有、技能也没声明的字段：宁可显示标识符，也不猜一个错的中文名。"""
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(required_slots=["some_vendor_specific_code"]),
+    )
+    assert len(actions) == 1
+    assert "some_vendor_specific_code" in actions[0]["reply_fragment"]
 
 
 def test_await_user_skipped_when_required_capabilities_present() -> None:
@@ -279,8 +306,8 @@ def test_resume_awaiting_user_partial_extraction_asks_missing_only(
     assert len(actions) == 1
     action = actions[0]
     assert action["status"] == "awaiting_user"
-    assert "system" in action["reply_fragment"]
-    assert "employee_id" not in action["reply_fragment"]
+    assert "目标系统" in action["reply_fragment"]
+    assert "员工工号" not in action["reply_fragment"]
     assert action["slot_updates"] == {"employee_id": "3012"}
 
 
@@ -503,9 +530,9 @@ def test_slot_extraction_partial_asks_missing_only(monkeypatch) -> None:
     assert len(actions) == 1
     action = actions[0]
     assert action["status"] == "awaiting_user"
-    assert "system" in action["reply_fragment"]
-    assert "access_level" in action["reply_fragment"]
-    assert "employee_id" not in action["reply_fragment"]
+    assert "目标系统" in action["reply_fragment"]
+    assert "访问级别" in action["reply_fragment"]
+    assert "员工工号" not in action["reply_fragment"]
     assert action["slot_updates"] == {"employee_id": "3012"}
 
 

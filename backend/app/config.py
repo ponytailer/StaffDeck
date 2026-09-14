@@ -115,6 +115,17 @@ class Settings(BaseSettings):
     # 进程内异步队列（app.async_jobs），编译永远不会阻塞用户请求。
     skill_compile_queue: str = "skill_compile"
     skill_compile_job_timeout_seconds: int = 600
+    # 知识库文档入库队列。入库是分钟级长任务（解析 + 两次 LLM + 切片落库），
+    # 必须离开 web 进程：否则 4 线程的进程内 AsyncJob 池会被长任务占满，其它
+    # 后台工作要排队到分钟级才轮到，进程重启还会直接切断正在跑的任务。
+    # 跑在同一个 rq worker 进程上（见 rq_worker），独立队列名便于观察积压；
+    # 想让入库不占用定时任务的消费能力，多起一个 `uv run rq-worker` 即可。
+    knowledge_ingest_queue: str = "knowledge_ingest"
+    # 单次入库的 rq job 超时。LLM 两阶段已收紧到最坏 330s（见 output_policy），
+    # 但 PDF/DOCX 解析与切片在大文档上仍可能到十分钟级，故给 30 分钟上限——
+    # 上限必须明显大于正常耗时，否则 rq worker 会 kill 掉一个其实仍在正常
+    # 推进的任务，把「跑得慢」变成「跑失败」。
+    knowledge_ingest_job_timeout_seconds: int = 1800
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

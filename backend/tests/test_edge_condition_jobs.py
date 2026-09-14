@@ -144,13 +144,14 @@ def test_rq_enqueue_job_returns_none_without_redis() -> None:
         rq_dispatch.reset_caches()
 
 
-def test_rq_worker_consumes_both_queues() -> None:
+def test_rq_worker_consumes_all_background_queues() -> None:
     from app.scheduled_tasks import rq_dispatch
 
     names = rq_dispatch.consume_queue_names()
     settings = get_settings()
     assert settings.scheduled_task_queue in names
     assert settings.skill_compile_queue in names
+    assert settings.knowledge_ingest_queue in names
     assert len(names) == len(set(names))
 
 

@@ -24,7 +24,14 @@ import {
   employeeDisplayNameWithCreator,
   employeeProfile,
 } from '../employee';
-import { emitAgentScopeChange, isTeamScope, persistSharedAgentScope, readEmployeeScope } from '../lib/agent-scope-storage';
+import {
+  emitAgentRosterRefresh,
+  emitAgentScopeChange,
+  isTeamScope,
+  onAgentRosterRefresh,
+  persistSharedAgentScope,
+  readEmployeeScope,
+} from '../lib/agent-scope-storage';
 import type { AgentProfileRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -70,6 +77,17 @@ export default function AgentsPage({
   useEffect(() => {
     void load();
   }, []);
+
+  // 员工列表是每个页面各自拉取的，创建 / 编辑 / 上下线 / 删除发生在别的页面
+  // 或 App 侧边栏弹窗时，本页收不到任何信号。订阅花名册广播，避免新建员工后
+  // 必须手动刷新页面才能看到。
+  useEffect(
+    () =>
+      onAgentRosterRefresh(() => {
+        void load();
+      }),
+    [],
+  );
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -146,8 +164,8 @@ export default function AgentsPage({
         metadata: row.metadata || {},
       });
       notify.success(status === 'active' ? '员工已上线' : '员工已下线');
-      await load();
-      window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+      // 本页也订阅了该事件，会自行重新拉取，无需再单独 await load()。
+      emitAgentRosterRefresh();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '更新员工状态失败');
     }
@@ -166,8 +184,8 @@ export default function AgentsPage({
         metadata,
       });
       notify.success(published ? '已发布到广场' : '已从广场下架');
-      await load();
-      window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+      // 本页也订阅了该事件，会自行重新拉取，无需再单独 await load()。
+      emitAgentRosterRefresh();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '更新广场状态失败');
     }
@@ -192,8 +210,8 @@ export default function AgentsPage({
       }
       notify.success('员工已删除');
       setDeleteTarget(null);
-      await load();
-      window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+      // 本页也订阅了该事件，会自行重新拉取，无需再单独 await load()。
+      emitAgentRosterRefresh();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '删除员工失败');
     } finally {

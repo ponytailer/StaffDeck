@@ -282,12 +282,17 @@ def consume_queue_names() -> list[str]:
 
     集中在这里返回，``rq_worker`` 只负责把结果交给 ``Worker``——新增队列时
     不必再改 worker 进程的装配代码。
+
+    单 worker 同时只跑一个 job，所以「分钟级长任务」（知识库入库）会和定时任务
+    互相排队。需要隔离时多起一个 ``uv run rq-worker`` 进程即可：两个 worker
+    监听同一组队列，rq 会把新 job 交给空闲的那个。
     """
 
     settings = get_settings()
     names = [settings.scheduled_task_queue]
-    if settings.skill_compile_queue not in names:
-        names.append(settings.skill_compile_queue)
+    for extra in (settings.skill_compile_queue, settings.knowledge_ingest_queue):
+        if extra and extra not in names:
+            names.append(extra)
     return names
 
 
