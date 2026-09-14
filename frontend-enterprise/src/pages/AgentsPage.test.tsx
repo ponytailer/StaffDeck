@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { ENTERPRISE_AGENT_STORAGE_KEY } from '@/lib/agent-scope-storage';
+import {
+  AGENT_ROSTER_REFRESH_EVENT,
+  ENTERPRISE_AGENT_STORAGE_KEY,
+} from '@/lib/agent-scope-storage';
 import type { AgentProfileRead } from '@/types';
 
 import AgentsPage from './AgentsPage';
@@ -76,5 +79,72 @@ describe('AgentsPage team scope compatibility', () => {
 
     // 团队作用域匹配不到任何员工：不高亮、不报错，员工列表照常渲染。
     expect((await screen.findByText('小艾')).textContent).toBeTruthy();
+  });
+});
+
+describe('AgentsPage roster refresh', () => {
+  it('重新拉取列表 when another entry point creates an employee', async () => {
+    // 员工列表是每个页面各自拉的（本页只在 mount 时拉一次）。创建入口在 App 侧边栏
+    // 弹窗里，本页收不到任何信号 —— 修复前表现为「新建后看不到，手动刷新页面才出现」。
+    const rows: AgentProfileRead[] = [agent];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse(rows);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentsPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+
+    expect((await screen.findByText('小艾')).textContent).toBeTruthy();
+    const callsBefore = fetchMock.mock.calls.length;
+
+    // 别处新建了一个员工并广播花名册变更
+    rows.push({ ...agent, id: 'agent-2', name: '小新' });
+    fireEvent(window, new Event(AGENT_ROSTER_REFRESH_EVENT));
+
+    expect((await screen.findByText('小新')).textContent).toBeTruthy();
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBefore);
+  });
+
+  it('不监听无关事件（切换作用域不触发列表重拉）', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentsPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+    await screen.findByText('小艾');
+    const callsAfterLoad = fetchMock.mock.calls.length;
+
+    fireEvent(
+      window,
+      new CustomEvent('ultrarag-enterprise-agent-scope-change', {
+        detail: { agentId: 'agent-2' },
+      }),
+    );
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(callsAfterLoad));
   });
 });

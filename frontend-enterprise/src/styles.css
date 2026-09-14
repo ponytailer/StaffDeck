@@ -1,7 +1,16 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";* {
+@import "@fontsource-variable/geist";
+
+/* 显式注册 src 为扫描源。Tailwind v4 的自动采集会**跳过 `.gitignore` 命中的文件**，
+   而仓库根 `.gitignore` 曾用 `*log*` 兜日志目录，连带吞掉了所有名字含 "log" 的源码
+   （`Dialog` 含 log → 全部 *Dialog*.tsx、`ui/dialog.tsx`、`ui/alert-dialog.tsx`、
+   `*LogsTab.tsx`、`LoginPage.tsx`、`BrandLogo.tsx` …），这些文件里的 class
+   一律不进 CSS 且不报警。`@source` 不受 `.gitignore` 约束，在此作为兜底显式声明。 */
+@source "./";
+
+* {
   box-sizing: border-box;
 }
 

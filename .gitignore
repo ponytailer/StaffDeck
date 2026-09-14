@@ -55,4 +55,11 @@ overview.md
 *.dmg
 db-export/
 *.db
-*log*
+
+# 运行日志 / 审计日志。**不要**写成 `*log*`：它是无斜杠的全仓库匹配，
+# 会连带吞掉所有文件名含 "log" 的源码——`*Dialog*.tsx`（Dialog 含 log）、
+# `*LogsTab.tsx`、`BrandLogo.tsx` 等。而 Tailwind v4 的自动采集会跳过
+# `.gitignore` 命中的文件，于是这些文件里的 class 一律不进 CSS（表现为
+# 弹窗被撑成整屏宽、间距/配色丢失），且不报任何错。
+*.log
+logs/
