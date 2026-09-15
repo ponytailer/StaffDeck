@@ -403,10 +403,10 @@ def test_resume_awaiting_user_extraction_completes_then_passthrough(
     monkeypatch,
 ) -> None:
     """用户回来补槽位（如 15:28 复测场景）：抽齐 → 直通流转，不再 7 轮 LLM。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     monkeypatch.setattr(
-        executor_module,
+        scenes_module,
         "_extract_slots_llm",
         lambda *args, **kwargs: {
             "employee_id": "3012",
@@ -439,10 +439,10 @@ def test_resume_awaiting_user_partial_extraction_asks_missing_only(
     monkeypatch,
 ) -> None:
     """恢复补槽但只抽到部分：只问缺的，已抽值落库防重复问。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     monkeypatch.setattr(
-        executor_module,
+        scenes_module,
         "_extract_slots_llm",
         lambda *args, **kwargs: {"employee_id": "3012"},
     )
@@ -463,9 +463,13 @@ def test_resume_awaiting_user_partial_extraction_asks_missing_only(
     assert action["slot_updates"] == {"employee_id": "3012"}
 
 
-def test_resume_awaiting_user_blocks_prefetch_and_passthrough() -> None:
-    """恢复补槽会话不重复预检索（C）也不做流转直通（B）。"""
-    # 场景 C：kb 必填且无槽位缺口 → 恢复场景下不介入
+def test_resume_awaiting_user_blocks_prefetch_but_allows_passthrough() -> None:
+    """恢复补槽会话不重复预检索（C 排除），但槽位齐时放行流转直通（B）。
+
+    2026-09-15 死胡同修复：旧实现里恢复帧槽位已齐会静默 return []，
+    整帧白白落一轮 LLM；现在 F/D/G/B 与普通帧同表调度。
+    """
+    # 场景 C：kb 必填且无槽位缺口 → 恢复场景下不介入（E 门控接住后放弃）
     assert (
         plan_sop_prefill_actions(
             _sop_requirement(required_knowledge_base_ids=["kb-it"]),
@@ -474,15 +478,15 @@ def test_resume_awaiting_user_blocks_prefetch_and_passthrough() -> None:
         )
         == []
     )
-    # 场景 B：无槽位无 kb 的纯流转 → 恢复场景下不介入
-    assert (
-        plan_sop_prefill_actions(
-            _sop_requirement(),
-            same_step=True,
-            resumed_awaiting_user=True,
-        )
-        == []
+    # 场景 B：无槽位无 kb 的纯流转 → 恢复场景下照常直通（零 LLM）
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(),
+        same_step=True,
+        resumed_awaiting_user=True,
     )
+    assert len(actions) == 1
+    assert actions[0]["status"] == "completed"
+    assert actions[0]["next_step_id"] == "n3"
 
 
 def test_resume_awaiting_user_with_kb_slots_step_degrades() -> None:
@@ -628,7 +632,7 @@ def test_harness_prefetch_executes_and_satisfies_required_knowledge(monkeypatch)
 
 def test_slot_extraction_completes_slots_then_passthrough(monkeypatch) -> None:
     """复现截图 bug 场景：用户首条消息已带齐信息 → 抽齐后直通，不再错误询问。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def fake_extract(*args, **kwargs):
         assert "employee_id" in args[0] or "employee_id" in kwargs.get("fields", [])
@@ -640,7 +644,7 @@ def test_slot_extraction_completes_slots_then_passthrough(monkeypatch) -> None:
             "access_level": "生产环境管理员",
         }
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fake_extract)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fake_extract)
 
     events = _events()
     actions = plan_sop_prefill_actions(
@@ -664,10 +668,10 @@ def test_slot_extraction_completes_slots_then_passthrough(monkeypatch) -> None:
 
 def test_slot_extraction_partial_asks_missing_only(monkeypatch) -> None:
     """部分抽取：只问缺的字段，已抽值随 slot_updates 落库防重复问。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     monkeypatch.setattr(
-        executor_module,
+        scenes_module,
         "_extract_slots_llm",
         lambda *args, **kwargs: {"employee_id": "3012"},
     )
@@ -690,9 +694,9 @@ def test_slot_extraction_partial_asks_missing_only(monkeypatch) -> None:
 
 def test_slot_extraction_failure_falls_back_to_template(monkeypatch) -> None:
     """抽取返回空结果退回模板直通（_extract_slots_llm 内部兜异常返回 {}）。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", lambda *args, **kwargs: {})
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", lambda *args, **kwargs: {})
     actions = plan_sop_prefill_actions(
         _sop_requirement(required_slots=["device_model"]),
         slot_extraction_model="fake-model",
@@ -704,12 +708,12 @@ def test_slot_extraction_failure_falls_back_to_template(monkeypatch) -> None:
 
 def test_unexpected_executor_error_degrades_to_empty(monkeypatch) -> None:
     """执行器实现层异常：主流程整体返回空 → harness 走现有 LLM 链路。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def boom(*args):
         raise RuntimeError("bug")
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", boom)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", boom)
     actions = plan_sop_prefill_actions(
         _sop_requirement(required_slots=["device_model"]),
         slot_extraction_model="fake-model",
@@ -719,10 +723,10 @@ def test_unexpected_executor_error_degrades_to_empty(monkeypatch) -> None:
 
 def test_slot_extraction_filters_unknown_fields(monkeypatch) -> None:
     """抽取返回的未知字段被过滤，不进入 slot_updates。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     monkeypatch.setattr(
-        executor_module,
+        scenes_module,
         "_extract_slots_llm",
         lambda *args, **kwargs: {"device_model": "ThinkPad", "hacker_field": "x"},
     )
@@ -745,7 +749,7 @@ def test_slot_extraction_skipped_without_model() -> None:
 
 def test_slot_extraction_receives_step_instruction(monkeypatch) -> None:
     """节点说明作为 field_context 传给抽取调用，供模型理解抽象字段语义。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     captured: dict[str, Any] = {}
 
@@ -755,7 +759,7 @@ def test_slot_extraction_receives_step_instruction(monkeypatch) -> None:
         captured["model_config"] = args[3]
         return {"employee_id": "1002", "system": "crm"}
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fake_extract)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fake_extract)
     requirement = _sop_requirement(
         required_slots=["employee_id", "system", "permission", "access_level"],
         expected_user_info=["employee_id", "system", "permission", "access_level"],
@@ -792,12 +796,12 @@ _ROUTE_EDGES = [
 
 def test_decision_direct_eval_unique_match_transitions(monkeypatch) -> None:
     """复现 16:0x 场景：access_level=生产环境 唯一命中高权限边 → 零 LLM 直判。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def fail_llm(*args, **kwargs):
         raise AssertionError("直判命中不应触发槽位抽取/LLM")
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fail_llm)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fail_llm)
 
     events = _events()
     actions = plan_sop_prefill_actions(
@@ -885,8 +889,16 @@ def test_decision_direct_eval_requires_decision_type() -> None:
     assert actions == []
 
 
-def test_decision_direct_eval_blocked_on_resume_recovery() -> None:
-    """恢复补槽会话不做决策直判（只允许场景 A）。"""
+def test_decision_direct_eval_allowed_on_resume_recovery(monkeypatch) -> None:
+    """恢复补槽帧槽位已齐时放行决策直判（死胡同修复后的新预期）。"""
+    import app.core.sop_scenes as scenes_module
+
+    def fail_llm(*args, **kwargs):
+        raise AssertionError("恢复帧直判不应触发槽位抽取/LLM")
+
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fail_llm)
+
+    events = _events()
     actions = plan_sop_prefill_actions(
         _sop_requirement(
             sop_context={"skill_id": "sop-1", "step": _DECISION_STEP},
@@ -895,8 +907,12 @@ def test_decision_direct_eval_blocked_on_resume_recovery() -> None:
         ),
         same_step=True,
         resumed_awaiting_user=True,
+        trace_sink=lambda t, p: events.append((t, p)),
     )
-    assert actions == []
+    assert len(actions) == 1
+    assert actions[0]["status"] == "completed"
+    assert actions[0]["next_step_id"] == "n6"
+    assert events and events[0][1]["scene"] == "decision_direct_eval"
 
 
 # ---------------------------------------------------------------------------
@@ -978,13 +994,13 @@ def test_handoff_summary_filters_dirty_slots() -> None:
 def test_fresh_merge_updates_stale_slots_on_reused_session(monkeypatch) -> None:
     """复现 17:41 场景：session 槽位已齐（旧工号1003），新消息工号2003 →
     A2 抽取新值随 B 直通落库覆盖。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def fake_extract(*args, **kwargs):
         assert "employee_id" in args[0]
         return {"employee_id": "2003", "permission": "普通权限"}
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fake_extract)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fake_extract)
 
     events = _events()
     actions = plan_sop_prefill_actions(
@@ -1014,12 +1030,12 @@ def test_fresh_merge_updates_stale_slots_on_reused_session(monkeypatch) -> None:
 
 def test_fresh_merge_feeds_decision_evidence(monkeypatch) -> None:
     """A2 新值进入路由证据：旧槽位匹配不上，新值「普通权限」唯一命中 n3 边。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def fake_extract(*args, **kwargs):
         return {"permission": "普通权限"}
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fake_extract)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fake_extract)
 
     actions = plan_sop_prefill_actions(
         _sop_requirement(
@@ -1041,12 +1057,12 @@ def test_fresh_merge_feeds_decision_evidence(monkeypatch) -> None:
 
 def test_fresh_merge_conflict_message_falls_back(monkeypatch) -> None:
     """消息同时含两条边的条件词（普通权限+生产环境）→ 冲突否决，交还 LLM。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def fail_llm(*args, **kwargs):
         raise AssertionError("不应触发抽取")  # D 直判不调用抽取；A2 未配模型跳过
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fail_llm)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fail_llm)
 
     actions = plan_sop_prefill_actions(
         _sop_requirement(
@@ -1065,12 +1081,12 @@ def test_fresh_merge_conflict_message_falls_back(monkeypatch) -> None:
 
 def test_fresh_merge_skipped_without_message_or_model(monkeypatch) -> None:
     """无新消息或未配抽取模型时不触发 A2（保持原 B 直通零开销）。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def fail_llm(*args, **kwargs):
         raise AssertionError("无消息/无模型不应触发抽取")
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fail_llm)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fail_llm)
 
     base_kwargs = {
         "sop_context": {"skill_id": "sop-1", "step": dict(_DECISION_STEP, type="collect")},
@@ -1106,12 +1122,12 @@ _HANDOFF_STEP = {
 
 def test_handoff_terminal_node_passthrough(monkeypatch) -> None:
     """终点 handoff 节点：槽位齐 + 无出边 → 零 LLM 直接 finish(handoff)。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def fail_llm(*args, **kwargs):
         raise AssertionError("handoff 直通不应触发槽位抽取/LLM")
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fail_llm)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fail_llm)
 
     events = _events()
     actions = plan_sop_prefill_actions(
@@ -1140,12 +1156,12 @@ def test_handoff_terminal_node_passthrough(monkeypatch) -> None:
 
 def test_handoff_with_transitions_not_direct(monkeypatch) -> None:
     """handoff 节点带唯一无条件出边（非终点）→ 走场景 B 流转，不走 F。"""
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     def fail_llm(*args, **kwargs):
         raise AssertionError("不应触发抽取")
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fail_llm)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fail_llm)
 
     actions = plan_sop_prefill_actions(
         _sop_requirement(
@@ -1159,8 +1175,8 @@ def test_handoff_with_transitions_not_direct(monkeypatch) -> None:
     assert actions[0]["next_step_id"] == "n7"
 
 
-def test_handoff_blocked_on_resume_recovery() -> None:
-    """恢复补槽会话不做 handoff 直通（只允许场景 A）。"""
+def test_handoff_passthrough_allowed_on_resume_recovery() -> None:
+    """恢复补槽帧槽位已齐时放行 handoff 直通（死胡同修复后的新预期）。"""
     actions = plan_sop_prefill_actions(
         _sop_requirement(
             sop_context={"skill_id": "sop-1", "step": _HANDOFF_STEP},
@@ -1170,7 +1186,9 @@ def test_handoff_blocked_on_resume_recovery() -> None:
         same_step=True,
         resumed_awaiting_user=True,
     )
-    assert actions == []
+    assert len(actions) == 1
+    assert actions[0]["status"] == "handoff"
+    assert "1001" in actions[0]["reply_fragment"]
 
 
 def test_handoff_without_slots_uses_generic_reply() -> None:
@@ -1325,7 +1343,7 @@ def test_harness_full_message_turn_completes_without_task_action_llm(monkeypatch
     """集成（截图 bug 端到端）：首条消息带齐信息 + 抽齐 + 纯流转 →
     仅一次轻量抽取调用，零 task_action LLM 轮。"""
     from app.core import harness_agent as harness_agent_module
-    from app.core import sop_step_executor as executor_module
+    from app.core import sop_scenes as scenes_module
     from app.db.models import ModelConfig
 
     def _fail_llm(*_args: Any, **_kwargs: Any) -> Any:
@@ -1339,7 +1357,7 @@ def test_harness_full_message_turn_completes_without_task_action_llm(monkeypatch
         extract_calls.append(list(kwargs.get("fields") or args[0]))
         return {"employee_id": "3012", "system": "OA", "permission": "管理员", "access_level": "生产"}
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", fake_extract)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", fake_extract)
 
     def _invoke_tool(_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError("不应调用工具")
@@ -1631,10 +1649,10 @@ def test_legacy_decision_direct_eval_still_works_without_specs() -> None:
 def test_after_extraction_uses_collected_slots_for_condition_eval(monkeypatch) -> None:
     """槽位抽齐后立刻用完整槽位求值条件边——最常见分支模式不再回落 LLM。"""
 
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     monkeypatch.setattr(
-        executor_module,
+        scenes_module,
         "_extract_slots_llm",
         lambda *args, **kwargs: {"device_model": "X1", "urgency": "高"},
     )
@@ -1794,7 +1812,7 @@ def test_no_slot_form_when_nothing_missing() -> None:
 def test_slot_submission_completes_slots_without_llm(monkeypatch) -> None:
     """表单提交 → 直接写槽推进，**不调用**槽位抽取 LLM。"""
 
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     calls: list[Any] = []
 
@@ -1802,7 +1820,7 @@ def test_slot_submission_completes_slots_without_llm(monkeypatch) -> None:
         calls.append(args)
         raise AssertionError("表单提交路径不应该调用槽位抽取 LLM")
 
-    monkeypatch.setattr(executor_module, "_extract_slots_llm", _spy)
+    monkeypatch.setattr(scenes_module, "_extract_slots_llm", _spy)
 
     events = _events()
     actions = plan_sop_prefill_actions(
@@ -1828,10 +1846,10 @@ def test_slot_submission_completes_slots_without_llm(monkeypatch) -> None:
 def test_slot_submission_partial_asks_only_missing(monkeypatch) -> None:
     """表单只填了一部分：只问缺的，已提交的值随 slot_updates 落库。"""
 
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     monkeypatch.setattr(
-        executor_module,
+        scenes_module,
         "_extract_slots_llm",
         lambda *args, **kwargs: pytest.fail("表单提交路径不应调用抽取 LLM"),
     )
@@ -1857,10 +1875,10 @@ def test_slot_submission_partial_asks_only_missing(monkeypatch) -> None:
 def test_slot_submission_drops_undeclared_and_blank_fields(monkeypatch) -> None:
     """不在本节点声明里的键、以及空值：一律不算「已提供」。"""
 
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     monkeypatch.setattr(
-        executor_module,
+        scenes_module,
         "_extract_slots_llm",
         lambda *args, **kwargs: pytest.fail("表单提交路径不应调用抽取 LLM"),
     )
@@ -1886,10 +1904,10 @@ def test_slot_submission_drops_undeclared_and_blank_fields(monkeypatch) -> None:
 def test_slot_submission_normalizes_key_case_and_separators(monkeypatch) -> None:
     """前端把字段名写成 camelCase / 连字符也要能对上声明字段。"""
 
-    import app.core.sop_step_executor as executor_module
+    import app.core.sop_scenes as scenes_module
 
     monkeypatch.setattr(
-        executor_module,
+        scenes_module,
         "_extract_slots_llm",
         lambda *args, **kwargs: pytest.fail("表单提交路径不应调用抽取 LLM"),
     )
