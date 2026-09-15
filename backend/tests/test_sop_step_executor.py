@@ -163,13 +163,17 @@ def test_knowledge_direct_route_on_search_error_goes_failure_edge() -> None:
 
 
 def test_knowledge_direct_route_skipped_without_search_result() -> None:
-    """没有可依据的检索结果（None ≠ False）→ 交还 LLM。"""
+    """没有可依据的检索结果（None ≠ False）→ 交还 LLM，带观测事件。"""
 
+    events = _events()
     actions = plan_sop_prefill_actions(
         _requirement_with_search_result(success=None),
         satisfied_required_knowledge_ids={"kb-policy"},
+        trace_sink=lambda t, p: events.append((t, p)),
     )
     assert actions == []
+    assert events[0][1]["scene"] == "knowledge_direct_route_skipped"
+    assert events[0][1]["reason"] == "no_search_result"
 
 
 def test_knowledge_direct_route_skipped_on_semantic_condition() -> None:
@@ -199,7 +203,8 @@ def test_knowledge_direct_route_skipped_on_semantic_condition() -> None:
         trace_sink=lambda t, p: events.append((t, p)),
     )
     assert actions == []
-    assert events == []
+    assert events[0][1]["scene"] == "knowledge_direct_route_skipped"
+    assert events[0][1]["reason"] == "unexplained_condition"
 
 
 def test_knowledge_direct_route_ignores_read_file_and_stale_results() -> None:

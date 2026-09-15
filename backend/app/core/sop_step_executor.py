@@ -413,7 +413,7 @@ def _plan_prefetch_or_passthrough(
         # C2：全部知识库检索完成的重入帧。出边条件只以检索结果为自变量时
         # （「检索完成」→继续 /「无法检索」→转人工），按 knowledge_search
         # 返回直接判定，整帧零 LLM——业务判断留给后续 decision 节点。
-        direct_next, outcome = _knowledge_route_next(
+        direct_next, outcome, miss_reason = _knowledge_route_next(
             _edges_without_specs(list(getattr(requirement, "allowed_transitions", []) or [])),
             *_last_knowledge_search_result(requirement),
         )
@@ -425,6 +425,13 @@ def _plan_prefetch_or_passthrough(
                 [action],
                 next_node_id=direct_next,
                 outcome=outcome,
+            )
+        if miss_reason:
+            return _emit(
+                trace_sink,
+                f"knowledge_direct_route_skipped{scene_suffix}",
+                [],
+                reason=miss_reason,
             )
         return []
 
@@ -673,7 +680,7 @@ def _knowledge_route_next(
     edges: list[_EdgeCondition],
     search_success: bool | None,
     chunk_count: int | None,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """场景 C2：knowledge_query 节点按检索结果直判出边（零 LLM）。
 
     适用前提（任何一条不满足都交还 LLM）：
@@ -683,12 +690,16 @@ def _knowledge_route_next(
       成边）时放弃，业务判断留给后续 decision 节点；
     - 恰好一条边与检索结果同向（无条件边让位给具体命中边，口径同场景 G）。
 
-    返回 ``(next_node_id, outcome)``；不可判定返回 ``("", "")``。
+    返回 ``(next_node_id, outcome, miss_reason)``；不可判定返回
+    ``("", "", reason)``，reason 供 ``knowledge_direct_route_skipped`` 观测：
+    no_edges / no_search_result / unexplained_condition / no_unique_match。
     outcome ∈ retrieved（检索到内容）/ no_results（失败或零命中）。
     """
 
-    if search_success is None or not edges:
-        return "", ""
+    if not edges:
+        return "", "", "no_edges"
+    if search_success is None:
+        return "", "", "no_search_result"
     outcome_bad = (not search_success) or chunk_count == 0
     matched: list[str] = []
     for edge in edges:
@@ -697,19 +708,19 @@ def _knowledge_route_next(
         text = edge.condition_text
         if not text:
             # 既无条件文本又非 always——语义未知，保守交还 LLM
-            return "", ""
+            return "", "", "unexplained_condition"
         if any(marker in text for marker in _KNOWLEDGE_ROUTE_FAILURE_MARKERS):
             hit = outcome_bad
         elif any(marker in text for marker in _KNOWLEDGE_ROUTE_SUCCESS_MARKERS):
             hit = not outcome_bad
         else:
             # 检索结果解释不了的条件（真正的业务判断）→ 交还 LLM
-            return "", ""
+            return "", "", "unexplained_condition"
         if hit:
             matched.append(edge.target)
     if len(matched) == 1:
-        return matched[0], ("no_results" if outcome_bad else "retrieved")
-    return "", ""
+        return matched[0], ("no_results" if outcome_bad else "retrieved"), ""
+    return "", "", "no_unique_match"
 
 
 def _route_direct_next(edges: list[_EdgeCondition]) -> str:

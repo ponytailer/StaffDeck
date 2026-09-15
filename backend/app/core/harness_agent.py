@@ -136,6 +136,20 @@ class HarnessTaskAgent:
             same_step
             and str(checkpoint.get("last_status") or "") == "awaiting_user"
         )
+        if same_step and not resumed_awaiting_user and callable(trace_sink):
+            # 观测点：同步骤恢复但 last_status 不是 awaiting_user → 执行器会被
+            # same_step 守卫静默放行给 LLM（2026-09-15 复盘发现补槽 turn 整帧
+            # 落回 task_action 的头号嫌疑）。带出 checkpoint 现场，跑一次即定位。
+            trace_sink(
+                "sop_resume_skipped",
+                {
+                    "reason": "checkpoint_last_status_not_awaiting_user",
+                    "checkpoint_last_status": str(checkpoint.get("last_status") or ""),
+                    "checkpoint_step_id": str(checkpoint.get("step_id") or ""),
+                    "current_step_id": current_step_id,
+                    "checkpoint_keys": sorted(str(k) for k in checkpoint.keys())[:12],
+                },
+            )
         prefill_actions = plan_sop_prefill_actions(
             requirement,
             same_step=same_step,
