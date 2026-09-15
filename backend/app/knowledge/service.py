@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import delete
+from sqlalchemy import delete, func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -98,6 +98,17 @@ LEXICAL_FAST_PATH_MIN_GAP = 8.0
 # 快速路径桶级验证：选出的桶内必须存在达到 chunk 门槛的词法命中内容，
 # 否则视为「标题命中、内容无关」，放弃快速路径退回 LLM 路由。
 LEXICAL_FAST_PATH_CHUNK_FLOOR = 3.0
+# 小候选短路（2026-09-15）：候选 chunk 总数 ≤ 该阈值时跳过 LLM 路由，候选
+# 全部直接进入读取（文档路由与桶路由各一份，口径同一阈值）。LLM 路由是检索
+# 最贵的一跳（冷态实测：document_route 4.4s / bucket_route 8-10s），而读
+# chunk + 词法排序仅 ~0.2s——「10 桶选 3」对 22 chunk 的小库纯属浪费。
+# **下游 payload 与 chunk_total 无关**：rank → diverse select 按 max_chunks
+# （默认 8）收敛，evidence pack / task_action 不会被撑大；阈值真正约束的是
+# load+rank 的内存与耗时（50 chunk ≈ 50-100KB 文本，毫秒级）。取 50 覆盖
+# 常见小库（人事政策库 10 桶 22 chunk）并留一倍余量。有意绕过 max_buckets
+# 与文档 5 篇上限。不写路由缓存：短路只花一次 ~1ms 的 COUNT，缓存反而引入
+# 「库内容已变但 key 未感知」的过期风险。
+SMALL_CANDIDATE_CHUNK_LIMIT = 50
 RELATED_CHUNK_MAX_COUNT = 6
 RELATED_CHUNK_MAX_CHARS = 4800
 KNOWLEDGE_INGEST_SCHEMA_VERSION = 2
@@ -836,53 +847,75 @@ class KnowledgeService:
                         }
                     )
                 else:
-                    scored_documents = _score_documents_with_scores(query, documents)
-                    fast_path_documents = _lexical_fast_path_top(
-                        [row for _score, row in scored_documents],
-                        [score for score, _row in scored_documents],
-                        5,
+                    # 小候选短路（文档维）：候选文档的 chunk 总量 ≤ 阈值时跳过
+                    # LLM 文档路由全选。单篇候选也跑一次 4.4s 的 LLM（实测）
+                    # 纯属浪费；下游桶路由会接着做自己的小候选短路，链路一致。
+                    shortcut_applied = False
+                    document_chunk_total = sum(
+                        self._candidate_chunk_counts_for_documents(
+                            request.tenant_id, [row.id for row in documents]
+                        ).values()
                     )
-                    if fast_path_documents is not None:
-                        selected_document_ids = [row.id for row in fast_path_documents]
+                    if document_chunk_total <= SMALL_CANDIDATE_CHUNK_LIMIT:
+                        selected_document_ids = [row.id for row in documents]
+                        shortcut_applied = True
+                        span.finish(strategy="shortcut")
                         route_trace.append(
                             {
-                                "phase": "document_route_lexical_fast_path",
-                                "message": "检索相关性显著命中，直接选择知识文档（跳过模型路由）",
-                                "selected_count": len(selected_document_ids),
+                                "phase": "document_route_small_candidate_shortcut",
+                                "message": "候选内容量小，跳过模型路由直接读取全部知识文档",
+                                "candidate_count": len(documents),
+                                "chunk_total": document_chunk_total,
                             }
                         )
-                    else:
-                        route_documents = _route_candidates(
+                    if not shortcut_applied:
+                        scored_documents = _score_documents_with_scores(query, documents)
+                        fast_path_documents = _lexical_fast_path_top(
                             [row for _score, row in scored_documents],
-                            documents,
-                            SEARCH_DOCUMENT_ROUTE_LIMIT,
+                            [score for score, _row in scored_documents],
+                            5,
                         )
-                        llm_document_ids = self._select_documents_with_llm(
-                            query, route_documents, 5, model_config, route_trace
-                        )
-                        if llm_document_ids is None:
-                            selected_document_ids = [
-                                row.id for _score, row in scored_documents[:5]
-                            ]
+                        if fast_path_documents is not None:
+                            selected_document_ids = [row.id for row in fast_path_documents]
                             route_trace.append(
                                 {
-                                    "phase": "document_route_lexical_fallback",
-                                    "message": "模型路由不可用，已按检索相关性选择知识文档",
+                                    "phase": "document_route_lexical_fast_path",
+                                    "message": "检索相关性显著命中，直接选择知识文档（跳过模型路由）",
                                     "selected_count": len(selected_document_ids),
                                 }
                             )
                         else:
-                            selected_document_ids = llm_document_ids
-                            # 文档决策独立写回：即使 bucket 走了词法路径也照样缓存。
-                            # 空结果也来自一次成功的模型调用（判定「无相关文档」），
-                            # 进负缓存，否则同一问法每次都白问一遍模型。
-                            _cache_route_decision(
-                                (self._doc_cache_slot_stable, self._doc_cache_slot),
-                                selected_document_ids,
-                                "document",
-                                route_trace,
-                                allow_empty=True,
+                            route_documents = _route_candidates(
+                                [row for _score, row in scored_documents],
+                                documents,
+                                SEARCH_DOCUMENT_ROUTE_LIMIT,
                             )
+                            llm_document_ids = self._select_documents_with_llm(
+                                query, route_documents, 5, model_config, route_trace
+                            )
+                            if llm_document_ids is None:
+                                selected_document_ids = [
+                                    row.id for _score, row in scored_documents[:5]
+                                ]
+                                route_trace.append(
+                                    {
+                                        "phase": "document_route_lexical_fallback",
+                                        "message": "模型路由不可用，已按检索相关性选择知识文档",
+                                        "selected_count": len(selected_document_ids),
+                                    }
+                                )
+                            else:
+                                selected_document_ids = llm_document_ids
+                                # 文档决策独立写回：即使 bucket 走了词法路径也照样缓存。
+                                # 空结果也来自一次成功的模型调用（判定「无相关文档」），
+                                # 进负缓存，否则同一问法每次都白问一遍模型。
+                                _cache_route_decision(
+                                    (self._doc_cache_slot_stable, self._doc_cache_slot),
+                                    selected_document_ids,
+                                    "document",
+                                    route_trace,
+                                    allow_empty=True,
+                                )
             else:
                 selected_document_ids = [row.id for row in _score_documents(query, documents)[:5]]
                 route_trace.append(
@@ -974,96 +1007,119 @@ class KnowledgeService:
                         }
                     )
                 else:
-                    scored_buckets = _score_buckets_with_scores(
-                        query, buckets, request.query_type
+                    # 小候选短路（2026-09-15）：候选 chunk 总数 ≤ 阈值时跳过
+                    # LLM 桶路由全读。放在缓存命中之后（缓存 0 成本仍优先）、
+                    # 词法快速路径之前（全读不存在「漏选」，比依赖内容验证的
+                    # 词法路径更稳）。计数用单次 GROUP BY（~1ms），不读
+                    # metadata_json.chunk_count（入库时写的，重建索引会过期）。
+                    shortcut_applied = False
+                    chunk_counts = self._candidate_chunk_counts(
+                        request.tenant_id, [bucket.id for bucket in buckets]
                     )
-
-                    def _bucket_has_lexical_content(bucket: KnowledgeBucket) -> bool:
-                        """桶级内容验证：桶内 chunk 词法最高分达标才算真命中。
-
-                        防「标题命中、内容无关」：快速路径若只看桶标题词法分，
-                        会把语义相关但词法不同名的目标桶筛掉，最终 chunk 零命中
-                        （2026-09-09 线上空结果事故）。验证不通过 → 放弃快速路径，
-                        退回 LLM 路由做语义纠偏。
-                        """
-
-                        bucket_chunks = self._load_chunks_for_buckets(
-                            request.tenant_id, [bucket.id], None
-                        )
-                        best = max(
-                            (
-                                _score_weighted_text(
-                                    query,
-                                    (chunk.summary or "", 1.4),
-                                    (chunk.content or "", 1.0),
-                                )
-                                for chunk in bucket_chunks
-                            ),
-                            default=0.0,
-                        )
-                        return best >= LEXICAL_FAST_PATH_CHUNK_FLOOR
-
-                    fast_path_buckets = _lexical_fast_path_top(
-                        [row for _score, row in scored_buckets],
-                        [score for score, _row in scored_buckets],
-                        request.max_buckets,
-                        content_verifier=_bucket_has_lexical_content,
-                    )
-                    if fast_path_buckets is not None:
-                        selected_ids = [bucket.id for bucket in fast_path_buckets]
+                    chunk_total = sum(chunk_counts.values())
+                    if chunk_total <= SMALL_CANDIDATE_CHUNK_LIMIT:
+                        selected_ids = [bucket.id for bucket in buckets]
+                        shortcut_applied = True
+                        span.finish(strategy="shortcut")
                         route_trace.append(
                             {
-                                "phase": "bucket_route_lexical_fast_path",
-                                "message": "检索相关性显著命中，直接选择内部索引（跳过模型路由）",
-                                "selected_count": len(selected_ids),
+                                "phase": "bucket_route_small_candidate_shortcut",
+                                "message": "候选内容量小，跳过模型路由直接读取全部内部索引",
+                                "candidate_count": len(buckets),
+                                "chunk_total": chunk_total,
                             }
                         )
-                    else:
-                        route_buckets = _route_candidates(
-                            [row for _score, row in scored_buckets],
-                            buckets,
-                            SEARCH_BUCKET_ROUTE_LIMIT,
+                    if not shortcut_applied:
+                        scored_buckets = _score_buckets_with_scores(
+                            query, buckets, request.query_type
                         )
-                        if len(route_buckets) < len(buckets):
-                            route_trace.append(
-                                {
-                                    "phase": "bucket_route_candidates_trimmed",
-                                    "message": "路由候选已按词法相关性裁剪",
-                                    "candidate_count": len(buckets),
-                                    "routed_count": len(route_buckets),
-                                }
+
+                        def _bucket_has_lexical_content(bucket: KnowledgeBucket) -> bool:
+                            """桶级内容验证：桶内 chunk 词法最高分达标才算真命中。
+
+                            防「标题命中、内容无关」：快速路径若只看桶标题词法分，
+                            会把语义相关但词法不同名的目标桶筛掉，最终 chunk 零命中
+                            （2026-09-09 线上空结果事故）。验证不通过 → 放弃快速路径，
+                            退回 LLM 路由做语义纠偏。
+                            """
+
+                            bucket_chunks = self._load_chunks_for_buckets(
+                                request.tenant_id, [bucket.id], None
                             )
-                        llm_bucket_ids = self._select_buckets_with_llm(
-                            query,
-                            route_buckets,
+                            best = max(
+                                (
+                                    _score_weighted_text(
+                                        query,
+                                        (chunk.summary or "", 1.4),
+                                        (chunk.content or "", 1.0),
+                                    )
+                                    for chunk in bucket_chunks
+                                ),
+                                default=0.0,
+                            )
+                            return best >= LEXICAL_FAST_PATH_CHUNK_FLOOR
+
+                        fast_path_buckets = _lexical_fast_path_top(
+                            [row for _score, row in scored_buckets],
+                            [score for score, _row in scored_buckets],
                             request.max_buckets,
-                            model_config,
-                            route_trace,
-                            request.query_type,
+                            content_verifier=_bucket_has_lexical_content,
                         )
-                        if llm_bucket_ids is None:
-                            selected_ids = [
-                                bucket.id
-                                for _score, bucket in scored_buckets[: request.max_buckets]
-                            ]
+                        if fast_path_buckets is not None:
+                            selected_ids = [bucket.id for bucket in fast_path_buckets]
                             route_trace.append(
                                 {
-                                    "phase": "bucket_route_lexical_fallback",
-                                    "message": "模型路由不可用，已按检索相关性选择内部索引",
+                                    "phase": "bucket_route_lexical_fast_path",
+                                    "message": "检索相关性显著命中，直接选择内部索引（跳过模型路由）",
                                     "selected_count": len(selected_ids),
                                 }
                             )
                         else:
-                            selected_ids = llm_bucket_ids
-                            # 内部索引决策独立写回（bucket_route 才是耗时大头）；
-                            # 空结果同样进负缓存，避免每次重复一次昂贵的模型路由
-                            _cache_route_decision(
-                                (self._bucket_cache_slot_stable, self._bucket_cache_slot),
-                                selected_ids,
-                                "bucket",
-                                route_trace,
-                                allow_empty=True,
+                            route_buckets = _route_candidates(
+                                [row for _score, row in scored_buckets],
+                                buckets,
+                                SEARCH_BUCKET_ROUTE_LIMIT,
                             )
+                            if len(route_buckets) < len(buckets):
+                                route_trace.append(
+                                    {
+                                        "phase": "bucket_route_candidates_trimmed",
+                                        "message": "路由候选已按词法相关性裁剪",
+                                        "candidate_count": len(buckets),
+                                        "routed_count": len(route_buckets),
+                                    }
+                                )
+                            llm_bucket_ids = self._select_buckets_with_llm(
+                                query,
+                                route_buckets,
+                                request.max_buckets,
+                                model_config,
+                                route_trace,
+                                request.query_type,
+                            )
+                            if llm_bucket_ids is None:
+                                selected_ids = [
+                                    bucket.id
+                                    for _score, bucket in scored_buckets[: request.max_buckets]
+                                ]
+                                route_trace.append(
+                                    {
+                                        "phase": "bucket_route_lexical_fallback",
+                                        "message": "模型路由不可用，已按检索相关性选择内部索引",
+                                        "selected_count": len(selected_ids),
+                                    }
+                                )
+                            else:
+                                selected_ids = llm_bucket_ids
+                                # 内部索引决策独立写回（bucket_route 才是耗时大头）；
+                                # 空结果同样进负缓存，避免每次重复一次昂贵的模型路由
+                                _cache_route_decision(
+                                    (self._bucket_cache_slot_stable, self._bucket_cache_slot),
+                                    selected_ids,
+                                    "bucket",
+                                    route_trace,
+                                    allow_empty=True,
+                                )
             else:
                 selected_ids = [
                     bucket.id
@@ -1633,6 +1689,43 @@ class KnowledgeService:
             return None
         allowed = {bucket.id for bucket in buckets}
         return [str(item) for item in ids if str(item) in allowed][:max_buckets]
+
+    def _candidate_chunk_counts(self, tenant_id: str, bucket_ids: list[str]) -> dict[str, int]:
+        """候选桶的 chunk 计数（单次 GROUP BY，远程 PG 也就一个来回 ~1ms）。
+
+        小候选短路（``SMALL_CANDIDATE_CHUNK_LIMIT``）的计数来源。刻意不读
+        ``KnowledgeBucket.metadata_json`` 里的 ``chunk_count``——那是入库时
+        写的快照，重建索引后可能过期，短路判错会把大库全读撑爆 payload。
+        """
+
+        if not bucket_ids:
+            return {}
+        rows = self.db.exec(
+            select(KnowledgeChunk.bucket_id, func.count())
+            .where(
+                KnowledgeChunk.tenant_id == tenant_id,
+                KnowledgeChunk.bucket_id.in_(bucket_ids),
+            )
+            .group_by(KnowledgeChunk.bucket_id)
+        ).all()
+        return {str(row[0]): int(row[1]) for row in rows}
+
+    def _candidate_chunk_counts_for_documents(
+        self, tenant_id: str, document_ids: list[str]
+    ) -> dict[str, int]:
+        """候选文档的 chunk 计数（文档维小候选短路用），口径同桶维 helper。"""
+
+        if not document_ids:
+            return {}
+        rows = self.db.exec(
+            select(KnowledgeChunk.document_id, func.count())
+            .where(
+                KnowledgeChunk.tenant_id == tenant_id,
+                KnowledgeChunk.document_id.in_(document_ids),
+            )
+            .group_by(KnowledgeChunk.document_id)
+        ).all()
+        return {str(row[0]): int(row[1]) for row in rows}
 
     def _load_chunks_for_buckets(
         self, tenant_id: str, bucket_ids: list[str], max_chunks: int | None = None

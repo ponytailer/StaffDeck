@@ -38,6 +38,7 @@ from app.knowledge.route_cache import (
     store_route_decision,
 )
 from app.knowledge.schema import KnowledgeSearchRequest
+from app.knowledge import service as knowledge_service
 from app.knowledge.service import KnowledgeService, _stable_cache_query
 
 
@@ -82,6 +83,18 @@ def fake_redis(monkeypatch):
     client = _FakeRedis()
     monkeypatch.setattr(object_cache, "get_redis", lambda: client)
     return client
+
+
+@pytest.fixture(autouse=True)
+def _disable_small_candidate_shortcut(monkeypatch):
+    """默认关掉小候选短路。
+
+    本文件既有用例的 fixture 全是 1-3 chunk 的小库，短路（默认阈值 12）
+    会在缓存未命中后直接全读，LLM 路由分支永远走不到——那正是这些用例
+    要覆盖的行为。需要测短路本身的用例自行把阈值改回正值。
+    """
+
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", -1)
 
 
 def _test_session():
@@ -617,3 +630,98 @@ def test_negative_decision_not_written_on_llm_failure(fake_redis, monkeypatch) -
     # 两个位点都不该写入「空桶决策」
     assert get_route_decision(_bucket_slot("考勤怎么算")) is None
     assert get_route_decision(_bucket_slot("员工手册 考勤 规则")) is None
+
+
+# ---------------------------------------------------------------------------
+# 小候选短路（bucket_route_small_candidate_shortcut）
+# ---------------------------------------------------------------------------
+
+
+def test_small_candidate_shortcut_reads_all_buckets(fake_redis, monkeypatch) -> None:
+    """候选 chunk 总数 ≤ 阈值 → 跳过 LLM 桶路由全读，绕过 max_buckets，不写缓存。"""
+
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", 12)
+    monkeypatch.setattr(
+        KnowledgeService, "_select_documents_with_llm", lambda *a, **k: ["kdoc_0", "kdoc_1"]
+    )
+
+    def _forbidden(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("small-candidate shortcut must skip LLM bucket routing")
+
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", _forbidden)
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        # max_buckets=1：短路有意绕过截断（下游 rank/diverse 按 max_chunks 收敛）
+        response = _run_search(db, "员工手册", max_buckets=1)
+
+    phases = _phases(response)
+    assert "bucket_route_small_candidate_shortcut" in phases
+    assert "bucket_route_lexical_fast_path" not in phases
+    assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0", "kbucket_1"]
+    # 短路不写路由缓存：~1ms 的 COUNT 不值得引入「库内容已变」的过期风险
+    assert get_route_decision(_bucket_slot("员工手册")) is None
+
+
+def test_small_candidate_shortcut_disabled_above_limit(fake_redis, monkeypatch) -> None:
+    """候选 chunk 总数超过阈值 → 不触发短路，照旧走 LLM 桶路由。"""
+
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", 1)
+    monkeypatch.setattr(
+        KnowledgeService, "_select_documents_with_llm", lambda *a, **k: ["kdoc_0", "kdoc_1"]
+    )
+    monkeypatch.setattr(
+        KnowledgeService, "_select_buckets_with_llm", lambda *a, **k: ["kbucket_0"]
+    )
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)  # 2 个桶各 1 chunk = 2 > 1
+        response = _run_search(db, "员工手册")
+
+    assert "bucket_route_small_candidate_shortcut" not in _phases(response)
+    assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0"]
+
+
+def test_candidate_chunk_counts_helper() -> None:
+    """GROUP BY 计数：同桶多 chunk 正确聚合；空桶不出现；空入参返回空。"""
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        db.add(
+            KnowledgeChunk(
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                document_id="kdoc_0",
+                bucket_id="kbucket_0",
+                chunk_index=1,
+                content="补充段落",
+            )
+        )
+        db.commit()
+        counts = KnowledgeService(db)._candidate_chunk_counts(
+            "tenant_demo", ["kbucket_0", "kbucket_1"]
+        )
+        assert counts == {"kbucket_0": 2, "kbucket_1": 1}
+        assert KnowledgeService(db)._candidate_chunk_counts("tenant_demo", []) == {}
+
+
+def test_small_candidate_shortcut_applies_to_document_route(fake_redis, monkeypatch) -> None:
+    """文档维同款短路：候选文档 chunk 总量小 → 跳过 LLM 文档路由全选。"""
+
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", 12)
+
+    def _forbidden(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("small-candidate shortcut must skip LLM document routing")
+
+    monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", _forbidden)
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", _forbidden)
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        response = _run_search(db, "员工手册")
+
+    phases = _phases(response)
+    assert "document_route_small_candidate_shortcut" in phases
+    # 文档全选 → 桶候选同步变全 → 桶维短路级联触发，两级 LLM 全跳过
+    assert "bucket_route_small_candidate_shortcut" in phases
+    assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0", "kbucket_1"]

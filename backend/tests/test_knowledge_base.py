@@ -38,6 +38,7 @@ from app.db.models import (
 from app.knowledge.schema import KnowledgeChunkUpdateRequest, KnowledgeDocumentUpdateRequest, KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.knowledge.okf import search_concepts
 from app.knowledge.parser import extract_text
+from app.knowledge import service as knowledge_service
 from app.knowledge.service import (
     IngestPayload,
     KnowledgeDiscoveryConflictError,
@@ -574,6 +575,9 @@ def test_model_driven_document_route_does_not_fall_back_to_lexical_matching(monk
     确保走到 LLM 路由分支——专测「LLM 空列表 ≠ 词法回退」这条语义。
     """
 
+    # 关掉小候选短路：本用例要验证 LLM 文档路由本身的回退语义
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", -1)
+
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
@@ -614,6 +618,8 @@ def test_model_driven_document_route_does_not_fall_back_to_lexical_matching(monk
 
 
 def test_model_route_failure_falls_back_to_lexical_matching(monkeypatch) -> None:
+    # 关掉小候选短路：本用例 1 桶 1 chunk，默认阈值 12 会抢在词法兜底前全读
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", -1)
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
@@ -678,6 +684,9 @@ def test_model_route_failure_falls_back_to_lexical_matching(monkeypatch) -> None
 
 def test_model_route_failure_document_fallback_when_no_decisive_match(monkeypatch) -> None:
     """词法分数不显著时 LLM 失败仍走 lexical_fallback（快速路径不误吞兜底语义）。"""
+
+    # 关掉小候选短路：本用例要验证词法兜底分支本身
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", -1)
 
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
@@ -805,6 +814,9 @@ def _seed_lexical_fast_path_fixture(db) -> None:
 def test_lexical_fast_path_skips_llm_routing_on_decisive_match(monkeypatch) -> None:
     """词法 top-1 显著领先时直接采用，完全不触发 LLM 路由（省 10-25s）。"""
 
+    # 关掉小候选短路：本用例要验证词法快速路径本身，小库会被短路截胡
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", -1)
+
     def _forbidden_route(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("LLM routing must not be called on decisive lexical match")
 
@@ -833,6 +845,9 @@ def test_lexical_fast_path_skips_llm_routing_on_decisive_match(monkeypatch) -> N
 
 def test_lexical_fast_path_not_triggered_when_scores_are_ambiguous(monkeypatch) -> None:
     """词法分数糊（top-1 与 top-2 几乎同分）时不走快速路径，仍由 LLM 路由决策。"""
+
+    # 关掉小候选短路：本用例要验证 LLM 路由决策分支本身
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", -1)
 
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
