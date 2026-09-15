@@ -418,7 +418,7 @@ def main() -> None:
                 FROM agent_events
                 WHERE event_type = 'user_message_received'
                 ORDER BY created_at DESC
-                LIMIT 8
+                LIMIT 1
                 """
             )
         ).fetchall()

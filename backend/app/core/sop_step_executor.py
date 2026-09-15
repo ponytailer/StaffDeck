@@ -399,7 +399,9 @@ def _plan_prefetch_or_passthrough(
         already = satisfied_required_knowledge_ids or set()
         pending_kb_ids = [kb for kb in required_knowledge_ids if kb not in already]
         query = str(getattr(requirement, "source_user_message", "") or "").strip()
-        if pending_kb_ids and query:
+        if pending_kb_ids:
+            if not query:
+                return []
             action = _knowledge_search_action(query, pending_kb_ids)
             return _emit(
                 trace_sink,
@@ -407,6 +409,22 @@ def _plan_prefetch_or_passthrough(
                 [action],
                 query=query[:_QUERY_MAX_CHARS],
                 knowledge_base_ids=pending_kb_ids,
+            )
+        # C2：全部知识库检索完成的重入帧。出边条件只以检索结果为自变量时
+        # （「检索完成」→继续 /「无法检索」→转人工），按 knowledge_search
+        # 返回直接判定，整帧零 LLM——业务判断留给后续 decision 节点。
+        direct_next, outcome = _knowledge_route_next(
+            _edges_without_specs(list(getattr(requirement, "allowed_transitions", []) or [])),
+            *_last_knowledge_search_result(requirement),
+        )
+        if direct_next:
+            action = _passthrough_action(step, direct_next)
+            return _emit(
+                trace_sink,
+                f"knowledge_direct_route{scene_suffix}",
+                [action],
+                next_node_id=direct_next,
+                outcome=outcome,
             )
         return []
 
@@ -602,6 +620,96 @@ def _last_result_ok(requirement: Any) -> bool | None:
             return None
         return bool(last.get("success"))
     return None
+
+
+# 场景 C2 词族：出边条件只认这两类「检索结果自变量」。「检索失败」词族
+# 优先匹配（「未检索到」字面包含「检索到」，顺序反了会把失败边归成成功边）。
+_KNOWLEDGE_ROUTE_FAILURE_MARKERS = (
+    "无法检索",
+    "检索失败",
+    "检索不到",
+    "未检索到",
+    "未能检索",
+    "检索异常",
+)
+_KNOWLEDGE_ROUTE_SUCCESS_MARKERS = (
+    "检索完成",
+    "检索成功",
+    "已检索",
+    "检索到",
+    "查到",
+    "搜到",
+)
+
+
+def _last_knowledge_search_result(requirement: Any) -> tuple[bool | None, int | None]:
+    """最近一次 ``knowledge_search`` 能力调用的 ``(success, chunk_count)``。
+
+    与 ``_last_result_ok`` 同口径：success 为 ``None`` 表示「没有可依据的
+    检索结果」，与「检索失败」是两回事。knowledge_search 成功但零命中
+    （chunk_count == 0）语义上等于「无法检索」，由调用方归入失败侧。
+    """
+
+    results = getattr(requirement, "prior_task_results", None) or []
+    for item in reversed(list(results)):
+        if not isinstance(item, dict):
+            continue
+        capability_results = item.get("capability_results")
+        if not isinstance(capability_results, list) or not capability_results:
+            continue
+        for entry in reversed(capability_results):
+            if not isinstance(entry, dict) or entry.get("tool_name") != "knowledge_search":
+                continue
+            if "success" not in entry:
+                return None, None
+            chunk_count = entry.get("chunk_count")
+            if isinstance(chunk_count, bool) or not isinstance(chunk_count, int):
+                chunk_count = None
+            return bool(entry.get("success")), chunk_count
+    return None, None
+
+
+def _knowledge_route_next(
+    edges: list[_EdgeCondition],
+    search_success: bool | None,
+    chunk_count: int | None,
+) -> tuple[str, str]:
+    """场景 C2：knowledge_query 节点按检索结果直判出边（零 LLM）。
+
+    适用前提（任何一条不满足都交还 LLM）：
+    - 本节点的知识预检索已完成（``search_success`` 非 None）；
+    - 全部条件出边的条件文本**只以检索结果为自变量**——能被「检索完成」
+      或「检索失败」词族归类；存在第三类语义条件（如「政策不满足」单独
+      成边）时放弃，业务判断留给后续 decision 节点；
+    - 恰好一条边与检索结果同向（无条件边让位给具体命中边，口径同场景 G）。
+
+    返回 ``(next_node_id, outcome)``；不可判定返回 ``("", "")``。
+    outcome ∈ retrieved（检索到内容）/ no_results（失败或零命中）。
+    """
+
+    if search_success is None or not edges:
+        return "", ""
+    outcome_bad = (not search_success) or chunk_count == 0
+    matched: list[str] = []
+    for edge in edges:
+        if edge.is_always:
+            continue
+        text = edge.condition_text
+        if not text:
+            # 既无条件文本又非 always——语义未知，保守交还 LLM
+            return "", ""
+        if any(marker in text for marker in _KNOWLEDGE_ROUTE_FAILURE_MARKERS):
+            hit = outcome_bad
+        elif any(marker in text for marker in _KNOWLEDGE_ROUTE_SUCCESS_MARKERS):
+            hit = not outcome_bad
+        else:
+            # 检索结果解释不了的条件（真正的业务判断）→ 交还 LLM
+            return "", ""
+        if hit:
+            matched.append(edge.target)
+    if len(matched) == 1:
+        return matched[0], ("no_results" if outcome_bad else "retrieved")
+    return "", ""
 
 
 def _route_direct_next(edges: list[_EdgeCondition]) -> str:

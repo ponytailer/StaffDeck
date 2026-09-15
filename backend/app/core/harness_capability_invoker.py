@@ -988,9 +988,13 @@ class HarnessCapabilityInvoker:
             self._routing_model_config,
         )
         payload = response.model_dump(mode="json")
+        chunks = payload.get("chunks")
         result = {
             "success": True,
             "data": payload,
+            # 命中数外置到顶层：data 超限会被 _persist_large_json_result 换成
+            # 沙箱文件引用，SOP 执行器（场景 C2 检索直判）靠它判断「检索到/没检索到」
+            "chunk_count": len(chunks) if isinstance(chunks, list) else 0,
             "citations": knowledge_citations_from_results([payload]),
         }
         # route 观测数据要在 data 外置（_persist_large_json_result 会把超限的

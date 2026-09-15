@@ -924,6 +924,11 @@ def _bounded_capability_result(
         "data": result.get("data"),
         "error": result.get("error"),
     }
+    chunk_count = result.get("chunk_count")
+    if isinstance(chunk_count, int) and not isinstance(chunk_count, bool):
+        # 小标量随行（场景 C2 判「检索到/没检索到」）；data 超限换文件引用
+        # 或整体截断后，data.chunks 都会丢，顶层标量是唯一可靠载体
+        payload["chunk_count"] = chunk_count
     if isinstance(result.get("mcp_app"), dict):
         payload["mcp_app"] = result["mcp_app"]
     serialized = json.dumps(
@@ -941,6 +946,8 @@ def _bounded_capability_result(
         "preview": serialized[:max_chars],
         "error": result.get("error"),
     }
+    if isinstance(chunk_count, int) and not isinstance(chunk_count, bool):
+        truncated["chunk_count"] = chunk_count
     if isinstance(result.get("mcp_app"), dict):
         truncated["mcp_app"] = result["mcp_app"]
     return truncated

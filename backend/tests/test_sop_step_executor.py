@@ -98,6 +98,153 @@ def test_prefetch_skipped_when_query_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 场景 C2：knowledge_query 节点检索结果直判（零 LLM）
+# ---------------------------------------------------------------------------
+
+_POLICY_EDGES = [
+    {"next_node_id": "query_balance", "condition": "政策检索完成"},
+    {"next_node_id": "handoff_hr", "condition": "政策不满足或无法检索"},
+]
+
+
+def _requirement_with_search_result(
+    success: bool | None,
+    chunk_count: int | None = None,
+) -> TaskRequirement:
+    prior: list[dict[str, Any]] = []
+    if success is not None:
+        entry: dict[str, Any] = {"tool_name": "knowledge_search", "success": success}
+        if chunk_count is not None:
+            entry["chunk_count"] = chunk_count
+        prior = [{"capability_results": [entry]}]
+    return _sop_requirement(
+        required_knowledge_base_ids=["kb-policy"],
+        allowed_transitions=_POLICY_EDGES,
+        prior_task_results=prior,
+    )
+
+
+def test_knowledge_direct_route_on_retrieved() -> None:
+    """检索到内容 → 走「检索完成」边（政策判断留给后续 decision 节点）。"""
+
+    events = _events()
+    actions = plan_sop_prefill_actions(
+        _requirement_with_search_result(success=True, chunk_count=3),
+        satisfied_required_knowledge_ids={"kb-policy"},
+        trace_sink=lambda t, p: events.append((t, p)),
+    )
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["action"] == "finish"
+    assert action["status"] == "completed"
+    assert action["next_step_id"] == "query_balance"
+    assert events[0][1]["scene"] == "knowledge_direct_route"
+    assert events[0][1]["outcome"] == "retrieved"
+
+
+def test_knowledge_direct_route_on_zero_chunks_goes_failure_edge() -> None:
+    """检索成功但零命中 = 「无法检索」→ 走失败边。"""
+
+    actions = plan_sop_prefill_actions(
+        _requirement_with_search_result(success=True, chunk_count=0),
+        satisfied_required_knowledge_ids={"kb-policy"},
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "handoff_hr"
+
+
+def test_knowledge_direct_route_on_search_error_goes_failure_edge() -> None:
+    actions = plan_sop_prefill_actions(
+        _requirement_with_search_result(success=False, chunk_count=0),
+        satisfied_required_knowledge_ids={"kb-policy"},
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "handoff_hr"
+
+
+def test_knowledge_direct_route_skipped_without_search_result() -> None:
+    """没有可依据的检索结果（None ≠ False）→ 交还 LLM。"""
+
+    actions = plan_sop_prefill_actions(
+        _requirement_with_search_result(success=None),
+        satisfied_required_knowledge_ids={"kb-policy"},
+    )
+    assert actions == []
+
+
+def test_knowledge_direct_route_skipped_on_semantic_condition() -> None:
+    """存在检索结果解释不了的语义条件边（如「政策不满足」单独成边）→ 交还 LLM。"""
+
+    events = _events()
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_knowledge_base_ids=["kb-policy"],
+            allowed_transitions=[
+                {"next_node_id": "query_balance", "condition": "政策检索完成"},
+                {"next_node_id": "handoff_hr", "condition": "政策不满足"},
+            ],
+            prior_task_results=[
+                {
+                    "capability_results": [
+                        {
+                            "tool_name": "knowledge_search",
+                            "success": True,
+                            "chunk_count": 3,
+                        }
+                    ]
+                }
+            ],
+        ),
+        satisfied_required_knowledge_ids={"kb-policy"},
+        trace_sink=lambda t, p: events.append((t, p)),
+    )
+    assert actions == []
+    assert events == []
+
+
+def test_knowledge_direct_route_ignores_read_file_and_stale_results() -> None:
+    """同一帧里 search 之后还调了 read_file；且更早帧的 search 不算数。"""
+
+    # 同帧有 read_file（非 search）→ 仍应识别到 search 的结果
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_knowledge_base_ids=["kb-policy"],
+            allowed_transitions=_POLICY_EDGES,
+            prior_task_results=[
+                {
+                    "capability_results": [
+                        {"tool_name": "knowledge_search", "success": True, "chunk_count": 2},
+                        {"tool_name": "read_file", "success": True},
+                    ]
+                }
+            ],
+        ),
+        satisfied_required_knowledge_ids={"kb-policy"},
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "query_balance"
+
+    # search 只出现在非最近帧但全库只有这一次 search —— 最近帧无 search 也应取到
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_knowledge_base_ids=["kb-policy"],
+            allowed_transitions=_POLICY_EDGES,
+            prior_task_results=[
+                {
+                    "capability_results": [
+                        {"tool_name": "knowledge_search", "success": False}
+                    ]
+                },
+                {"capability_results": [{"tool_name": "read_file", "success": True}]},
+            ],
+        ),
+        satisfied_required_knowledge_ids={"kb-policy"},
+    )
+    assert len(actions) == 1
+    assert actions[0]["next_step_id"] == "handoff_hr"
+
+
+# ---------------------------------------------------------------------------
 # 场景 B：纯流转直通
 # ---------------------------------------------------------------------------
 
