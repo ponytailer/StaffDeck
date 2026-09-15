@@ -44,6 +44,7 @@ from app.core.slash_commands import (
     resolve_capability,
     slash_command_message,
 )
+from app.core.slot_form import build_slot_form
 from app.core.slot_hydration_policy import SlotHydrationPolicy
 from app.core.task_frame_store import (
     TaskFrameClaimConflict,
@@ -1978,7 +1979,33 @@ def _enforce_required_slots(
     if not result.reply_fragment:
         result.reply_fragment = "还需要您补充：" + "、".join(missing) + "。"
     result.next_step_id = None
+    # A2UI：这条 awaiting 是「模型以为办完了、其实还缺槽」的兜底改写，同样要
+    # 给前端一份表单描述——否则这种路径下用户面对的还是「自己猜格式」的纯
+    # 文本询问，与确定性缺槽路径的体验割裂。
+    result.ui_form = result.ui_form or _slot_form_for_requirement(requirement, missing)
     return result
+
+
+def _slot_form_for_requirement(
+    requirement: Any,
+    missing: list[str],
+) -> dict[str, Any] | None:
+    """按 TaskRequirement 的 SOP 上下文编译缺槽表单（拿不到选项就退化成输入框）。"""
+
+    if not missing:
+        return None
+    context = getattr(requirement, "sop_context", None)
+    context = context if isinstance(context, dict) else {}
+    step = context.get("step")
+    step = step if isinstance(step, dict) else {}
+    labels = context.get("slot_labels")
+    return build_slot_form(
+        missing,
+        labels=labels if isinstance(labels, dict) else None,
+        step_name=str(step.get("name") or "").strip(),
+        step_id=str(step.get("node_id") or step.get("step_id") or "").strip(),
+        skill_id=str(context.get("skill_id") or "").strip(),
+    )
 
 
 def _combine_results(
@@ -2046,6 +2073,13 @@ def _combine_results(
         ),
         action_count=sum(item.action_count for item in results),
         error=last.error,
+        # A2UI：合并时**必须**带上表单描述。``_combine_results`` 是逐帧结果的
+        # 唯一出口，frame 内每一步的结果都在这里被摊平成一条——漏掉 ui_form
+        # 会让缺槽询问退回纯文本（实测踩中：DB 里 metadata_json 完全没有
+        # ``a2ui`` 键，而 trace 已经走到 await_user_for_slots 场景）。
+        # 口径与 structured_result / error 一致：取**终点**结果的那一份，
+        # 因为只有终点的状态才是这条 frame 的最终状态。
+        ui_form=last.ui_form,
     )
 
 

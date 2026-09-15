@@ -77,7 +77,7 @@ def serve(argv: list[str] | None = None) -> None:
         dest="reload",
         action="store_true",
         default=False,
-        help="开启代码热重载（默认开启）",
+        help="开启代码热重载（默认关闭）",
     )
     parser.add_argument(
         "--no-reload",

@@ -38,6 +38,7 @@ from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_v2_engine import (
     HarnessV2Engine,
     _combine_results,
+    _enforce_required_slots,
     _globalize_citations,
     _is_recoverable_action_protocol_failure,
     _prior_result,
@@ -693,6 +694,113 @@ def test_combine_results_exposes_only_terminal_sop_step_reply() -> None:
     assert combined.task_summary == "已记录购买人姓名；等待用户确认订单"
     assert combined.slot_updates == {"user_name": "hm"}
     assert combined.action_count == 2
+
+
+def test_combine_results_keeps_terminal_ui_form() -> None:
+    """A2UI：合并结果必须保留终点结果的表单描述（曾在此处丢失导致表单退回文本）。"""
+
+    form = {
+        "kind": "slot_form",
+        "skill_id": "skill-cert",
+        "step_id": "n1_collect",
+        "step_name": "收集证明需求信息",
+        "title": "请补充以下信息",
+        "submit_label": "提交",
+        "fields": [
+            {"name": "employee_id", "label": "员工工号", "type": "text", "required": True},
+        ],
+    }
+    intermediate = TaskExecutionResult(
+        task_frame_id="task-cert",
+        status="completed",
+        reply_fragment="已记录用途。",
+        slot_updates={"purpose": "落户口"},
+        action_count=1,
+    )
+    awaiting = TaskExecutionResult(
+        task_frame_id="task-cert",
+        status="awaiting_user",
+        reply_fragment="为了继续「收集证明需求信息」，请提供：员工工号。",
+        slot_updates={"purpose": "落户口"},
+        ui_form=form,
+        action_count=1,
+    )
+
+    combined = _combine_results("task-cert", [intermediate, awaiting])
+
+    assert combined.status == "awaiting_user"
+    assert combined.ui_form == form
+
+
+def test_enforce_required_slots_attaches_slot_form() -> None:
+    """A2UI：兜底改写为 awaiting_user 时也要带上表单描述，不能只回纯文本。"""
+
+    requirement = TaskRequirement(
+        task_frame_id="task-cert",
+        kind="sop",
+        goal="开具在职证明",
+        required_slots=["employee_id", "include_income"],
+        sop_context={
+            "skill_id": "skill-cert",
+            "step": {"node_id": "n1_collect", "name": "收集证明需求信息"},
+            "slot_labels": {
+                "employee_id": "员工工号",
+                "include_income": "是否含收入项",
+            },
+        },
+    )
+    session = SimpleNamespace(slots_json={})
+    result = TaskExecutionResult(
+        task_frame_id="task-cert",
+        status="completed",
+        reply_fragment="好的。",
+        action_count=1,
+    )
+
+    enforced = _enforce_required_slots(result, requirement, session)
+
+    assert enforced.status == "awaiting_user"
+    form = enforced.ui_form
+    assert form is not None and form["kind"] == "slot_form"
+    assert form["step_name"] == "收集证明需求信息"
+    assert form["skill_id"] == "skill-cert"
+    assert [field["name"] for field in form["fields"]] == [
+        "employee_id",
+        "include_income",
+    ]
+    by_name = {field["name"]: field for field in form["fields"]}
+    assert by_name["employee_id"]["label"] == "员工工号"
+    assert by_name["employee_id"]["type"] == "text"
+    assert by_name["include_income"]["type"] == "boolean"
+
+
+def test_enforce_required_slots_keeps_existing_ui_form() -> None:
+    """已有表单描述时原样保留，不重复编译覆盖。"""
+
+    form = {"kind": "slot_form", "fields": []}
+    requirement = TaskRequirement(
+        task_frame_id="task-cert",
+        kind="sop",
+        goal="开具在职证明",
+        required_slots=["employee_id"],
+        sop_context={"step": {"name": "收集证明需求信息"}},
+    )
+    session = SimpleNamespace(slots_json={})
+    result = TaskExecutionResult(
+        task_frame_id="task-cert",
+        status="completed",
+        reply_fragment="好的。",
+        ui_form=form,
+        action_count=1,
+    )
+
+    enforced = _enforce_required_slots(result, requirement, session)
+
+    assert enforced.status == "awaiting_user"
+    # 原样保留：若被重新编译，fields 会变成 employee_id 的文本框
+    assert enforced.ui_form == form
+    assert enforced.ui_form["fields"] == []
+
 
 
 def test_turn_planner_routes_handoff_human_to_sop_handoff_node() -> None:

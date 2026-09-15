@@ -4,17 +4,13 @@
 
 ## 2026-09-15
 
-- **新增：知识库孤儿数据清理脚本** `backend/scripts/cleanup_knowledge_orphans.py` —— 按 agent 作用域删私有知识库走的是「软隐藏」（branch/binding 置 `deleted`），而**全库没有 restore 端点**，agent 一删这些行就成了界面永远看不到的幽灵数据。脚本默认 dry-run，`--apply` 清孤儿行 / `--restore-hidden` 恢复 / `--purge-kbs` 真删（级联对齐 `delete_knowledge_base` 顺序）。已实跑：清掉 9 行孤儿 branch + 级联删除 1 个幽灵库（91 条子行）。
-- **修复：剩余 3 处 `window.confirm` 全部统一到 `ConfirmDialog`** —— 团队黑板归档、清空个人长期记忆、MCP App 副作用工具确认。**全库已无 `window.confirm`**。MCP App 那处在 RPC 处理链里不能同步阻塞，改成 Promise 化确认（resolver ref + 对话框），取消时仍回 `-32001` 错误。
-- **测试**：新增 `MCPAppView.test.tsx`（3 例）与 `MemoriesTab.test.tsx`（3 例）覆盖「弹窗确认/取消」两条路径；`TeamDetailPage.test.tsx` 的归档用例改为走对话框并断言不再触发原生 confirm。
-- **新功能：A2UI 缺槽表单（MVP）** — SOP 缺槽反问从「让用户写一段自然语言」升级为**下发可渲染表单**：后端 `app/core/slot_form.py` 按字段名推断控件类型、从出边条件取下拉选项；前端 `SlotFormCard` 渲染，提交带 `slot_submission` 走同一条聊天链路，后端直接写槽并**跳过那一轮槽位抽取 LLM**。文本回复照旧保留 → 企微/微信等非 UI 渠道零影响。
-- **修复：表单提交的取值未落库** — 后端会把 `slot_submission` 写进用户消息元数据，否则刷新页面后已提交的表单会「复活」可重复提交。
-- **修复（既有）：`ExecutionRecord` 测试用例间 DOM 未清理** — 项目 vitest 未开 `globals`，RTL 自动 cleanup 不生效；补 `afterEach(cleanup)` 后该文件 4/4 通过。
-- **记忆维护**：`.workbuddy/memory/MEMORY.md` 超注入上限被截断 → 重排 `##` 层级、合并同类、补入 A2UI 与孤儿数据约定（16.9KB → 12.6KB）。
+- **修复：剩余 3 处 `window.confirm` 全部统一到 `ConfirmDialog`**
+- **新功能：A2UI 缺槽表单（MVP）** — SOP 缺槽反问从「让用户写一段自然语言」升级为**下发可渲染表单**
+- **修复：表单提交的取值未落库**
 
 ## 2026-09-14
 
-- **修复（根因）：API 密钥弹窗被撑成整屏宽 —— Tailwind 因 `.gitignore` 的 `*log*` 静默跳过所有 `*Dialog*.tsx`**
+- **修复（根因）：API 密钥弹窗被撑成整屏宽**
 - **修复：新建数字员工后列表不刷新（需手动刷页才可见）**
 - **架构：知识库文档解析任务迁到 rq（离开 web 进程线程池，可重启恢复）**
 - **修复：`output_policy` 的超时上限被 SDK 重试悄悄放大**
