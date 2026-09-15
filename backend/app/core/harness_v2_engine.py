@@ -14,6 +14,7 @@ from app.aigw_cache import get_json, set_json
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
+from app.core.conversation_projection import ConversationProjection
 from app.core.harness_agent import (
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
@@ -94,6 +95,27 @@ def _turn_skill_projection(
     _ = interaction_mode
     skills = expand_visible_sops(source_skills)
     return skills, discoverable_sops(skills)
+
+
+def _session_title_from_plan(plan: TurnPlan, skills: list[Skill]) -> str:
+    """从 planner 输出推导会话标题：SOP 帧用 SOP 名，否则用一句话意图。
+
+    交给 ConversationProjection.fallback_session_title 做空白/句尾标点
+    清洗并截断到 28 字符。推导不出（无意图且无 SOP 帧）返回空串。
+    """
+    for frame in plan.task_frames:
+        if frame.kind == "sop" and frame.target_skill_id:
+            skill = next(
+                (item for item in skills if item.skill_id == frame.target_skill_id),
+                None,
+            )
+            if skill and (skill.name or "").strip():
+                title = ConversationProjection.fallback_session_title(skill.name)
+                if title:
+                    return title
+    if (plan.user_intent or "").strip():
+        return ConversationProjection.fallback_session_title(plan.user_intent)
+    return ""
 
 
 def _turn_planner_message(
@@ -579,6 +601,16 @@ class HarnessV2Engine:
                 },
             )
         router_decision = turn_plan_router_decision(plan)
+        # 会话标题（2026-09-15）：不再用 LLM 起标题。planner 已产出
+        # user_intent（一句话意图），SOP 帧直接用 SOP 名——首轮规划完成即
+        # 落标题，比原「后台线程调 LLM」（实测 13-17s）快且零成本。
+        # 兜底链：本处 → chat._summarize_session_title_once（已持久化意图）
+        # → agent_loop._finalize_turn（首条用户消息）。手动改过的不覆盖。
+        if not (session.title or "").strip():
+            plan_title = _session_title_from_plan(plan, skills)
+            if plan_title:
+                session.title = plan_title
+                self.db.add(session)
         self.events.record(
             request.tenant_id,
             session.id,

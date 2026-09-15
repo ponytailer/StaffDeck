@@ -18,7 +18,7 @@ from sqlalchemy import and_, or_, update
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
-from app.agents.branching import model_for_agent, visible_published_skills
+from app.agents.branching import visible_published_skills
 from app.channels.service_outbox import stage_channel_delivery
 from app.chat_pubsub import RelaySubscriber, publish_relay_wake
 from app.core import AgentLoop
@@ -51,11 +51,8 @@ from app.harness import (
     normalize_harness_artifact_path,
     open_harness_artifact,
 )
-from app.llm import LLMClient, LLMError
 from app.observability.session_timings import enrich_turn_traces_with_timings
 from app.observability.spans import (
-    bind_span_sink,
-    llm_operation,
     reset_span_sink,
     set_span_sink,
 )
@@ -143,18 +140,6 @@ KNOWLEDGE_TRACE_PHASES = {
     "no_documents",
     "no_buckets",
 }
-SESSION_TITLE_PROMPT = """你是任务派发台的会话标题编辑器。
-
-根据首轮用户需求和员工回复，生成一个简短、可读、具体的中文标题。
-
-要求：
-- 输出 JSON object，格式为 {"title": "..."}。
-- 直接输出标题 JSON，不输出分析、候选标题或解释。
-- 标题 4 到 18 个中文字符优先，最多 24 个字符。
-- 不要使用“新任务”“任务记录”“用户咨询”等空泛标题。
-- 不要包含标点符号、引号、编号、员工名或用户称呼。
-- 如果无法判断，就返回最能概括用户需求的短语。
-"""
 _session_title_summary_jobs: set[str] = set()
 _session_title_summary_jobs_lock = threading.Lock()
 
@@ -293,135 +278,79 @@ def _summarize_session_title_once(
     session_id: str,
     agent_id: str | None,
 ) -> None:
+    """会话标题兜底：从已持久化的意图推导，不再调用 LLM（2026-09-15）。
+
+    主路径由 harness_v2_engine 在 planner 出结果后直接落标题（SOP 名 /
+    一句话意图）；本函数只处理标题仍为空的路径——优先取活跃 SOP 名，
+    其次 pending task 的 user_intent。两者都拿不到时保持 title 为空，
+    交给 agent_loop._finalize_turn 的首条用户消息兜底，且不消费
+    「只命名一次」机会。用户手动改过的标题永远不会被覆盖。
+    """
     try:
-        for attempt in range(8):
-            messages: list[Message] = []
-            model_config = None
-            effective_agent_id = agent_id
-            with Session(engine) as db:
-                session = db.exec(
-                    select(ChatSession).where(
-                        ChatSession.id == session_id,
-                        ChatSession.tenant_id == tenant_id,
-                        ChatSession.user_id == user_id,
-                    )
-                ).first()
-                if not session:
-                    return
-                if (session.title or "").strip():
-                    return
-                existing = db.exec(
-                    select(AgentEvent).where(
-                        AgentEvent.tenant_id == tenant_id,
-                        AgentEvent.session_id == session_id,
-                        AgentEvent.event_type == SESSION_TITLE_SUMMARY_EVENT,
-                    )
-                ).first()
-                if existing:
-                    return
-                messages = db.exec(
-                    select(Message)
-                    .where(Message.tenant_id == tenant_id, Message.session_id == session_id)
-                    .order_by(Message.created_at)
-                    .limit(6)
-                ).all()
-                if not any(row.role == "user" for row in messages):
-                    messages = []
-                else:
-                    effective_agent_id = agent_id or session.agent_id
-                    model_config = model_for_agent(
-                        db,
-                        tenant_id,
-                        effective_agent_id,
-                        user_id=getattr(session, "user_id", None),
-                    )
-
-            if not messages:
-                if attempt < 7:
-                    time.sleep(0.25)
-                    continue
-                return
-
-            payload = {
-                "current_title": "",
-                "messages": [
-                    {"role": row.role, "content": row.content[:1200]}
-                    for row in messages
-                    if row.role in {"user", "assistant"}
-                ],
-            }
-            title = ""
-            title_source = "first_user_fallback"
-            if model_config:
-                try:
-                    title_turn_id = next((row.id for row in messages if row.role == "user"), "")
-
-                    def persist_title_span(
-                        event_type: str, event_payload: dict[str, object]
-                    ) -> None:
-                        traced_payload = dict(event_payload)
-                        if title_turn_id:
-                            traced_payload.setdefault("turn_id", title_turn_id)
-                            traced_payload.setdefault("user_message_id", title_turn_id)
-                        with Session(engine) as span_db:
-                            _persist_relay_only_event(
-                                span_db,
-                                tenant_id,
-                                session_id,
-                                event_type,
-                                traced_payload,
-                            )
-
-                    with bind_span_sink(persist_title_span), llm_operation("session.title"):
-                        raw = LLMClient(model_config).generate_json(SESSION_TITLE_PROMPT, payload)
-                    title = _normalize_auto_title(str(raw.get("title") or ""))
-                    if title:
-                        title_source = "first_turn_summary"
-                except LLMError:
-                    title = ""
-            if not title:
-                title = _fallback_session_title(messages)
-            if not title:
-                return
-
-            with Session(engine) as db:
-                session = db.exec(
-                    select(ChatSession).where(
-                        ChatSession.id == session_id,
-                        ChatSession.tenant_id == tenant_id,
-                        ChatSession.user_id == user_id,
-                    )
-                ).first()
-                if not session:
-                    return
-                if (session.title or "").strip():
-                    return
-                existing = db.exec(
-                    select(AgentEvent).where(
-                        AgentEvent.tenant_id == tenant_id,
-                        AgentEvent.session_id == session_id,
-                        AgentEvent.event_type == SESSION_TITLE_SUMMARY_EVENT,
-                    )
-                ).first()
-                if existing:
-                    return
-                session.title = title
-                db.add(session)
-                db.add(
-                    AgentEvent(
-                        tenant_id=tenant_id,
-                        session_id=session_id,
-                        event_type=SESSION_TITLE_SUMMARY_EVENT,
-                        payload_json={
-                            "title": title,
-                            "source": title_source,
-                            "agent_id": effective_agent_id,
-                        },
-                    )
+        with Session(engine) as db:
+            session = db.exec(
+                select(ChatSession).where(
+                    ChatSession.id == session_id,
+                    ChatSession.tenant_id == tenant_id,
+                    ChatSession.user_id == user_id,
                 )
-                db.commit()
+            ).first()
+            if not session:
                 return
-    except (LLMError, Exception):
+            if (session.title or "").strip():
+                return
+            existing = db.exec(
+                select(AgentEvent).where(
+                    AgentEvent.tenant_id == tenant_id,
+                    AgentEvent.session_id == session_id,
+                    AgentEvent.event_type == SESSION_TITLE_SUMMARY_EVENT,
+                )
+            ).first()
+            if existing:
+                return
+
+            title = ""
+            title_source = ""
+            if session.active_skill_id:
+                skill = db.exec(
+                    select(Skill).where(
+                        Skill.tenant_id == tenant_id,
+                        Skill.skill_id == session.active_skill_id,
+                    )
+                ).first()
+                if skill and (skill.name or "").strip():
+                    title = " ".join(skill.name.split())
+                    title_source = "active_skill_name"
+            if not title:
+                for item in session.pending_tasks_json or []:
+                    if not isinstance(item, dict):
+                        continue
+                    intent = str(
+                        item.get("user_intent") or item.get("intent_summary") or ""
+                    ).strip()
+                    if intent:
+                        title = " ".join(intent.split())[:28]
+                        title_source = "task_intent"
+                        break
+            if not title:
+                return
+
+            session.title = title
+            db.add(session)
+            db.add(
+                AgentEvent(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    event_type=SESSION_TITLE_SUMMARY_EVENT,
+                    payload_json={
+                        "title": title,
+                        "source": title_source,
+                        "agent_id": agent_id or session.agent_id,
+                    },
+                )
+            )
+            db.commit()
+    except Exception:
         return
 
 
@@ -441,21 +370,6 @@ def _session_title_summary_payload(db: Session, tenant_id: str, session_id: str)
     if not isinstance(title, str) or not title.strip():
         return None
     return {"sessionId": session_id, "title": title.strip()}
-
-
-def _normalize_auto_title(value: str) -> str:
-    title = value.strip().strip("\"'“”‘’`")
-    for token in ("\n", "\r", "\t", "：", ":", "。", "，", ",", "；", ";"):
-        title = title.replace(token, " ")
-    title = " ".join(part for part in title.split() if part)
-    return title[:24]
-
-
-def _fallback_session_title(messages: list[Message]) -> str:
-    first_user = next((row.content for row in messages if row.role == "user" and row.content.strip()), "")
-    if not first_user:
-        return ""
-    return _normalize_auto_title(first_user)
 
 
 def _normalized_session_event_payload(row: AgentEvent) -> dict[str, object]:

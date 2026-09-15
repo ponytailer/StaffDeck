@@ -356,7 +356,7 @@ def test_agent_loop_persists_pilotdeck_origin_on_legacy_session() -> None:
         assert session.channel == "pilotdeck_group_chat"
 
 
-def test_session_title_summary_uses_first_user_message_when_title_empty(monkeypatch) -> None:
+def test_session_title_summary_uses_pending_task_intent(monkeypatch) -> None:
     engine = _test_engine()
     monkeypatch.setattr(chat_api, "engine", engine)
     with Session(engine) as db:
@@ -372,6 +372,19 @@ def test_session_title_summary_uses_first_user_message_when_title_empty(monkeypa
         )
         db.commit()
 
+    # 先造一条 intent 已落库的记录 → 兜底线程应直接用意图命名
+    with Session(engine) as db:
+        row = db.get(ChatSession, "session_title")
+        row.pending_tasks_json = [
+            {
+                "task_id": "task_1",
+                "kind": "conversation",
+                "user_intent": "查询北京今天的天气 并 生成出行建议",
+            }
+        ]
+        db.add(row)
+        db.commit()
+
     chat_api._summarize_session_title_once("tenant_demo", "user_demo", "session_title", None)
 
     with Session(engine) as db:
@@ -384,9 +397,88 @@ def test_session_title_summary_uses_first_user_message_when_title_empty(monkeypa
         ).first()
 
     assert row is not None
-    assert row.title == "请查询北京今天的天气"
+    assert row.title == "查询北京今天的天气 并 生成出行建议"
     assert event is not None
-    assert event.payload_json["title"] == "请查询北京今天的天气"
+    assert event.payload_json["title"] == "查询北京今天的天气 并 生成出行建议"
+    assert event.payload_json["source"] == "task_intent"
+
+
+def test_session_title_summary_leaves_empty_when_no_intent_yet(monkeypatch) -> None:
+    """意图还没落库（turn 进行中）→ 不抢跑、不消费「只命名一次」机会。"""
+    engine = _test_engine()
+    monkeypatch.setattr(chat_api, "engine", engine)
+    with Session(engine) as db:
+        db.add(
+            ChatSession(
+                id="session_no_intent",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+            )
+        )
+        db.add(
+            Message(
+                id="msg_user_no_intent",
+                tenant_id="tenant_demo",
+                session_id="session_no_intent",
+                role="user",
+                content="请查询北京今天的天气。",
+            )
+        )
+        db.commit()
+
+    chat_api._summarize_session_title_once(
+        "tenant_demo", "user_demo", "session_no_intent", None
+    )
+
+    with Session(engine) as db:
+        row = db.get(ChatSession, "session_no_intent")
+        events = db.exec(
+            select(AgentEvent).where(
+                AgentEvent.session_id == "session_no_intent",
+                AgentEvent.event_type == chat_api.SESSION_TITLE_SUMMARY_EVENT,
+            )
+        ).all()
+
+    assert row is not None
+    assert not (row.title or "").strip()
+    assert events == []
+
+
+def test_session_title_from_plan_prefers_sop_name() -> None:
+    from types import SimpleNamespace
+
+    from app.core.harness_v2_engine import _session_title_from_plan
+    from app.session.session_schema import PlannedTaskFrame, TurnPlan
+
+    plan = TurnPlan(
+        decision="start_new_task",
+        user_intent="帮我请一天事假",
+        task_frames=[
+            PlannedTaskFrame(
+                task_id="task_1",
+                kind="sop",
+                target_skill_id="leave_request",
+                user_intent="帮我请一天事假",
+            )
+        ],
+    )
+    skills = [SimpleNamespace(skill_id="leave_request", name="请假申请")]
+    assert _session_title_from_plan(plan, skills) == "请假申请"
+
+
+def test_session_title_from_plan_falls_back_to_user_intent() -> None:
+    from app.core.harness_v2_engine import _session_title_from_plan
+    from app.session.session_schema import TurnPlan
+
+    plan = TurnPlan(decision="answer_only", user_intent="查询项目位置 和 交通方式")
+    assert _session_title_from_plan(plan, []) == "查询项目位置 和 交通方式"
+
+
+def test_session_title_from_plan_returns_empty_without_intent() -> None:
+    from app.core.harness_v2_engine import _session_title_from_plan
+    from app.session.session_schema import TurnPlan
+
+    assert _session_title_from_plan(TurnPlan(), []) == ""
 
 
 def test_session_title_summary_does_not_override_existing_title(monkeypatch) -> None:
