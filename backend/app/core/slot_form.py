@@ -41,6 +41,13 @@ TYPE_TIME = "time"
 TYPE_DATETIME = "datetime"
 TYPE_BOOLEAN = "boolean"
 TYPE_SELECT = "select"
+TYPE_CONFIRM = "confirm"
+
+# 确认型字段的默认按钮（边条件里带出字面量时优先用边条件的）
+CONFIRM_DEFAULT_OPTIONS = [
+    {"value": "确认", "label": "确认"},
+    {"value": "取消", "label": "取消"},
+]
 
 _MAX_TEXT_LENGTH = 200
 _MAX_SELECT_OPTIONS = 30
@@ -126,14 +133,29 @@ def build_slot_form(
                 {"value": True, "label": "是"},
                 {"value": False, "label": "否"},
             ]
+        elif control == TYPE_CONFIRM:
+            # 确认控件渲染成按钮（点了就提交），选项优先取边条件字面量
+            # （如「确认/修改」），没有才用默认的确认/取消。
+            field["options"] = (
+                [{"value": item, "label": item} for item in options]
+                if len(options) >= 2
+                else [dict(item) for item in CONFIRM_DEFAULT_OPTIONS]
+            )
         fields.append(field)
 
+    # 全部字段都是确认型 → 这是一个「确认步骤」，标题直接用步骤名
+    # （「确认开具信息」比「请补充以下信息」更像一句问话），前端也会把
+    # 底部的通用提交按钮换成按钮直提。
+    if fields and all(field["type"] == TYPE_CONFIRM for field in fields):
+        title = step_name.strip() or "请确认"
+    else:
+        title = title or "请补充以下信息"
     return {
         "kind": SCHEMA_KIND,
         "skill_id": skill_id,
         "step_id": step_id,
         "step_name": step_name,
-        "title": title or "请补充以下信息",
+        "title": title,
         "submit_label": "提交",
         "fields": fields,
     }
@@ -142,9 +164,14 @@ def build_slot_form(
 def _control_for(name: str, options: list[str]) -> str:
     """字段名 + 已有选项 → 控件类型（保守优先，命中不了就是文本框）。"""
 
+    token = _normalize(name)
+    # 确认型字段（confirm_action / user_confirmed / reconfirm…）：这类「步骤
+    # 的全部意义就是让用户点一下确认」，渲染成文本框等于让用户手打「确认」
+    # 二字——实测最傻的交互，全局按按钮处理。
+    if "confirm" in token:
+        return TYPE_CONFIRM
     if len(options) >= 2:
         return TYPE_SELECT
-    token = _normalize(name)
     if not token:
         return TYPE_TEXT
     if token.startswith(_BOOLEAN_PREFIXES) or token.endswith(_BOOLEAN_SUFFIXES):
@@ -161,8 +188,8 @@ def _control_for(name: str, options: list[str]) -> str:
 
 
 def _placeholder(control: str, label: str) -> str:
-    if control == TYPE_SELECT:
-        return f"请选择{label}"
+    if control in (TYPE_SELECT, TYPE_CONFIRM):
+        return ""
     if control == TYPE_BOOLEAN:
         return ""
     return f"请输入{label}"
@@ -220,9 +247,17 @@ def _normalize(name: Any) -> str:
     return "_".join(tokens)
 
 
+def is_confirm_field(name: Any) -> bool:
+    """字段名是否为确认语义（``confirm_action`` / ``user_confirmed`` / …）。"""
+
+    return "confirm" in _normalize(name)
+
+
 __all__ = [
+    "CONFIRM_DEFAULT_OPTIONS",
     "SCHEMA_KIND",
     "TYPE_BOOLEAN",
+    "TYPE_CONFIRM",
     "TYPE_DATE",
     "TYPE_DATETIME",
     "TYPE_NUMBER",
@@ -230,4 +265,5 @@ __all__ = [
     "TYPE_TEXT",
     "TYPE_TIME",
     "build_slot_form",
+    "is_confirm_field",
 ]

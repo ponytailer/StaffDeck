@@ -113,3 +113,62 @@ describe('SlotFormCard', () => {
     expect(screen.getByText('该表单已过期，请直接回复文字')).toBeTruthy();
   });
 });
+
+describe('SlotFormCard 确认型表单', () => {
+  const confirmForm: A2UIForm = {
+    kind: 'slot_form',
+    step_name: '确认开具信息',
+    title: '确认开具信息',
+    fields: [
+      { name: 'confirm_action', label: '确认操作', type: 'confirm', required: true },
+    ],
+  };
+
+  it('确认字段渲染成按钮，没有通用提交键', () => {
+    renderCard(<SlotFormCard form={confirmForm} onSubmit={vi.fn()} />);
+
+    expect(screen.getByText('确认')).toBeTruthy();
+    expect(screen.getByText('取消')).toBeTruthy();
+    expect(screen.getByText('点击按钮即提交')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '提交' })).toBeNull();
+  });
+
+  it('点「确认」直接提交结构化取值', () => {
+    const onSubmit = vi.fn();
+    renderCard(<SlotFormCard form={confirmForm} onSubmit={onSubmit} />);
+
+    fireEvent.click(screen.getByText('确认'));
+
+    expect(onSubmit).toHaveBeenCalledWith({ confirm_action: '确认' });
+    expect(screen.getByText('已提交，正在继续处理')).toBeTruthy();
+  });
+
+  it('点「取消」同样直接提交', () => {
+    const onSubmit = vi.fn();
+    renderCard(<SlotFormCard form={confirmForm} onSubmit={onSubmit} />);
+
+    fireEvent.click(screen.getByText('取消'));
+
+    expect(onSubmit).toHaveBeenCalledWith({ confirm_action: '取消' });
+  });
+
+  it('混合表单里确认按钮只选中，等通用提交键', () => {
+    const onSubmit = vi.fn();
+    const mixed: A2UIForm = {
+      kind: 'slot_form',
+      title: '请补充以下信息',
+      fields: [
+        { name: 'employee_id', label: '员工工号', type: 'text', required: true },
+        { name: 'confirm_action', label: '确认操作', type: 'confirm', required: true },
+      ],
+    };
+    renderCard(<SlotFormCard form={mixed} onSubmit={onSubmit} />);
+
+    fireEvent.click(screen.getByText('确认'));
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/员工工号/), { target: { value: '3012' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交' }));
+    expect(onSubmit).toHaveBeenCalledWith({ employee_id: '3012', confirm_action: '确认' });
+  });
+});

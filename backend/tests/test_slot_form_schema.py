@@ -127,3 +127,46 @@ def test_form_carries_step_identity() -> None:
     assert form["step_name"] == "收集证明需求信息"
     assert form["step_id"] == "n1"
     assert form["skill_id"] == "sop-1"
+
+
+def test_confirm_field_becomes_button_widget() -> None:
+    """确认型字段（confirm_action 等）渲染成按钮，不再是让用户手打「确认」的文本框。"""
+
+    form = build_slot_form(["confirm_action"], step_name="确认开具信息")
+    assert form is not None
+    field = form["fields"][0]
+    assert field["type"] == "confirm"
+    assert [option["value"] for option in field["options"]] == ["确认", "取消"]
+    assert field["placeholder"] == ""
+
+
+def test_user_confirmed_is_confirm_not_boolean() -> None:
+    form = build_slot_form(["user_confirmed"])
+    assert form is not None
+    assert form["fields"][0]["type"] == "confirm"
+
+
+def test_confirm_field_prefers_edge_condition_literals() -> None:
+    """边条件里带出确认字面量（如 确认/修改）时按边条件的来。"""
+
+    edges = [_edge(("confirm_action", "in", ["确认", "修改"]))]
+    form = build_slot_form(["confirm_action"], edge_conditions=edges)
+    assert form is not None
+    field = form["fields"][0]
+    assert field["type"] == "confirm"
+    assert [option["value"] for option in field["options"]] == ["确认", "修改"]
+
+
+def test_confirm_only_form_uses_step_name_as_title() -> None:
+    form = build_slot_form(["confirm_action"], step_name="确认开具信息")
+    assert form is not None
+    assert form["title"] == "确认开具信息"
+
+
+def test_mixed_form_keeps_generic_title() -> None:
+    form = build_slot_form(["employee_id", "confirm_action"], step_name="确认开具信息")
+    assert form is not None
+    types = {field["name"]: field["type"] for field in form["fields"]}
+    assert types["employee_id"] == "text"
+    assert types["confirm_action"] == "confirm"
+    assert form["title"] == "请补充以下信息"

@@ -42,7 +42,7 @@ from typing import Any, Mapping
 
 from app.core.graph_rules import GraphRules
 from app.core.slot_display import join_slot_labels, slot_label
-from app.core.slot_form import build_slot_form
+from app.core.slot_form import build_slot_form, is_confirm_field
 from app.skills.edge_condition_spec import (
     EdgeConditionSpec,
     EdgeEvalContext,
@@ -1002,9 +1002,15 @@ def _await_user_action(
     # 全量罗列会重现「已提供还要求补全」的错误询问）
     missing = [str(item).strip() for item in required_slots if str(item).strip()]
     step_part = f"继续「{step_name}」" if step_name else "继续当前步骤"
-    # 字段名转中文显示名：这轮是零 LLM 模板回复，模型没机会润色，
-    # 直接把 employee_id 抛给用户等于没说话。
-    reply = f"为了{step_part}，请提供：{join_slot_labels(missing, labels)}。"
+    # 确认型步骤（缺的全部是 confirm 字段）：这一步的全部意义就是让用户点
+    # 一下确认——话术也按确认写，别再出现「请提供：确认操作」这种要求用户
+    # 手打「确认」二字的句子。按钮由 A2UI 表单下发；企微等纯文本渠道按
+    # 「回复确认/取消」理解即可，两边口径一致。
+    if missing and all(is_confirm_field(item) for item in missing):
+        target = f"「{step_name}」" if step_name else "以上内容"
+        reply = f"请确认{target}：确认请点「确认」继续，需修改请点「取消」返回。"
+    else:
+        reply = f"为了{step_part}，请提供：{join_slot_labels(missing, labels)}。"
     # A2UI（MVP）：同一批缺失字段再编译一份**表单描述**随消息下发，前端渲染成
     # 原生控件。用户提交的是结构化 JSON → 下一轮直接写槽，省掉 _extract_slots_llm。
     # 文案仍然保留：企微/微信等非 UI 渠道只能收文本。

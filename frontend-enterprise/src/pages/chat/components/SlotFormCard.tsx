@@ -55,6 +55,9 @@ export default function SlotFormCard({ form, onSubmit, disabled = false }: SlotF
     () => form.fields.filter((field) => field.required !== false),
     [form.fields],
   );
+  // 确认型表单（全部字段都是 confirm）：按钮即提交，不需要底部通用提交键。
+  const allConfirm = form.fields.length > 0
+    && form.fields.every((field) => field.type === 'confirm');
 
   if (submitted) {
     return (
@@ -82,7 +85,9 @@ export default function SlotFormCard({ form, onSubmit, disabled = false }: SlotF
     const nextErrors: Record<string, string> = {};
     for (const field of requiredFields) {
       if (isEmptyValue(values[field.name])) {
-        nextErrors[field.name] = field.type === 'boolean' ? '请选择' : '请填写';
+        nextErrors[field.name] = field.type === 'text' || field.type === 'number' || field.type === 'date' || field.type === 'time' || field.type === 'datetime'
+          ? '请填写'
+          : '请选择';
       }
     }
     if (Object.keys(nextErrors).length > 0) {
@@ -99,8 +104,50 @@ export default function SlotFormCard({ form, onSubmit, disabled = false }: SlotF
     onSubmit(payload);
   };
 
+  /** 确认按钮直提：带上当前已填的值 + 被点击的这一项，立即提交。 */
+  const submitConfirm = (field: A2UIField, optionValue: string | number | boolean) => {
+    if (disabled) return;
+    const payload: Record<string, unknown> = {};
+    for (const item of form.fields) {
+      const value = item.name === field.name ? optionValue : values[item.name];
+      if (isEmptyValue(value)) continue;
+      payload[item.name] = item.type === 'number' ? Number(value) : value;
+    }
+    setSubmitted(true);
+    onSubmit(payload);
+  };
+
   const renderControl = (field: A2UIField) => {
     const value = values[field.name];
+    if (field.type === 'confirm') {
+      // 确认型字段：渲染成按钮，整表都是确认字段时点击即提交（不用再点提交键）。
+      const options = field.options?.length
+        ? field.options
+        : [{ value: '确认', label: '确认' }, { value: '取消', label: '取消' }];
+      return (
+        <div className={CHAT_SLOT_FORM_CHOICE_ROW_CLASS}>
+          {options.map((option, index) => (
+            <button
+              key={String(option.value)}
+              type="button"
+              disabled={disabled}
+              className={cn(
+                CHAT_SLOT_FORM_CHOICE_CLASS,
+                index === 0 && 'border-primary/60 bg-primary/10 text-primary font-medium',
+                value === option.value && CHAT_SLOT_FORM_CHOICE_ACTIVE_CLASS,
+              )}
+              onClick={() => (
+                allConfirm
+                  ? submitConfirm(field, option.value)
+                  : setValue(field, option.value)
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      );
+    }
     if (field.type === 'boolean') {
       const options = field.options?.length
         ? field.options
@@ -200,11 +247,17 @@ export default function SlotFormCard({ form, onSubmit, disabled = false }: SlotF
 
       <div className={CHAT_SLOT_FORM_FOOTER_CLASS}>
         <span className={CHAT_SLOT_FORM_HINT_CLASS}>
-          {disabled ? '该表单已过期，请直接回复文字' : '填写后将直接作为结构化信息提交，无需再描述一遍'}
+          {disabled
+            ? '该表单已过期，请直接回复文字'
+            : allConfirm
+              ? '点击按钮即提交'
+              : '填写后将直接作为结构化信息提交，无需再描述一遍'}
         </span>
-        <Button type="button" disabled={disabled} onClick={handleSubmit}>
-          {form.submit_label || '提交'}
-        </Button>
+        {!allConfirm && (
+          <Button type="button" disabled={disabled} onClick={handleSubmit}>
+            {form.submit_label || '提交'}
+          </Button>
+        )}
       </div>
     </div>
   );

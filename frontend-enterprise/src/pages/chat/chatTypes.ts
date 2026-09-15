@@ -99,7 +99,8 @@ export type A2UIFieldType =
   | 'time'
   | 'datetime'
   | 'boolean'
-  | 'select';
+  | 'select'
+  | 'confirm';
 
 export type A2UIFieldOption = {
   value: string | number | boolean;
@@ -133,6 +134,7 @@ export const A2UI_FIELD_TYPES: ReadonlySet<string> = new Set([
   'datetime',
   'boolean',
   'select',
+  'confirm',
 ]);
 
 

@@ -1610,6 +1610,27 @@ def test_await_user_action_carries_slot_form() -> None:
     assert "设备型号" in actions[0]["reply_fragment"]
 
 
+def test_await_user_action_confirm_step_renders_buttons() -> None:
+    """确认型步骤（缺的全是 confirm 字段）：话术按确认写，表单是按钮不是文本框。"""
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_slots=["confirm_action"],
+            expected_user_info=["confirm_action"],
+        ),
+    )
+    assert len(actions) == 1
+    assert actions[0]["status"] == "awaiting_user"
+    assert "请确认「提交申请」" in actions[0]["reply_fragment"]
+    assert "请提供" not in actions[0]["reply_fragment"]
+    form = actions[0]["ui_form"]
+    assert form is not None
+    assert form["title"] == "提交申请"
+    field = form["fields"][0]
+    assert field["type"] == "confirm"
+    assert [option["value"] for option in field["options"]] == ["确认", "取消"]
+
+
 def test_no_slot_form_when_nothing_missing() -> None:
     """无缺槽时不该出现表单（纯流转直通是零 LLM 的，别塞多余载荷）。"""
 
