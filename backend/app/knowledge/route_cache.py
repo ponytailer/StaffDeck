@@ -36,6 +36,10 @@ _FULL_PREFIX = f"staffdeck:{NAMESPACE}:"
 # 所以给一个足够长的值以拉高命中率；漏失效时最长 12 小时后自动新鲜。
 ROUTE_CACHE_TTL_SECONDS = 12 * 3600
 
+# 负缓存（模型明确判定「没有相关候选」）的 TTL：短得多。这类结论可能只是
+# 当前知识内容还没铺开，靠短 TTL + 知识库写路径失效双重兜底。
+ROUTE_CACHE_NEGATIVE_TTL_SECONDS = 600
+
 # 无显式知识库维度（agent 全局范围）时的索引 scope 名。
 ALL_KB_SCOPE = "_all"
 
@@ -118,6 +122,20 @@ def _ttl_seconds() -> int:
     return configured if configured > 0 else ROUTE_CACHE_TTL_SECONDS
 
 
+def _negative_ttl_seconds() -> int:
+    """负缓存 TTL：优先读配置，异常/未配置时用模块默认值。"""
+
+    try:
+        from app.config import get_settings
+
+        configured = int(
+            getattr(get_settings(), "knowledge_route_cache_negative_ttl_seconds", 0) or 0
+        )
+    except Exception:
+        configured = 0
+    return configured if configured > 0 else ROUTE_CACHE_NEGATIVE_TTL_SECONDS
+
+
 def route_cache_slot(
     tenant_id: str,
     agent_id: str | None,
@@ -163,15 +181,28 @@ def get_route_decision(slot: RouteCacheSlot | None) -> list[str] | None:
     return [str(item) for item in ids]
 
 
-def store_route_decision(slot: RouteCacheSlot | None, ids: list[str] | None) -> bool:
-    """写该维度的路由决策；返回是否真正写入（Redis 不可用/空结果返回 False）。"""
+def store_route_decision(
+    slot: RouteCacheSlot | None,
+    ids: list[str] | None,
+    *,
+    allow_empty: bool = False,
+) -> bool:
+    """写该维度的路由决策；返回是否真正写入（Redis 不可用/空结果返回 False）。
 
-    if slot is None or not ids:
+    ``allow_empty=True`` 时把「模型明确判定为没有相关候选」也缓存下来（负缓存）。
+    这类决策同样要花一次模型路由才能得到，不缓存等于每次白问一遍。TTL 取更短的
+    ``ROUTE_CACHE_NEGATIVE_TTL_SECONDS``，因为「没有相关候选」可能只是当前内容
+    还没铺开；知识库写路径的精准失效仍会主动清掉它。
+    """
+
+    if slot is None:
         return False
-    ttl = _ttl_seconds()
+    if not ids and not allow_empty:
+        return False
+    ttl = _negative_ttl_seconds() if not ids else _ttl_seconds()
     written = object_cache.store_json(
         slot.key,
-        {"ids": [str(item) for item in ids]},
+        {"ids": [str(item) for item in (ids or [])]},
         ttl_seconds=ttl,
         namespace=NAMESPACE,
     )

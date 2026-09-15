@@ -17,6 +17,8 @@ export type PreparedChatTurn = {
   interactionMode: ComposerInteractionMode;
   modelConfigId?: string;
   createdAt: string;
+  /** A2UI 表单提交的结构化取值（普通输入消息不带）。 */
+  slotSubmission?: Record<string, unknown>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -47,6 +49,7 @@ function isPreparedChatTurn(value: unknown): value is PreparedChatTurn {
     && typeof value.interactionMode === 'string'
     && INTERACTION_MODES.has(value.interactionMode as ComposerInteractionMode)
     && (value.modelConfigId === undefined || typeof value.modelConfigId === 'string')
+    && (value.slotSubmission === undefined || isRecord(value.slotSubmission))
     && typeof value.createdAt === 'string'
     && Number.isFinite(Date.parse(value.createdAt))
   );

@@ -252,6 +252,10 @@ def _user_message_metadata(request: ChatTurnRequest) -> dict[str, object]:
         metadata["model_config_id"] = request.model_config_id
     if request.attachments:
         metadata["attachments"] = [item.model_dump(mode="json") for item in request.attachments]
+    # A2UI：表单提交的结构化取值随用户消息落库。前端用它判断「这条缺槽表单
+    # 已经提交过」，刷新页面后不会再渲染出可编辑的旧表单。
+    if request.slot_submission:
+        metadata["slot_submission"] = dict(request.slot_submission)
     return metadata
 
 

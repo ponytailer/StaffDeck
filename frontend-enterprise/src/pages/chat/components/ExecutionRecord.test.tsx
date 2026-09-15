@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '@/i18n';
 
 import type { TraceLine } from '../chatTypes';
 import ExecutionRecord from './ExecutionRecord';
+
+// vitest 未开 globals → RTL 自动清理不生效，用例间 DOM 会互相污染。
+afterEach(cleanup);
 
 function line(patch: Partial<TraceLine> = {}): TraceLine {
   return {

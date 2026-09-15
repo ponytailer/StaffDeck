@@ -45,6 +45,30 @@ def test_user_message_metadata_keeps_attachments() -> None:
     assert metadata["attachments"][0]["kind"] == "text"
 
 
+def test_user_message_metadata_keeps_slot_submission() -> None:
+    """A2UI 表单提交的取值要随用户消息落库。
+
+    前端靠它判断「这张缺槽表单已经提交过」——不落库的话，刷新页面会把
+    已提交的表单重新渲染成可编辑态，用户能重复提交。
+    """
+
+    metadata = _user_message_metadata(
+        ChatTurnRequest(
+            tenant_id="tenant_demo",
+            user_id="user_demo",
+            message="员工工号：3012",
+            slot_submission={"employee_id": "3012", "include_income": False},
+        )
+    )
+
+    assert metadata["slot_submission"] == {"employee_id": "3012", "include_income": False}
+    # 普通消息不带这个键，别凭空塞空字典
+    plain = _user_message_metadata(
+        ChatTurnRequest(tenant_id="tenant_demo", user_id="user_demo", message="你好")
+    )
+    assert "slot_submission" not in plain
+
+
 def test_image_attachment_uses_supported_extension_and_builds_image_payload() -> None:
     image = b"\x89PNG\r\n\x1a\nimage-bytes"
     attachment = parse_chat_attachment("screen.PNG", "application/octet-stream", image)

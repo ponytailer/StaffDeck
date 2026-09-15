@@ -114,6 +114,7 @@ import {
   sessionFilterStorageKey,
   shouldDeferPersistedEventToLiveStream,
   shouldKeepRealtimeMessage,
+  slotSubmissionText,
   stepResultTraceLine,
   streamErrorTraceLine,
   streamSkillLabel,
@@ -128,6 +129,7 @@ import {
   createEmptySlot,
   createStreamSlot,
   createTurnTrace,
+  type A2UIForm,
   type ComposerAttachment,
   type ComposerInteractionMode,
   type SessionSlot,
@@ -2957,6 +2959,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       metadata: {
         ...(outgoingAttachments.length ? { attachments: outgoingAttachments } : {}),
         ...(resolvedInteractionMode === 'scheduled_task' ? { interaction_mode: 'scheduled_task' } : {}),
+        ...(prepared.slotSubmission ? { slot_submission: prepared.slotSubmission } : {}),
       },
       created_at: options.queued ? new Date().toISOString() : prepared.createdAt,
     });
@@ -3150,6 +3153,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         client_timezone: getClientTimeZone(),
         model_config_id: prepared.modelConfigId,
       };
+      if (prepared.slotSubmission) {
+        requestBody.slot_submission = prepared.slotSubmission;
+      }
       if (!startedAsDraftConversation) {
         requestBody.session_id = currentConversationId;
       }
@@ -3368,6 +3374,62 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     uploadingComposerAttachment,
   ]);
 
+  // A2UI：表单提交复用同一条聊天链路——往会话里落一条**用户消息**，附带
+  // ``slot_submission``（结构化取值）。后端拿到它直接写槽、跳过槽位抽取
+  // LLM；历史回放、企微/微信等渠道的兼容性都不用另做一套。
+  const submitSlotForm = useCallback(async (
+    form: A2UIForm,
+    values: Record<string, unknown>,
+  ) => {
+    const currentConversationId = activeConversationId;
+    if (isDraftConversationKey(currentConversationId)) return;
+    if (Object.keys(values).length === 0) return;
+    if (!ensureModelAvailable()) return;
+    const activeSession = sessionId
+      ? sessions.find((item) => item.id === sessionId) || null
+      : null;
+    const sessionAgentId = activeSession?.agent_id
+      || activeDraftAgentId
+      || selectedAgentId
+      || displayedAgent?.id
+      || '';
+    if (!sessionAgentId) {
+      notify.warning('该任务没有绑定数字员工，请新建任务后再发送');
+      return;
+    }
+    const stream = getStreamSlot(currentConversationId);
+    if (stream.loading || currentSessionRunning) {
+      notify.warning('当前任务仍在执行，请稍后再提交');
+      return;
+    }
+    const prepared: PreparedChatTurn = {
+      queueId: `queue_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      conversationId: currentConversationId,
+      agentId: sessionAgentId,
+      turnId: `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      text: slotSubmissionText(form, values),
+      attachments: [],
+      interactionMode: 'normal',
+      modelConfigId: selectedModelConfig?.id,
+      createdAt: new Date().toISOString(),
+      slotSubmission: values,
+    };
+    await executePreparedTurn(prepared);
+  }, [
+    activeConversationId,
+    activeDraftAgentId,
+    currentSessionRunning,
+    displayedAgent?.id,
+    ensureModelAvailable,
+    executePreparedTurn,
+    getStreamSlot,
+    isDraftConversationKey,
+    selectedAgentId,
+    selectedModelConfig?.id,
+    sessionId,
+    sessions,
+  ]);
+
   const drainQueuedTurns = useCallback(() => {
     if (queuedTurnProcessingRef.current) return;
     const nextTurn = queuedTurnsRef.current[0];
@@ -3543,6 +3605,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     // handlers
     handleChatMessagesScroll,
     send,
+    submitSlotForm,
     abortStream,
     removeQueuedTurn,
     rateMessage,

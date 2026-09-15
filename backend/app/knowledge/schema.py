@@ -212,6 +212,10 @@ class KnowledgeSearchRequest(BaseModel):
     budget_tokens: int = 4000
     max_depth: int = 2
     need_evidence_pack: bool = True
+    # 路由缓存 key 的**稳定维度**（通常传用户原话）。检索仍用 ``query``，
+    # 该字段只影响缓存位点：``query`` 多由模型改写生成，同一句话两次改写
+    # 措辞不同 → key 不同 → 缓存永不命中。传用户原话后，同问法可跨轮命中。
+    cache_query: Optional[str] = None
 
 
 class KnowledgeSearchResponse(BaseModel):

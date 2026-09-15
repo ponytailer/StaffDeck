@@ -493,7 +493,8 @@ describe('TeamDetailPage', () => {
 
   it('archives a blackboard entry after confirmation', async () => {
     const user = userEvent.setup();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    // 回归：归档确认改走统一 ConfirmDialog，不能再触发浏览器原生 window.confirm
+    const confirmSpy = vi.spyOn(window, 'confirm');
     const fetchMock = stubDetailFetch({
       entries: [makeEntry({ id: 'entry-1', content: 'stale note' })],
     });
@@ -503,16 +504,46 @@ describe('TeamDetailPage', () => {
     await within(board).findByText('stale note');
     await user.click(within(board).getByRole('button', { name: '归档' }));
 
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('归档该黑板条目？')).toBeTruthy();
+    // 弹窗打开时还不能发请求 —— 必须先确认
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes('/archive')),
+    ).toBe(false);
+
+    await user.click(within(dialog).getByRole('button', { name: '归档' }));
+
     await waitFor(() => {
       const archiveCall = fetchMock.mock.calls.find(([input]) =>
         String(input).includes('/blackboard/entry-1/archive'),
       );
       expect(archiveCall).toBeTruthy();
     });
+    expect(confirmSpy).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(within(board).queryByText('stale note')).toBeNull();
     });
     expect(within(board).getByText('暂无黑板条目')).toBeTruthy();
+  });
+
+  it('keeps the entry when the archive confirmation is cancelled', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubDetailFetch({
+      entries: [makeEntry({ id: 'entry-1', content: 'stale note' })],
+    });
+    renderDetail();
+
+    const board = screen.getByLabelText('团队黑板');
+    await within(board).findByText('stale note');
+    await user.click(within(board).getByRole('button', { name: '归档' }));
+
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes('/archive')),
+    ).toBe(false);
+    expect(within(board).getByText('stale note')).toBeTruthy();
   });
 
   it('renders the bidding column with bidding tasks', async () => {

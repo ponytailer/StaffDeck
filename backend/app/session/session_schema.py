@@ -244,6 +244,11 @@ class ChatTurnRequest(BaseModel):
     # been verified, so pinning a version never bypasses capability access.
     forced_sop_snapshot: Optional[dict[str, Any]] = Field(default=None, exclude=True)
     client_timezone: Optional[str] = None
+    # A2UI：用户在**表单卡片**里提交的结构化槽位取值（``{字段名: 取值}``）。
+    # 只作为「本轮用户消息的结构化伴随信息」参与槽位写入：确定性执行器优先
+    # 用它、跳过那一轮槽位抽取 LLM。非表单渠道（企微/微信）不带这个字段，
+    # 行为与改造前完全一致。
+    slot_submission: Optional[dict[str, Any]] = None
     debug: bool = False
 
 

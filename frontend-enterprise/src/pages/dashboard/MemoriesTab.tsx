@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { DetailField } from '@/components/DetailField';
 import { Paginator } from '@/components/Paginator';
@@ -61,6 +62,8 @@ export default function MemoriesTab({
   const [detail, setDetail] = useState<MemoryUserGroup | null>(null);
   const [loading, setLoading] = useState(false);
   const [clearing, setClearing] = useState(false);
+  // 清空记忆是不可逆动作，走统一 ConfirmDialog
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [filter, setFilter] = useState<MemoryFilter>(EMPTY_FILTER);
 
@@ -118,10 +121,6 @@ export default function MemoriesTab({
   }
 
   async function clearOwnMemories() {
-    const scopeText = agentId ? '当前员工下你的长期记忆' : '当前租户下你的长期记忆';
-    if (!window.confirm(`将清空${scopeText}，不会影响其他用户。确定继续？`)) {
-      return;
-    }
     setClearing(true);
     try {
       const params = new URLSearchParams({ tenant_id: TENANT_ID });
@@ -134,6 +133,7 @@ export default function MemoriesTab({
       notify.error(error instanceof Error ? error.message : '清空失败');
     } finally {
       setClearing(false);
+      setClearConfirmOpen(false);
     }
   }
 
@@ -321,7 +321,7 @@ export default function MemoriesTab({
             <UIButton
               type="button"
               variant="outline"
-              onClick={clearOwnMemories}
+              onClick={() => setClearConfirmOpen(true)}
               disabled={loading || clearing}
               className="h-[34px] w-[112px] rounded-[10px] border-[0.5px] border-[#f0d3d3] bg-white px-[16px] text-[12px] font-normal text-[#c43d3d] hover:border-[#e1a8a8] hover:bg-[#fff7f7] hover:text-[#a92d2d]"
             >
@@ -361,6 +361,20 @@ export default function MemoriesTab({
       </section>
 
       <MemoryDetailDialog detail={detail} onClose={() => setDetail(null)} />
+
+      <ConfirmDialog
+        open={clearConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open) setClearConfirmOpen(false);
+        }}
+        loading={clearing}
+        title="清空你的长期记忆？"
+        description={`将清空${
+          agentId ? '当前员工下你的长期记忆' : '当前租户下你的长期记忆'
+        }，不会影响其他用户。此操作不可撤销。`}
+        confirmText="清空"
+        onConfirm={() => void clearOwnMemories()}
+      />
     </>
   );
 }

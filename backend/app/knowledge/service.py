@@ -51,6 +51,7 @@ from app.knowledge.route_cache import (
     KIND_DOCUMENT,
     get_route_decision,
     invalidate_knowledge_base,
+    query_norm,
     route_cache_slot,
     store_route_decision,
 )
@@ -237,23 +238,68 @@ class KnowledgeIngestCancelled(RuntimeError):
     """Raised inside the ingest worker when a persisted job is cancelled."""
 
 
+def _stable_cache_query(query: str, cache_query: str | None) -> str | None:
+    """返回可用于缓存位点的稳定问法；与 ``query`` 归一后相同时返回 None。
+
+    优先用 ``cache_query``（调用方传的用户原话）：``query`` 多由模型改写生成，
+    同一句话两次改写措辞不同 → 缓存 key 不同 → 永远 miss。两者归一后一致时
+    只留一个位点，避免同一位点写两遍。
+    """
+
+    candidate = (cache_query or "").strip()
+    if not candidate:
+        return None
+    if query_norm(candidate) == query_norm(query):
+        return None
+    return candidate
+
+
+def _first_route_decision(*slots: Any) -> list[str] | None:
+    """按顺序读多个缓存位点，返回第一个命中（含负缓存 ``[]``）的决策。"""
+
+    for slot in slots:
+        if slot is None:
+            continue
+        decision = get_route_decision(slot)
+        if decision is not None:
+            return decision
+    return None
+
+
 def _cache_route_decision(
-    slot: Any,
+    slots: Any,
     ids: list[str],
     dimension: str,
     route_trace: list[dict[str, Any]],
+    *,
+    allow_empty: bool = False,
 ) -> None:
-    """LLM 路由决策成功后写回该维度缓存；Redis 不可用/空结果时静默跳过。"""
+    """LLM 路由决策成功后写回该维度缓存；Redis 不可用/空结果时静默跳过。
 
-    if slot is None or not ids:
-        return
-    if store_route_decision(slot, ids):
+    ``slots`` 可传单个位点或位点序列（稳定维度 + query 维度各写一份）。
+    ``allow_empty=True`` 表示这次空结果来自模型**明确判定无相关候选**，进负缓存；
+    模型调用失败（``None``）的路径不传该参数，保持不写。
+    """
+
+    candidates = slots if isinstance(slots, (list, tuple)) else (slots,)
+    written = 0
+    for slot in candidates:
+        if slot is None:
+            continue
+        if store_route_decision(slot, ids, allow_empty=allow_empty):
+            written += 1
+    if written:
         route_trace.append(
             {
                 "phase": "route_cache_stored",
                 "dimension": dimension,
-                "message": "模型路由决策已缓存",
+                "message": (
+                    "模型路由决策已缓存"
+                    if ids
+                    else "模型判定「无相关候选」的决策已缓存"
+                ),
                 "count": len(ids),
+                "key_count": written,
             }
         )
 
@@ -662,28 +708,38 @@ class KnowledgeService:
         # 回退 LLM（旧实现会直接返回「没有相关的知识」并静默持续到 TTL 到期）。
         # key 含知识库版本维度，换版本不会命中旧决策。
         self._doc_cache_slot = None
+        self._doc_cache_slot_stable = None
         self._bucket_cache_slot = None
+        self._bucket_cache_slot_stable = None
         self._doc_cache_ids: list[str] | None = None
         self._bucket_cache_ids: list[str] | None = None
         if model_config is not None:
-            self._doc_cache_slot = route_cache_slot(
-                request.tenant_id,
-                request.agent_id,
-                request.knowledge_base_ids,
-                query,
-                kind=KIND_DOCUMENT,
-                knowledge_base_version_ids=request.knowledge_base_version_ids,
+
+            def _slot_for(text: str, kind: str) -> Any:
+                return route_cache_slot(
+                    request.tenant_id,
+                    request.agent_id,
+                    request.knowledge_base_ids,
+                    text,
+                    kind=kind,
+                    knowledge_base_version_ids=request.knowledge_base_version_ids,
+                )
+
+            self._doc_cache_slot = _slot_for(query, KIND_DOCUMENT)
+            self._bucket_cache_slot = _slot_for(query, KIND_BUCKET)
+            # 稳定维度（用户原话）。模型改写的 query 每轮措辞都可能不同，原话
+            # 才是用户眼里「同一个问题」的判据；命中优先读它，写入两份以兼容
+            # 历史缓存。读时按 稳定 → query 顺序取第一个命中（含负缓存 []）。
+            stable_query = _stable_cache_query(query, request.cache_query)
+            if stable_query is not None:
+                self._doc_cache_slot_stable = _slot_for(stable_query, KIND_DOCUMENT)
+                self._bucket_cache_slot_stable = _slot_for(stable_query, KIND_BUCKET)
+            self._doc_cache_ids = _first_route_decision(
+                self._doc_cache_slot_stable, self._doc_cache_slot
             )
-            self._bucket_cache_slot = route_cache_slot(
-                request.tenant_id,
-                request.agent_id,
-                request.knowledge_base_ids,
-                query,
-                kind=KIND_BUCKET,
-                knowledge_base_version_ids=request.knowledge_base_version_ids,
+            self._bucket_cache_ids = _first_route_decision(
+                self._bucket_cache_slot_stable, self._bucket_cache_slot
             )
-            self._doc_cache_ids = get_route_decision(self._doc_cache_slot)
-            self._bucket_cache_ids = get_route_decision(self._bucket_cache_slot)
             if self._doc_cache_ids is not None or self._bucket_cache_ids is not None:
                 route_trace.append(
                     {
@@ -750,7 +806,8 @@ class KnowledgeService:
                 cached_document_ids = [
                     item for item in (self._doc_cache_ids or []) if item in allowed
                 ][:5]
-                if self._doc_cache_ids is not None and not cached_document_ids:
+                if self._doc_cache_ids and not cached_document_ids:
+                    # 非空决策被当前候选集过滤空 → 真失效；负缓存（[]）不走这里
                     route_trace.append(
                         {
                             "phase": "route_cache_stale",
@@ -766,6 +823,16 @@ class KnowledgeService:
                             "phase": "document_route_cache_hit",
                             "message": "复用缓存的文档路由决策（跳过模型路由）",
                             "selected_count": len(selected_document_ids),
+                        }
+                    )
+                elif self._doc_cache_ids == []:
+                    # 负缓存：模型上一轮已判定「没有相关文档」，不必再花一次
+                    # 模型路由去得到同一个结论
+                    route_trace.append(
+                        {
+                            "phase": "document_route_cache_hit_empty",
+                            "message": "复用缓存的文档路由决策（判定无相关文档，跳过模型路由）",
+                            "selected_count": 0,
                         }
                     )
                 else:
@@ -806,12 +873,15 @@ class KnowledgeService:
                             )
                         else:
                             selected_document_ids = llm_document_ids
-                            # 文档决策独立写回：即使 bucket 走了词法路径也照样缓存
+                            # 文档决策独立写回：即使 bucket 走了词法路径也照样缓存。
+                            # 空结果也来自一次成功的模型调用（判定「无相关文档」），
+                            # 进负缓存，否则同一问法每次都白问一遍模型。
                             _cache_route_decision(
-                                self._doc_cache_slot,
+                                (self._doc_cache_slot_stable, self._doc_cache_slot),
                                 selected_document_ids,
                                 "document",
                                 route_trace,
+                                allow_empty=True,
                             )
             else:
                 selected_document_ids = [row.id for row in _score_documents(query, documents)[:5]]
@@ -873,7 +943,8 @@ class KnowledgeService:
                 cached_bucket_ids = [
                     item for item in (self._bucket_cache_ids or []) if item in allowed_bucket_ids
                 ][: request.max_buckets]
-                if self._bucket_cache_ids is not None and not cached_bucket_ids:
+                if self._bucket_cache_ids and not cached_bucket_ids:
+                    # 非空决策被当前候选集过滤空 → 真失效；负缓存（[]）不走这里
                     route_trace.append(
                         {
                             "phase": "route_cache_stale",
@@ -889,6 +960,17 @@ class KnowledgeService:
                             "phase": "bucket_route_cache_hit",
                             "message": "复用缓存的内部索引路由决策（跳过模型路由）",
                             "selected_count": len(selected_ids),
+                        }
+                    )
+                elif self._bucket_cache_ids == []:
+                    # 负缓存：模型已判定「没有相关的内部索引」，跳过模型路由。
+                    # bucket_route 是知识检索里最贵的一跳（实测 1.7~3.5s），
+                    # 每次白问一遍代价最大。
+                    route_trace.append(
+                        {
+                            "phase": "bucket_route_cache_hit_empty",
+                            "message": "复用缓存的内部索引路由决策（判定无相关索引，跳过模型路由）",
+                            "selected_count": 0,
                         }
                     )
                 else:
@@ -973,12 +1055,14 @@ class KnowledgeService:
                             )
                         else:
                             selected_ids = llm_bucket_ids
-                            # 内部索引决策独立写回（bucket_route 才是耗时大头）
+                            # 内部索引决策独立写回（bucket_route 才是耗时大头）；
+                            # 空结果同样进负缓存，避免每次重复一次昂贵的模型路由
                             _cache_route_decision(
-                                self._bucket_cache_slot,
+                                (self._bucket_cache_slot_stable, self._bucket_cache_slot),
                                 selected_ids,
                                 "bucket",
                                 route_trace,
+                                allow_empty=True,
                             )
             else:
                 selected_ids = [

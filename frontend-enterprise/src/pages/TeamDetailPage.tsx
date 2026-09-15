@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Crown, Download, Eye, FileJson, LoaderCircle, MessageCircle } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import {
   Badge,
   Button,
@@ -214,6 +215,9 @@ export default function TeamDetailPage({
   const [teamLog, setTeamLog] = useState<TeamLogPayload | null>(null);
   const [loadingTeamLog, setLoadingTeamLog] = useState(false);
   const [promotingEntryId, setPromotingEntryId] = useState<string | null>(null);
+  // 归档是破坏性动作，走统一 ConfirmDialog；原生 window.confirm 与整体设计语言不符
+  const [archiveTarget, setArchiveTarget] = useState<TeamBlackboardEntryRead | null>(null);
+  const [archivingEntry, setArchivingEntry] = useState(false);
   const openedTaskParamRef = useRef<string | null>(null);
   const memberScrollRef = useRef<HTMLDivElement | null>(null);
   const [memberScrollEdges, setMemberScrollEdges] = useState({
@@ -551,16 +555,21 @@ export default function TeamDetailPage({
     }
   }
 
-  async function archiveBoardEntry(entry: TeamBlackboardEntryRead) {
-    if (!window.confirm('确认归档该黑板条目？归档后不再展示。')) return;
+  async function confirmArchiveBoardEntry() {
+    const entry = archiveTarget;
+    if (!entry || archivingEntry) return;
+    setArchivingEntry(true);
     try {
       await api.post(`/api/enterprise/teams/${teamId}/blackboard/${entry.id}/archive`, {
         tenant_id: TENANT_ID,
       });
       notify.success('黑板条目已归档');
+      setArchiveTarget(null);
       await loadBoard();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '归档黑板条目失败');
+    } finally {
+      setArchivingEntry(false);
     }
   }
 
@@ -1113,7 +1122,7 @@ export default function TeamDetailPage({
                     </button>
                     <button
                       type="button"
-                      onClick={() => void archiveBoardEntry(entry)}
+                      onClick={() => setArchiveTarget(entry)}
                       className="rounded-[8px] px-[8px] py-[4px] text-[12px] text-[#858b9c] transition-colors hover:bg-[#fce7e7] hover:text-[#f5483b]"
                     >
                       归档
@@ -1561,6 +1570,18 @@ export default function TeamDetailPage({
           </div>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(archiveTarget)}
+        onOpenChange={(open) => {
+          if (!open) setArchiveTarget(null);
+        }}
+        loading={archivingEntry}
+        title="归档该黑板条目？"
+        description="归档后不再展示，历史记录仍会保留。"
+        confirmText="归档"
+        onConfirm={() => void confirmArchiveBoardEntry()}
+      />
     </div>
   );
 }

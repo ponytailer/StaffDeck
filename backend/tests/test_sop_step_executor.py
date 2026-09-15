@@ -1588,6 +1588,202 @@ def test_harness_agent_passes_edge_condition_specs_to_executor() -> None:
     assert result.next_step_id == "n9"
 
 
+# ---------------------------------------------------------------------------
+# A2UI（MVP）：缺槽询问附带的表单描述 + 表单提交的确定性写槽
+# ---------------------------------------------------------------------------
+
+
+def test_await_user_action_carries_slot_form() -> None:
+    """缺槽询问除文案外还要带一份表单描述（前端渲染成控件）。"""
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(required_slots=["device_model", "urgency"]),
+    )
+    assert len(actions) == 1
+    form = actions[0]["ui_form"]
+    assert form is not None
+    assert form["kind"] == "slot_form"
+    assert form["step_id"] == "n2"
+    assert [field["name"] for field in form["fields"]] == ["device_model", "urgency"]
+    assert form["fields"][0]["label"] == "设备型号"
+    # 文案仍然保留：非 UI 渠道（企微/微信）只收文本
+    assert "设备型号" in actions[0]["reply_fragment"]
+
+
+def test_no_slot_form_when_nothing_missing() -> None:
+    """无缺槽时不该出现表单（纯流转直通是零 LLM 的，别塞多余载荷）。"""
+
+    actions = plan_sop_prefill_actions(_sop_requirement(required_slots=[]))
+    assert actions[0]["status"] == "completed"
+    assert actions[0].get("ui_form") is None
+
+
+def test_slot_submission_completes_slots_without_llm(monkeypatch) -> None:
+    """表单提交 → 直接写槽推进，**不调用**槽位抽取 LLM。"""
+
+    import app.core.sop_step_executor as executor_module
+
+    calls: list[Any] = []
+
+    def _spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(args)
+        raise AssertionError("表单提交路径不应该调用槽位抽取 LLM")
+
+    monkeypatch.setattr(executor_module, "_extract_slots_llm", _spy)
+
+    events = _events()
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_slots=["employee_id", "system"],
+            expected_user_info=["employee_id", "system"],
+        ),
+        slot_extraction_model="fake-model",
+        slot_submission={"employee_id": " 3012 ", "system": "OA系统"},
+        trace_sink=lambda t, p: events.append((t, p)),
+    )
+
+    assert calls == []
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["status"] == "completed"
+    assert action["next_step_id"] == "n3"
+    assert action["slot_updates"] == {"employee_id": "3012", "system": "OA系统"}
+    scenes = [p["scene"] for t, p in events if t == TRACE_EVENT]
+    assert scenes == ["passthrough_transition_after_extraction"]
+
+
+def test_slot_submission_partial_asks_only_missing(monkeypatch) -> None:
+    """表单只填了一部分：只问缺的，已提交的值随 slot_updates 落库。"""
+
+    import app.core.sop_step_executor as executor_module
+
+    monkeypatch.setattr(
+        executor_module,
+        "_extract_slots_llm",
+        lambda *args, **kwargs: pytest.fail("表单提交路径不应调用抽取 LLM"),
+    )
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_slots=["employee_id", "system"],
+            expected_user_info=["employee_id", "system"],
+        ),
+        slot_extraction_model="fake-model",
+        slot_submission={"employee_id": "3012"},
+    )
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["status"] == "awaiting_user"
+    assert action["slot_updates"] == {"employee_id": "3012"}
+    assert "目标系统" in action["reply_fragment"]
+    assert "员工工号" not in action["reply_fragment"]
+    # 补问缺的那个字段时还要继续给表单，否则用户只能退回打字
+    assert [field["name"] for field in action["ui_form"]["fields"]] == ["system"]
+
+
+def test_slot_submission_drops_undeclared_and_blank_fields(monkeypatch) -> None:
+    """不在本节点声明里的键、以及空值：一律不算「已提供」。"""
+
+    import app.core.sop_step_executor as executor_module
+
+    monkeypatch.setattr(
+        executor_module,
+        "_extract_slots_llm",
+        lambda *args, **kwargs: pytest.fail("表单提交路径不应调用抽取 LLM"),
+    )
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_slots=["employee_id", "system"],
+            expected_user_info=["employee_id", "system"],
+        ),
+        slot_extraction_model="fake-model",
+        slot_submission={
+            "employee_id": "3012",
+            "system": "   ",
+            "rogue_field": "注入",
+        },
+    )
+    action = actions[0]
+    assert action["status"] == "awaiting_user"
+    assert action["slot_updates"] == {"employee_id": "3012"}
+    assert "rogue_field" not in action["slot_updates"]
+
+
+def test_slot_submission_normalizes_key_case_and_separators(monkeypatch) -> None:
+    """前端把字段名写成 camelCase / 连字符也要能对上声明字段。"""
+
+    import app.core.sop_step_executor as executor_module
+
+    monkeypatch.setattr(
+        executor_module,
+        "_extract_slots_llm",
+        lambda *args, **kwargs: pytest.fail("表单提交路径不应调用抽取 LLM"),
+    )
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_slots=["employee_id", "device_model"],
+            expected_user_info=["employee_id", "device_model"],
+        ),
+        slot_extraction_model="fake-model",
+        slot_submission={"employeeId": "3012", "Device-Model": "X1"},
+    )
+    assert actions[0]["status"] == "completed"
+    assert actions[0]["slot_updates"] == {"employee_id": "3012", "device_model": "X1"}
+
+
+def test_slot_submission_without_model_still_works() -> None:
+    """没有轻量模型（未配置意图模型）时表单路径照样能跑——它本来就不需要 LLM。"""
+
+    actions = plan_sop_prefill_actions(
+        _sop_requirement(
+            required_slots=["employee_id"],
+            expected_user_info=["employee_id"],
+        ),
+        slot_extraction_model=None,
+        slot_submission={"employee_id": "3012"},
+    )
+    assert actions[0]["status"] == "completed"
+    assert actions[0]["slot_updates"] == {"employee_id": "3012"}
+
+
+def test_harness_agent_passes_slot_submission_to_executor() -> None:
+    """集成：表单提交必须被透传到执行器（否则等于白提交，还会回落 LLM 抽取）。"""
+
+    captured: list[Any] = []
+    import app.core.harness_agent as harness_module
+    from app.db.models import ModelConfig
+
+    original = harness_module.plan_sop_prefill_actions
+
+    def _spy(requirement, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append(kwargs.get("slot_submission"))
+        return original(requirement, **kwargs)
+
+    harness_module.plan_sop_prefill_actions = _spy  # type: ignore[assignment]
+    try:
+        result = HarnessTaskAgent().run(
+            _sop_requirement(
+                required_slots=["device_model"],
+                expected_user_info=["device_model"],
+            ),
+            ModelConfig(
+                tenant_id="t", name="m", provider="openai", base_url="http://x/v1",
+                api_key_encrypted="x", model_name="gpt", purpose="chat",
+            ),
+            lambda name, args: {"success": True, "data": {}},
+            max_actions=1,
+            slot_submission={"device_model": "X1"},
+        )
+    finally:
+        harness_module.plan_sop_prefill_actions = original  # type: ignore[assignment]
+
+    assert captured == [{"device_model": "X1"}]
+    assert result.status == "completed"
+    assert result.next_step_id == "n3"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])
 

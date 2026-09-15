@@ -7,6 +7,7 @@ import type { ChatMessage } from '@/types';
 import {
   STREAM_TERMINAL_EVENTS,
   MarkdownMessage,
+  a2uiFormForMessage,
   canRateMessage,
   formatTraceDuration,
   harnessEventTraceLine,
@@ -16,6 +17,7 @@ import {
   renderInlineMarkdown,
   scheduledDraftForMessage,
   shouldDeferPersistedEventToLiveStream,
+  slotSubmissionText,
   stripTrailingCitationSummary,
 } from './chatHelpers';
 
@@ -491,5 +493,46 @@ describe('chat history consumer contract', () => {
       detail: '状态 awaiting_user · 步骤 collect_user_name · 执行 1 个动作',
       state: 'running',
     });
+  });
+});
+
+describe('a2uiFormForMessage', () => {
+  const payload = {
+    kind: 'slot_form',
+    skill_id: 'skill_income_cert',
+    step_id: 'collect_info',
+    step_name: '收集证明需求信息',
+    title: '请补充以下信息',
+    submit_label: '提交',
+    fields: [
+      { name: 'employee_id', label: '员工工号', type: 'text', required: true, placeholder: '请输入员工工号' },
+      { name: 'include_income', label: '是否含收入项', type: 'boolean', required: true, options: [{ value: true, label: '是' }, { value: false, label: '否' }] },
+    ],
+  };
+
+  it('解析后端下发的表单描述', () => {
+    const form = a2uiFormForMessage(message({ metadata: { a2ui: payload } }));
+    expect(form?.kind).toBe('slot_form');
+    expect(form?.step_name).toBe('收集证明需求信息');
+    expect(form?.fields.map((field) => field.name)).toEqual(['employee_id', 'include_income']);
+    expect(form?.fields[1].type).toBe('boolean');
+  });
+
+  it('没有表单、kind 不匹配或字段非法时返回 null', () => {
+    expect(a2uiFormForMessage(message())).toBeNull();
+    expect(a2uiFormForMessage(message({ metadata: { a2ui: { kind: 'other', fields: [] } } }))).toBeNull();
+    expect(a2uiFormForMessage(message({ metadata: { a2ui: { kind: 'slot_form', fields: [] } } }))).toBeNull();
+    // 未知控件类型退化成文本框，而不是整表单丢弃
+    const form = a2uiFormForMessage(message({
+      metadata: { a2ui: { kind: 'slot_form', fields: [{ name: 'x', label: 'X', type: 'unknown-widget' }] } },
+    }));
+    expect(form?.fields[0].type).toBe('text');
+  });
+
+  it('表单取值拼成一行人可读文本（提交后仍落一条用户消息）', () => {
+    const form = a2uiFormForMessage(message({ metadata: { a2ui: payload } }));
+    expect(form).not.toBeNull();
+    const text = slotSubmissionText(form!, { employee_id: '3012', include_income: false });
+    expect(text).toBe('员工工号：3012；是否含收入项：否');
   });
 });

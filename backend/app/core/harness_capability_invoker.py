@@ -92,6 +92,7 @@ class HarnessCapabilityInvoker:
         active_step_id: str | None,
         agent_id: str | None,
         run_id: str | None = None,
+        user_message: str | None = None,
         initially_activated_names: set[str] | None = None,
         is_cancelled: Any | None = None,
         ensure_execution_lease: Any | None = None,
@@ -110,6 +111,9 @@ class HarnessCapabilityInvoker:
         )
         self.active_step_id = active_step_id
         self.agent_id = agent_id
+        # 本轮用户原话：仅作知识检索缓存位点的稳定维度。模型填的 query 每轮改写
+        # 措辞都可能不同，用它做缓存 key 会导致「同一个问题问两次」也不命中。
+        self.user_message = str(user_message or "").strip()
         self.is_cancelled = is_cancelled
         self.ensure_execution_lease = ensure_execution_lease
         self.trace_sink = trace_sink
@@ -976,6 +980,7 @@ class HarnessCapabilityInvoker:
                 mode="chat",
                 knowledge_base_ids=selected,
                 knowledge_base_version_ids=selected_version_ids,
+                cache_query=self.user_message or None,
                 max_chunks=max(
                     1, min(int(arguments.get("max_chunks") or 8), 12)
                 ),

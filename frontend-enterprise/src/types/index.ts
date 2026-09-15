@@ -693,6 +693,8 @@ export type ChatMessage = {
     knowledge_citations?: KnowledgeCitation[];
     knowledge_query?: Record<string, unknown>;
     harness_artifacts?: HarnessArtifact[];
+    /** A2UI：该用户消息来自表单提交时，随消息落库的结构化取值。 */
+    slot_submission?: Record<string, unknown>;
     [key: string]: unknown;
   };
   created_at: string;

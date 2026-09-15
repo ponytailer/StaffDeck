@@ -5,7 +5,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import is_dataclass, replace
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -59,6 +59,8 @@ class HarnessAction(BaseModel):
     next_step_id: str | None = None
     task_summary: str = ""
     structured_result: Any | None = None
+    # A2UI：缺槽询问的表单描述（确定性执行器产出），原样带到消息 metadata。
+    ui_form: dict[str, Any] | None = None
 
 
 class HarnessTaskAgent:
@@ -79,6 +81,7 @@ class HarnessTaskAgent:
         checkpoint: dict[str, Any] | None = None,
         lightweight_model_config: ModelConfig | None = None,
         edge_condition_specs: dict[str, Any] | None = None,
+        slot_submission: Mapping[str, Any] | None = None,
     ) -> TaskExecutionResult:
         max_actions = max(1, min(int(max_actions), 100))
         checkpoint = dict(checkpoint or {})
@@ -141,6 +144,7 @@ class HarnessTaskAgent:
             trace_sink=trace_sink,
             slot_extraction_model=lightweight_model_config or model_config,
             edge_condition_specs=edge_condition_specs,
+            slot_submission=slot_submission,
         )
         if prefill_actions:
             pending_actions.extend(
@@ -829,6 +833,7 @@ def _finish_result(
         task_summary=action.task_summary.strip(),
         action_count=action_count,
         structured_result=action.structured_result,
+        ui_form=action.ui_form,
     )
 
 

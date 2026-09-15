@@ -42,6 +42,7 @@ from typing import Any, Mapping
 
 from app.core.graph_rules import GraphRules
 from app.core.slot_display import join_slot_labels, slot_label
+from app.core.slot_form import build_slot_form
 from app.skills.edge_condition_spec import (
     EdgeConditionSpec,
     EdgeEvalContext,
@@ -54,6 +55,11 @@ from app.skills.edge_condition_spec import (
 _UNCONDITIONAL_EDGE_CONDITIONS = {"", "default", "else"}
 
 _QUERY_MAX_CHARS = 200
+
+# 槽位字段名归一（表单提交的键 → 声明字段）：``Employee-ID`` / ``employeeId``
+# 都要能对上 ``employee_id``。
+_FIELD_SPLIT = re.compile(r"[^0-9a-z]+")
+_CAMEL_SPLIT = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 # trace 事件类型，供 diagnose 脚本统计 P1 生效率
 TRACE_EVENT = "sop_prefill_planned"
@@ -89,6 +95,7 @@ def plan_sop_prefill_actions(
     trace_sink: Any = None,
     slot_extraction_model: Any = None,
     edge_condition_specs: Mapping[str, Any] | None = None,
+    slot_submission: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """为 sop TaskRequirement 产出确定性动作序列；不可判定时返回空列表。
 
@@ -96,6 +103,10 @@ def plan_sop_prefill_actions(
     互斥，按 C → B → A 优先级取第一个命中的。场景 A 会用
     slot_extraction_model（轻量意图模型优先）做一次槽位抽取——用户首条
     消息往往已带齐信息，避免「已提供还要求补全」的错误询问。
+
+    slot_submission：用户在**表单**（A2UI）里提交的结构化取值。带值时场景 A
+    直接用它当抽取结果，**跳过那一轮槽位抽取 LLM**；字段白名单与 LLM 抽取
+    一致（``expected_user_info or required_slots``），不在白名单里的键丢弃。
 
     resumed_awaiting_user：断点恢复到同一步骤且上次终点是本执行器发出的
     awaiting_user（等槽位）。此时用户回来补信息正是槽位抽取的主场景，
@@ -235,20 +246,31 @@ def plan_sop_prefill_actions(
                 for item in (step.get("expected_user_info") or [])
                 if str(item).strip()
             ]
-            extracted = _extract_slots_llm(
-                expected_fields or required_slots,
-                str(getattr(requirement, "source_user_message", "") or ""),
-                known_slots,
-                slot_extraction_model,
-                trace_sink,
-                step_instruction=str(step.get("instruction") or ""),
+            allowed_extract_fields = set(expected_fields or required_slots)
+            # A2UI：用户直接在表单里提交了结构化值 → 不再让模型去猜文本。
+            # 这是整条链路里唯一一处「确定性拿到槽位」的机会，抽取值口径与
+            # LLM 抽取完全一致（同一份字段白名单 + 同样的非空过滤）。
+            submitted = _submission_slots(
+                slot_submission,
+                allowed_fields=allowed_extract_fields,
             )
-            extracted = {
-                str(key): value
-                for key, value in extracted.items()
-                if str(key) in set(expected_fields or required_slots)
-                and value not in (None, "", [], {})
-            }
+            if submitted:
+                extracted = submitted
+            else:
+                extracted = _extract_slots_llm(
+                    expected_fields or required_slots,
+                    str(getattr(requirement, "source_user_message", "") or ""),
+                    known_slots,
+                    slot_extraction_model,
+                    trace_sink,
+                    step_instruction=str(step.get("instruction") or ""),
+                )
+                extracted = {
+                    str(key): value
+                    for key, value in extracted.items()
+                    if str(key) in allowed_extract_fields
+                    and value not in (None, "", [], {})
+                }
             missing = [slot for slot in required_slots if slot not in extracted]
             if not missing:
                 # 抽齐：槽位缺口解除 → 用**抽出后的完整槽位**重算条件边，
@@ -273,7 +295,15 @@ def plan_sop_prefill_actions(
                     ),
                 )
             # 部分/未抽到：问缺的，已抽到的值随 slot_updates 落库防重复问
-            action = _await_user_action(step, missing, labels=slot_labels)
+            action = _await_user_action(
+                step,
+                missing,
+                labels=slot_labels,
+                edge_conditions=edge_conditions,
+                skill_id=str(
+                    (sop_context.get("skill_id") if isinstance(sop_context, dict) else "") or ""
+                ),
+            )
             action["slot_updates"] = extracted
             return _emit(
                 trace_sink,
@@ -922,11 +952,50 @@ def _plan_handoff_passthrough(
     )
 
 
+def _submission_slots(
+    submission: Mapping[str, Any] | None,
+    *,
+    allowed_fields: set[str],
+) -> dict[str, Any]:
+    """表单提交值 → 槽位字典。
+
+    保守口径与 LLM 抽取一致：只收**本节点声明过**的字段，空值不算「已提供」
+    （留空 = 没回答，仍要继续问）。字段名做一次大小写/连字符归一匹配，容忍
+    前端把 ``employee_id`` 写成 ``employeeId``。
+    """
+
+    if not isinstance(submission, Mapping) or not submission:
+        return {}
+    if not allowed_fields:
+        return {}
+    lookup = {_field_key(item): item for item in allowed_fields}
+    result: dict[str, Any] = {}
+    for raw_key, raw_value in submission.items():
+        key = lookup.get(_field_key(raw_key))
+        if not key:
+            continue
+        value: Any = raw_value
+        if isinstance(value, str):
+            value = value.strip()
+        if value in (None, "", [], {}):
+            continue
+        result[key] = value
+    return result
+
+
+def _field_key(name: Any) -> str:
+    text = _CAMEL_SPLIT.sub("_", str(name or ""))
+    tokens = [token for token in _FIELD_SPLIT.split(text.lower()) if token]
+    return "_".join(tokens)
+
+
 def _await_user_action(
     step: dict[str, Any],
     required_slots: list[str],
     *,
     labels: Mapping[str, Any] | None = None,
+    edge_conditions: list[_EdgeCondition] | None = None,
+    skill_id: str = "",
 ) -> dict[str, Any]:
     step_name = str(step.get("name") or "").strip()
     # 只问调用方传入的缺失字段（expected_user_info 里可能有些字段已满足，
@@ -936,12 +1005,24 @@ def _await_user_action(
     # 字段名转中文显示名：这轮是零 LLM 模板回复，模型没机会润色，
     # 直接把 employee_id 抛给用户等于没说话。
     reply = f"为了{step_part}，请提供：{join_slot_labels(missing, labels)}。"
+    # A2UI（MVP）：同一批缺失字段再编译一份**表单描述**随消息下发，前端渲染成
+    # 原生控件。用户提交的是结构化 JSON → 下一轮直接写槽，省掉 _extract_slots_llm。
+    # 文案仍然保留：企微/微信等非 UI 渠道只能收文本。
+    ui_form = build_slot_form(
+        missing,
+        labels=labels,
+        edge_conditions=edge_conditions,
+        step_name=step_name,
+        step_id=str(step.get("node_id") or step.get("step_id") or "").strip(),
+        skill_id=skill_id,
+    )
     return {
         "action": "finish",
         "status": "awaiting_user",
         "reply_fragment": reply,
         "task_summary": "SOP 步骤缺少必填信息，确定性发起用户询问。",
         "slot_updates": {},
+        "ui_form": ui_form,
     }
 
 

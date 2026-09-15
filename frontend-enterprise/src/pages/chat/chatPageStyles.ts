@@ -352,3 +352,31 @@ export const CHAT_CITATION_DETAIL_MERGE_META_CLASS =
 
 export const CHAT_DEBUG_PANEL_CLASS =
   'mx-auto mt-[16px] max-w-[820px] overflow-auto rounded-[10px] bg-[#1e1e1e] p-[12px] text-[12px] text-[#d4d4d4]';
+
+// ---------------------------------------------------------------------------
+// A2UI slot form card（缺槽询问的表单卡片）
+// ---------------------------------------------------------------------------
+export const CHAT_SLOT_FORM_CARD_CLASS =
+  'mt-[12px] grid gap-[12px] rounded-[14px] border-[0.5px] border-[#e3e7f1] bg-white p-[14px]';
+export const CHAT_SLOT_FORM_HEADER_CLASS = 'flex items-center gap-[10px]';
+export const CHAT_SLOT_FORM_ICON_CLASS =
+  'inline-grid size-[32px] shrink-0 place-items-center rounded-[10px] bg-[#eef4ff] text-[#1a71ff]';
+export const CHAT_SLOT_FORM_HEADING_CLASS = 'grid min-w-0 gap-[2px]';
+export const CHAT_SLOT_FORM_TITLE_CLASS = 'text-[14px] font-semibold text-[#18181a]';
+export const CHAT_SLOT_FORM_KICKER_CLASS = 'truncate text-[11px] text-[#858b9c]';
+export const CHAT_SLOT_FORM_GRID_CLASS = 'grid gap-[10px] max-[520px]:gap-[12px]';
+export const CHAT_SLOT_FORM_FIELD_CLASS = 'grid gap-[6px]';
+export const CHAT_SLOT_FORM_LABEL_CLASS =
+  'inline-flex items-center gap-[4px] text-[12px] font-medium text-[#464c5e]';
+export const CHAT_SLOT_FORM_REQUIRED_CLASS = 'text-[#e5484d]';
+export const CHAT_SLOT_FORM_CHOICE_ROW_CLASS = 'flex items-center gap-[8px]';
+export const CHAT_SLOT_FORM_CHOICE_CLASS =
+  'h-[34px] min-w-[72px] rounded-[10px] border-[0.5px] border-[#dfe3ee] bg-white px-[14px] text-[13px] text-[#464c5e] transition-colors hover:border-[#1a71ff] hover:text-[#1a71ff]';
+export const CHAT_SLOT_FORM_CHOICE_ACTIVE_CLASS =
+  'border-[#1a71ff] bg-[#eef4ff] font-medium text-[#1a71ff]';
+export const CHAT_SLOT_FORM_ERROR_CLASS = 'text-[12px] text-[#e5484d]';
+export const CHAT_SLOT_FORM_FOOTER_CLASS =
+  'flex items-center justify-between gap-[12px] max-[520px]:flex-col max-[520px]:items-stretch';
+export const CHAT_SLOT_FORM_HINT_CLASS = 'text-[12px] text-[#858b9c]';
+export const CHAT_SLOT_FORM_SUBMITTED_CLASS =
+  'flex items-center gap-[6px] text-[13px] font-medium text-[#018434]';

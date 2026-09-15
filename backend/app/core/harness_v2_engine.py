@@ -926,6 +926,19 @@ class HarnessV2Engine:
             assistant_metadata["knowledge_citations"] = citations
         if artifacts:
             assistant_metadata["harness_artifacts"] = artifacts
+        # A2UI（MVP）：缺槽询问附带的表单描述。取最后一条带表单的结果——同一轮
+        # 里后续帧若已把信息问齐，前面那条表单就不该再展示。文案（reply）照旧
+        # 保留，非 UI 渠道只吃文本。
+        ui_form = next(
+            (
+                item.ui_form
+                for item in reversed(execution_results)
+                if getattr(item, "ui_form", None)
+            ),
+            None,
+        )
+        if ui_form:
+            assistant_metadata["a2ui"] = ui_form
         if self.slash_command:
             assistant_metadata["slash_command"] = self.slash_command.model_dump(
                 mode="json"
@@ -1306,6 +1319,7 @@ class HarnessV2Engine:
                 active_step_id=frame.target_step_id,
                 agent_id=session.agent_id,
                 run_id=run.id,
+                user_message=requirement.source_user_message,
                 initially_activated_names=(
                     requirement.capability_manifest.allowed_names()
                 ),
@@ -1330,6 +1344,13 @@ class HarnessV2Engine:
                 checkpoint=loop_checkpoint,
                 lightweight_model_config=lightweight_model_config,
                 edge_condition_specs=edge_condition_specs,
+                # A2UI：只有「本帧就是当前用户消息的落点」时才认表单提交，
+                # 否则同一轮里被唤醒的其它帧会共用一份不属于它的槽位值。
+                slot_submission=(
+                    request.slot_submission
+                    if row.source_turn_id == self.user_message_id
+                    else None
+                ),
             )
             deferred_continuation = False
             if frame.kind == "sop":

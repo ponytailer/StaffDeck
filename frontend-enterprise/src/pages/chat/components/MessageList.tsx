@@ -5,6 +5,7 @@ import {
 } from '../chatPageStyles';
 import {
   CHAT_TRACE_RECOVERY_WINDOW_MS,
+  a2uiFormForMessage,
   createdScheduledTaskForMessage,
   harnessWorkspaceArtifacts,
   isScheduledTaskPrompt,
@@ -147,6 +148,16 @@ export default function MessageList({
           const harnessArtifacts = item.role === 'assistant'
             ? harnessWorkspaceArtifacts(item)
             : [];
+          // A2UI 表单只挂最新一条助手消息：历史轮次的表单早已被提交过，
+          // 重新渲染出来只会诱导用户重复提交（后端也认不出旧步骤）。
+          // 另外，一旦后续出现了带 ``slot_submission`` 的用户消息，说明这张
+          // 表单已经提交过——刷新页面后不能再渲染出可编辑态。
+          const laterMessages = renderMessages.slice(itemIndex + 1);
+          const slotForm = item.role === 'assistant'
+            && !laterMessages.some((later) => later.role === 'assistant')
+            && !laterMessages.some((later) => Boolean(later.metadata?.slot_submission))
+            ? a2uiFormForMessage(item)
+            : null;
           const statusOnly = stoppedStatusOnly;
           const showInlineTrace = Boolean(summaryForRender && !stoppedStatusOnly);
 
@@ -160,6 +171,7 @@ export default function MessageList({
             && citations.length === 0
             && attachments.length === 0
             && harnessArtifacts.length === 0
+            && !slotForm
           ) {
             return null;
           }
@@ -178,6 +190,7 @@ export default function MessageList({
             attachments,
             harnessArtifacts,
             statusOnly,
+            slotForm,
             traceTiming: item.role === 'assistant' && trace
               ? {
                 startedAt: trace.startedAt,

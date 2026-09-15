@@ -38,7 +38,7 @@ from app.knowledge.route_cache import (
     store_route_decision,
 )
 from app.knowledge.schema import KnowledgeSearchRequest
-from app.knowledge.service import KnowledgeService
+from app.knowledge.service import KnowledgeService, _stable_cache_query
 
 
 class _FakeRedis:
@@ -507,3 +507,113 @@ def test_route_cache_search_works_without_redis(monkeypatch) -> None:
     assert "route_cache_hit" not in phases
     assert "route_cache_stored" not in phases
     assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0"]
+
+# ---------------------------------------------------------------------------
+# 稳定维度（用户原话）：同问法换措辞也应命中
+# ---------------------------------------------------------------------------
+
+
+def test_stable_cache_query_helper() -> None:
+    """归一后相同不留第二个位点；无原话/纯空白不参与。"""
+
+    assert _stable_cache_query("员工手册 考勤", "考勤怎么算") == "考勤怎么算"
+    assert _stable_cache_query("员工手册", "员工手册？") is None
+    assert _stable_cache_query("员工手册", "   ") is None
+    assert _stable_cache_query("员工手册", None) is None
+
+
+def test_route_cache_hits_across_query_rewrites(fake_redis, monkeypatch) -> None:
+    """模型每轮改写的 query 不同、用户原话相同 → 仍应命中缓存。
+
+    这是「同一个问题问第二遍还要 16s」的根因回归：缓存 key 若只绑
+    模型改写的 query，措辞一变就全 miss。
+    """
+
+    calls = {"doc": 0, "bucket": 0}
+
+    def fake_docs(*_args, **_kwargs):
+        calls["doc"] += 1
+        return ["kdoc_0"]
+
+    def fake_buckets(*_args, **_kwargs):
+        calls["bucket"] += 1
+        return ["kbucket_0"]
+
+    monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", fake_docs)
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", fake_buckets)
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        first = _run_search(
+            db, query="员工手册 考勤 规则", cache_query="考勤怎么算"
+        )
+        second = _run_search(
+            db, query="考勤规定一览", cache_query="考勤怎么算"
+        )
+
+    assert calls == {"doc": 1, "bucket": 1}, "第二轮换了措辞但原话相同，不该再调模型路由"
+    assert "route_cache_stored" in _phases(first)
+    second_phases = _phases(second)
+    assert "document_route_cache_hit" in second_phases
+    assert "bucket_route_cache_hit" in second_phases
+
+
+def test_stable_and_query_slots_both_written(fake_redis, monkeypatch) -> None:
+    """缓存写两份位点（原话 + query），两份都能独立命中。"""
+
+    monkeypatch.setattr(
+        KnowledgeService, "_select_documents_with_llm", lambda *a, **k: ["kdoc_0"]
+    )
+    monkeypatch.setattr(
+        KnowledgeService, "_select_buckets_with_llm", lambda *a, **k: ["kbucket_0"]
+    )
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        _run_search(db, query="员工手册 考勤 规则", cache_query="考勤怎么算")
+
+    assert get_route_decision(_doc_slot("员工手册 考勤 规则")) == ["kdoc_0"]
+    assert get_route_decision(_doc_slot("考勤怎么算")) == ["kdoc_0"]
+
+
+def test_negative_route_decision_is_cached(fake_redis, monkeypatch) -> None:
+    """模型明确判定「没有相关的内部索引」也要缓存，否则每次都白问一遍。"""
+
+    calls = {"doc": 0, "bucket": 0}
+
+    def fake_docs(*_args, **_kwargs):
+        calls["doc"] += 1
+        return ["kdoc_0"]
+
+    def empty_buckets(*_args, **_kwargs):
+        calls["bucket"] += 1
+        return []
+
+    monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", fake_docs)
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", empty_buckets)
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        first = _run_search(db, query="员工手册 考勤 规则", cache_query="考勤怎么算")
+        second = _run_search(db, query="考勤规定一览", cache_query="考勤怎么算")
+
+    assert "route_cache_stored" in _phases(first)
+    assert calls == {"doc": 1, "bucket": 1}, "负决策也应命中缓存，不该重复问模型"
+    second_phases = _phases(second)
+    assert "bucket_route_cache_hit_empty" in second_phases
+    assert "route_cache_stale" not in second_phases
+
+
+def test_negative_decision_not_written_on_llm_failure(fake_redis, monkeypatch) -> None:
+    """模型调用失败（None）不写负缓存：失败≠「没有相关候选」。"""
+
+    monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", lambda *a, **k: ["kdoc_0"])
+    monkeypatch.setattr(KnowledgeService, "_select_buckets_with_llm", lambda *a, **k: None)
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db)
+        _run_search(db, query="员工手册 考勤 规则", cache_query="考勤怎么算")
+
+    # 两个位点都不该写入「空桶决策」
+    assert get_route_decision(_bucket_slot("考勤怎么算")) is None
+    assert get_route_decision(_bucket_slot("员工手册 考勤 规则")) is None

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/api/client';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 
 import type { MCPAppViewDescriptor } from '../chatTypes';
@@ -42,6 +43,28 @@ export default function MCPAppView({ descriptor }: { descriptor: MCPAppViewDescr
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [resource, setResource] = useState<AppResource | null>(null);
   const [error, setError] = useState('');
+  // 副作用工具确认：iframe 侧是 RPC 调用，必须把确认结果以 Promise 回给调用链，
+  // 所以这里自己拿着 resolver，而不是用 window.confirm 这种同步阻塞弹窗。
+  const [pendingToolConfirm, setPendingToolConfirm] = useState<string | null>(null);
+  const toolConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+
+  const requestToolConfirm = useCallback(
+    (toolName: string) =>
+      new Promise<boolean>((resolve) => {
+        // 上一轮若还挂着未决的确认，先按「取消」收尾，避免 resolver 泄漏
+        toolConfirmResolverRef.current?.(false);
+        toolConfirmResolverRef.current = resolve;
+        setPendingToolConfirm(toolName);
+      }),
+    [],
+  );
+
+  const resolveToolConfirm = useCallback((confirmed: boolean) => {
+    const resolve = toolConfirmResolverRef.current;
+    toolConfirmResolverRef.current = null;
+    setPendingToolConfirm(null);
+    resolve?.(confirmed);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -105,7 +128,7 @@ export default function MCPAppView({ descriptor }: { descriptor: MCPAppViewDescr
           payload,
         );
         if (response.requires_confirmation) {
-          const confirmed = window.confirm(`MCP App 请求执行可能产生副作用的工具“${toolName}”，是否继续？`);
+          const confirmed = await requestToolConfirm(toolName);
           if (!confirmed) {
             postRpcError(request.id, -32001, '用户取消了工具调用。');
             return;
@@ -134,7 +157,7 @@ export default function MCPAppView({ descriptor }: { descriptor: MCPAppViewDescr
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [descriptor, resource]);
+  }, [descriptor, requestToolConfirm, resource]);
 
   const notifyInitialResult = () => {
     const params = {
@@ -171,6 +194,17 @@ export default function MCPAppView({ descriptor }: { descriptor: MCPAppViewDescr
         allow={(resource.meta.ui?.permissions || []).join('; ')}
         srcDoc={srcDoc}
         onLoad={notifyInitialResult}
+      />
+      <ConfirmDialog
+        open={pendingToolConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) resolveToolConfirm(false);
+        }}
+        title={`执行工具「${pendingToolConfirm ?? ''}」？`}
+        description="该 MCP App 请求执行可能产生副作用的工具，确认后将继续调用。"
+        confirmText="继续执行"
+        destructive={false}
+        onConfirm={() => resolveToolConfirm(true)}
       />
     </section>
   );

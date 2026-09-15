@@ -94,6 +94,9 @@ class TaskExecutionResult(BaseModel):
     action_count: int = 0
     error: dict[str, Any] | None = None
     structured_result: Any | None = None
+    # A2UI（MVP）：缺槽询问附带的**表单描述**，由 harness_v2_engine 放进助手
+    # 消息 metadata，前端渲染成原生控件。纯展示契约，不参与任何判定。
+    ui_form: dict[str, Any] | None = None
     loop_checkpoint: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 

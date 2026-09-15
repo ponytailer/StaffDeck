@@ -88,6 +88,54 @@ export type ComposerAttachment = ChatAttachmentRead & {
   uploadKey: string;
 };
 
+/**
+ * A2UI：后端在「需要用户补充信息」时随助手消息下发的**表单描述**。
+ * 用户提交的是结构化取值，后端直接写槽，不再让模型去解析一段自然语言。
+ */
+export type A2UIFieldType =
+  | 'text'
+  | 'number'
+  | 'date'
+  | 'time'
+  | 'datetime'
+  | 'boolean'
+  | 'select';
+
+export type A2UIFieldOption = {
+  value: string | number | boolean;
+  label: string;
+};
+
+export type A2UIField = {
+  name: string;
+  label: string;
+  type: A2UIFieldType;
+  required?: boolean;
+  placeholder?: string;
+  options?: A2UIFieldOption[];
+};
+
+export type A2UIForm = {
+  kind: 'slot_form';
+  skill_id?: string;
+  step_id?: string;
+  step_name?: string;
+  title?: string;
+  submit_label?: string;
+  fields: A2UIField[];
+};
+
+export const A2UI_FIELD_TYPES: ReadonlySet<string> = new Set([
+  'text',
+  'number',
+  'date',
+  'time',
+  'datetime',
+  'boolean',
+  'select',
+]);
+
+
 export type ComposerInteractionMode = 'normal' | 'scheduled_task';
 export type DraftScheduleType = 'once' | 'daily' | 'weekly' | 'monthly';
 

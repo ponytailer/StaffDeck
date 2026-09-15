@@ -54,12 +54,14 @@ import {
   formatTraceDuration,
 } from '../chatHelpers';
 import type { TraceLine } from '../chatTypes';
+import type { A2UIForm } from '../chatTypes';
 import type { UseChatSession } from '../useChatSession';
 import ExecutionRecord from './ExecutionRecord';
 import HarnessArtifactDownloads from './HarnessArtifactDownloads';
 import KnowledgeCitationList from './KnowledgeCitationList';
 import ScheduledDraftCard from './ScheduledDraftCard';
 import SlashCommandChip from './SlashCommandChip';
+import SlotFormCard from './SlotFormCard';
 import { slashCommandMessage } from '../slashCommands';
 
 export type TurnTraceTiming = {
@@ -83,6 +85,8 @@ export type MessageRender = {
   harnessArtifacts: HarnessWorkspaceArtifact[];
   statusOnly: boolean;
   traceTiming?: TurnTraceTiming;
+  /** A2UI：缺槽询问附带的表单（只有最新一条助手消息才挂，避免过期表单被重复提交）。 */
+  slotForm?: A2UIForm | null;
 };
 
 type MessageBubbleProps = {
@@ -154,6 +158,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     harnessArtifacts,
     statusOnly,
     traceTiming,
+    slotForm,
   } = render;
   const queuedMessage = item.role === 'user' && item.metadata?.queued === true;
   const sentSlashCommand = item.role === 'user'
@@ -291,6 +296,14 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
 
           {item.role === 'assistant' && (
             <KnowledgeCitationList citations={citations} onOpen={setActiveCitation} />
+          )}
+
+          {slotForm && (
+            <SlotFormCard
+              form={slotForm}
+              disabled={Boolean(teamProgress)}
+              onSubmit={(values) => chat.submitSlotForm(slotForm, values)}
+            />
           )}
 
           {scheduledDraft && (

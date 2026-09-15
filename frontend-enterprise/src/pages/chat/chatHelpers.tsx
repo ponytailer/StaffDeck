@@ -24,6 +24,10 @@ import {
   CHAT_MD_TABLE_SCROLL_CLASS,
 } from './chatPageStyles';
 import type {
+  A2UIField,
+  A2UIFieldOption,
+  A2UIFieldType,
+  A2UIForm,
   ComposerAttachment,
   CotTraceIconName,
   DraftScheduleType,
@@ -33,6 +37,7 @@ import type {
   TraceTool,
   TurnTrace,
 } from './chatTypes';
+import { A2UI_FIELD_TYPES } from './chatTypes';
 export {
   SELECTED_AGENT_STORAGE_KEY,
   SESSION_FILTER_STORAGE_PREFIX,
@@ -1839,6 +1844,67 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
   }
 
   return merged.sort((a, b) => citationLabelNumber(a, 0) - citationLabelNumber(b, 0));
+}
+
+/**
+ * 表单取值 → 人可读的一行文字。
+ *
+ * 表单提交仍然要往会话里落一条**用户消息**（历史回放、多渠道一致），但那条
+ * 消息不能把 JSON 直接甩给用户看。这里按字段顺序拼「标签：值」，结构化取值
+ * 另经 ``slot_submission`` 传给后端做确定性写槽。
+ */
+export function slotSubmissionText(
+  form: A2UIForm,
+  values: Record<string, unknown>,
+): string {
+  const parts: string[] = [];
+  for (const field of form.fields) {
+    const value = values[field.name];
+    if (value === undefined || value === null || value === '') continue;
+    const label = field.label || field.name;
+    if (typeof value === 'boolean') {
+      parts.push(`${label}：${value ? '是' : '否'}`);
+      continue;
+    }
+    parts.push(`${label}：${String(value)}`);
+  }
+  return parts.length > 0 ? parts.join('；') : '（已提交表单）';
+}
+
+export function a2uiFormForMessage(item: ChatMessage): A2UIForm | null {
+  const form = item.metadata?.a2ui;
+  if (!isPlainRecord(form) || form.kind !== 'slot_form') return null;
+  if (!Array.isArray(form.fields) || form.fields.length === 0) return null;
+  const fields: A2UIField[] = [];
+  for (const raw of form.fields) {
+    if (!isPlainRecord(raw)) return null;
+    if (typeof raw.name !== 'string' || typeof raw.label !== 'string') return null;
+    const type = typeof raw.type === 'string' && A2UI_FIELD_TYPES.has(raw.type)
+      ? (raw.type as A2UIFieldType)
+      : 'text';
+    const options = Array.isArray(raw.options)
+      ? raw.options
+        .filter((option) => isPlainRecord(option) && typeof option.label === 'string' && option.value !== undefined)
+        .map((option) => ({ value: option.value as A2UIFieldOption['value'], label: option.label as string }))
+      : [];
+    fields.push({
+      name: raw.name,
+      label: raw.label,
+      type,
+      required: raw.required !== false,
+      placeholder: typeof raw.placeholder === 'string' ? raw.placeholder : undefined,
+      options: options.length > 0 ? options : undefined,
+    });
+  }
+  return {
+    kind: 'slot_form',
+    skill_id: typeof form.skill_id === 'string' ? form.skill_id : undefined,
+    step_id: typeof form.step_id === 'string' ? form.step_id : undefined,
+    step_name: typeof form.step_name === 'string' ? form.step_name : undefined,
+    title: typeof form.title === 'string' ? form.title : undefined,
+    submit_label: typeof form.submit_label === 'string' ? form.submit_label : undefined,
+    fields,
+  };
 }
 
 export function scheduledDraftForMessage(item: ChatMessage): ScheduledTaskDraftRead | null {
