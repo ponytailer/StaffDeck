@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app import paths
+from app.config import get_settings
 from app.core.context_projection import (
     compact_awaiting_input,
     compact_conversation_context,
@@ -45,6 +46,71 @@ SCHEMA_REPAIR_ATTEMPTS = 1
 # 摘要与 memory，而非逐字历史。
 PLANNER_CONTEXT_TOKEN_BUDGET = 6_000
 
+# Planner 快速路径的转人工类关键词：命中即回落 LLM 规划器。
+# 宁可慢一轮 LLM，也不把「转人工」误按成知识问答——漏判只损失 12s，
+# 错判是真实事故。英文小写匹配。
+FAST_PATH_HANDOFF_KEYWORDS = (
+    "转人工",
+    "人工客服",
+    "人工服务",
+    "真人客服",
+    "转接人工",
+    "human agent",
+    "human support",
+    "real person",
+)
+
+
+def _fast_path_plan(
+    session: ChatSession,
+    message: str,
+    available_skills: list[Skill],
+    task_frame_state: list[dict[str, Any]] | None,
+    interaction_mode: str,
+    team_context: TeamPlannerContext | None,
+) -> TurnPlan | None:
+    """结构性守卫全部命中时，跳过 planner LLM 直接合成 answer_only 计划。
+
+    守卫的设计原则：只在「LLM 没有任何路由决策空间」时直通——当前 agent
+    没有配置任何 SOP、也没有任何进行中/待处理的任务语义。此时 LLM 的理性
+    输出几乎必然是 answer_only + conversation 帧，12-15s 的规划调用是纯
+    固定开销。任何守卫不满足即返回 None，回落完整 LLM 规划（不猜语义）。
+    """
+    settings = get_settings()
+    if not settings.planner_fast_path_enabled:
+        return
+    if (
+        interaction_mode != "normal" or team_context is not None \
+        # 有 SOP 可选时必须走 LLM：消息可能想触发某个 SOP 的 trigger_intents。
+        or available_skills \
+        # 有活跃 SOP / 待处理任务 / 待补槽 / 恢复中的帧时，决策空间非空，走 LLM。
+        or str(session.active_skill_id or "").strip() \
+        or str(session.active_step_id or "").strip() \
+        or session.pending_tasks_json \
+        or task_frame_state or session.awaiting_input_json
+    ):
+        return
+    text = " ".join(str(message or "").split()).strip()
+    if not text or text.startswith("/"):
+        return
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in FAST_PATH_HANDOFF_KEYWORDS):
+        return
+    return TurnPlan(
+        decision="answer_only",
+        confidence=1.0,
+        user_intent=text,
+        reason="planner fast path: no SOP context, direct conversation",
+        task_frames=[
+            PlannedTaskFrame(
+                kind="conversation",
+                decision="answer_only",
+                user_intent=text,
+                source_message=message,
+            )
+        ],
+    )
+
 
 class TurnPlanner:
     """Single scene/SOP intent planner for the Harness v2 execution path."""
@@ -65,6 +131,34 @@ class TurnPlanner:
         # 32K 预算实测导致 planner 调用 12-62s（bucket_route 同模型仅 3-17s）。
         # 压缩摘要 + 近几轮（6K）足够判断 intent；压缩在 deepcopy 副本上做，
         # 不污染主对话上下文。
+        # 快速路径：结构性守卫全命中时零 LLM 合成 answer_only 计划。
+        # 照常发 turn_planner.plan span（fast_path=True），观测报表能看到
+        # dur≈0 的记录而不是「planner 消失」。
+        fast_path = _fast_path_plan(
+            session,
+            message,
+            available_skills,
+            task_frame_state,
+            interaction_mode,
+            team_context,
+        )
+        if fast_path is not None:
+            with llm_operation(
+                "turn_planner.plan",
+                fast_path=True,
+                payload_chars=0,
+                context_token_budget=0,
+            ):
+                pass
+            return self._normalize(
+                fast_path,
+                message,
+                session,
+                available_skills,
+                task_frame_state,
+                interaction_mode,
+                team_context,
+            )
         planner_payload = compact_conversation_context(
             conversation_context,
             token_budget=PLANNER_CONTEXT_TOKEN_BUDGET,

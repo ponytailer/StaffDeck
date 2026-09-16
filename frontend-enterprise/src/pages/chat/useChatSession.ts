@@ -62,6 +62,7 @@ import {
   CHAT_STREAM_IDLE_TIMEOUT_MS,
   CHAT_STREAM_IDLE_CHECK_INTERVAL_MS,
   CHAT_STREAM_HEARTBEAT_GRACE_MS,
+  CHAT_ZOMBIE_TURN_SILENCE_MS,
   HIDDEN_GENERAL_SKILL_TRACE_PHASES,
   RUNNING_EVENT_RECOVERY_WINDOW_MS,
   SELECTED_AGENT_STORAGE_KEY,
@@ -150,6 +151,15 @@ import { buildSessionFilterOptions } from './sessionFilterOptions';
 const CHAT_BASE_PATH = '/workspace/chat';
 const STREAM_TEXT_EVENTS = new Set(['stream_replace', 'stream_delta', 'token']);
 const STREAM_RELAY_RECOVERY_POLL_INTERVAL_MS = 5 * 1000;
+// 空闲（无运行中轮次）时降低轮询频率：历史 2.5s 常驻轮询在空闲聊天页约 3 req/s。
+const SESSIONS_ACTIVE_POLL_INTERVAL_MS = 2500;
+const SESSIONS_IDLE_POLL_INTERVAL_MS = 15000;
+const SESSION_EVENTS_IDLE_POLL_INTERVAL_MS = 30000;
+// 突发请求合并窗口：发送一条消息会在同一秒内触发多个刷新源（流结束处理、
+// terminal turn 同步、轮询 effect 重建），对同一会话的 messages/trace/sessions
+// 重复请求。窗口内的重复调用复用同一个在途 Promise；窗口必须明显小于最小
+// 轮询间隔（terminal sync 退避 900ms、running 轮询 1.5s），否则会吞掉新鲜数据。
+const CHAT_FETCH_COALESCE_MS = 600;
 const DEFAULT_SCHEDULE_TIME = '09:00';
 const SCHEDULE_WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'] as const;
 // Shared with the management shell (App.tsx `ENTERPRISE_SIDEBAR_STORAGE_KEY`) so
@@ -348,6 +358,13 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [modelConfigsLoadError, setModelConfigsLoadError] = useState('');
   const [modelSetupOpen, setModelSetupOpen] = useState(false);
   const [input, setInput] = useState('');
+  // 输入框内容的 ref 镜像：loadSessions 只用它做「自动打开新定时任务会话」的哨兵判断。
+  // 绝不能把 input 放进 loadSessions 的 deps —— 那会让 loadSessions 每次击键都换 identity，
+  // 连锁触发所有依赖它的 effect（曾导致每击键 4 个请求的洪水）。
+  const composerInputRef = useRef('');
+  useEffect(() => {
+    composerInputRef.current = input;
+  }, [input]);
   const [slashCommands, setSlashCommands] = useState<ChatSlashCommand[]>([]);
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const [composerDragActive, setComposerDragActive] = useState(false);
@@ -416,6 +433,10 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const turnTraceRef = useRef(new Map<string, TurnTrace>());
   const locallyCancelledSessionIdsRef = useRef(new Set<string>());
   const scheduledEventIdsRef = useRef(new Set<string>());
+  // 已本地判定为僵尸并收尾的 turnId：避免事件恢复轮询反复将其重新标记为运行中。
+  const zombieTurnIdsRef = useRef(new Set<string>());
+  // 突发请求合并：key -> { promise, at }，见 CHAT_FETCH_COALESCE_MS 注释。
+  const fetchCoalesceRef = useRef(new Map<string, { promise: Promise<unknown>; at: number }>());
   const scheduledEventPollsRef = useRef(new Map<string, Promise<void>>());
   const knownSessionIdsRef = useRef(new Set<string>());
   const optimisticSessionIdsRef = useRef(new Set<string>());
@@ -423,6 +444,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const queuedTurnsRef = useRef<PreparedChatTurn[]>(restoredQueuedTurns);
   const queuedTurnProcessingRef = useRef(false);
   const queuedTurnPreviewsRestoredRef = useRef(false);
+  // 页面不可见时暂停空闲轮询，回前台立即补刷一次。
+  const [documentVisible, setDocumentVisible] = useState(() => typeof document === 'undefined' || !document.hidden);
   const sessionsInitializedRef = useRef(false);
   const autoOpenedSessionIdsRef = useRef(new Set<string>());
   const loadErrorNoticeRef = useRef<Record<string, number>>({});
@@ -1209,17 +1232,20 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   ));
 
   const loadSessions = useCallback(() => {
-    const listed = api.get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`);
-    const selected = sessionId
-      ? api
-        .get<ChatSession>(`/api/chat/sessions/${sessionId}?tenant_id=${tenantId}`)
-        .catch(() => null)
-      : Promise.resolve(null);
-    Promise.all([listed, selected])
-      .then(([listedRows, selectedRow]) => {
-        const rows = selectedRow && !listedRows.some((row) => row.id === selectedRow.id)
-          ? [...listedRows, selectedRow]
-          : listedRows;
+    const coalesceKey = 'sessions';
+    const cached = fetchCoalesceRef.current.get(coalesceKey);
+    if (cached && Date.now() - cached.at < CHAT_FETCH_COALESCE_MS) return cached.promise;
+    const promise = api.get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`)
+      .then(async (listedRows) => {
+        let rows = listedRows;
+        // 详情请求按需补发：仅当当前会话不在列表返回里时才单独拉取，
+        // 避免空闲轮询每次固定多打一个 /sessions/{id} 请求。
+        if (sessionId && !listedRows.some((row) => row.id === sessionId)) {
+          const selectedRow = await api
+            .get<ChatSession>(`/api/chat/sessions/${sessionId}?tenant_id=${tenantId}`)
+            .catch(() => null);
+          if (selectedRow) rows = [...listedRows, selectedRow];
+        }
         const previousIds = new Set(knownSessionIdsRef.current);
         const initialized = sessionsInitializedRef.current;
         if (!initialized) {
@@ -1251,7 +1277,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         ));
         if (!newScheduledSession || embedded) return;
         autoOpenedSessionIdsRef.current.add(newScheduledSession.id);
-        if (!input.trim()) {
+        if (!composerInputRef.current.trim()) {
           getSlot(newScheduledSession.id);
           navigate(chatSessionPath(newScheduledSession.id));
         }
@@ -1262,7 +1288,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       .finally(() => {
         setSessionsLoading(false);
       });
-  }, [embedded, getSlot, input, navigate, notifyRequestError, sessionId, tenantId, userId]);
+    fetchCoalesceRef.current.set(coalesceKey, { promise, at: Date.now() });
+    return promise;
+  }, [embedded, getSlot, navigate, notifyRequestError, sessionId, tenantId, userId]);
 
   const handleMissingSession = useCallback((id: string) => {
     forgetMissingSession(id);
@@ -1274,7 +1302,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [embedded, forgetMissingSession, loadSessions, navigate, sessionId]);
 
   const loadMessages = useCallback((id: string) => {
-    return api
+    const coalesceKey = `messages:${id}`;
+    const cached = fetchCoalesceRef.current.get(coalesceKey);
+    if (cached && Date.now() - cached.at < CHAT_FETCH_COALESCE_MS) {
+      return cached.promise as Promise<ChatMessage[]>;
+    }
+    const promise = api
       .get<ChatMessage[]>(`/api/chat/sessions/${id}/messages?tenant_id=${tenantId}`)
       .then((rows) => {
         const slot = getSlot(id);
@@ -1298,10 +1331,17 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         notifyRequestError('messages', error, '消息加载失败');
         return [];
       });
+    fetchCoalesceRef.current.set(coalesceKey, { promise, at: Date.now() });
+    return promise;
   }, [clearStreamSlot, getSlot, getStreamSlot, handleMissingSession, notifyRequestError, notifyStore, pruneRealtime, tenantId]);
 
   const loadTraces = useCallback((id: string) => {
-    return api
+    const coalesceKey = `trace:${id}`;
+    const cached = fetchCoalesceRef.current.get(coalesceKey);
+    if (cached && Date.now() - cached.at < CHAT_FETCH_COALESCE_MS) {
+      return cached.promise as Promise<void>;
+    }
+    const promise = api
       .get<TurnTraceRead[]>(`/api/chat/sessions/${id}/trace?tenant_id=${tenantId}`)
       .then((rows) => {
         const slot = getSlot(id);
@@ -1425,6 +1465,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         }
         notifyRequestError('trace', error, '轨迹加载失败');
       });
+    fetchCoalesceRef.current.set(coalesceKey, { promise, at: Date.now() });
+    return promise;
   }, [getSlot, getStreamSlot, handleMissingSession, notifyRequestError, notifyStore, notifyStream, notifyTrace, tenantId]);
 
   const stopTerminalTurnSync = useCallback((sessionIdToStop: string, turnIdToStop: string) => {
@@ -1463,7 +1505,10 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           stopTerminalTurnSync(targetSessionId, targetTurnId);
           return;
         }
-        const timer = window.setTimeout(run, 900);
+        // 指数退避：0.9s → 2s → 4s → 5s 封顶，避免卡住时每 900ms 打满 messages+trace+sessions。
+        const elapsed = Date.now() - startedAt;
+        const delay = elapsed < 4000 ? 900 : elapsed < 12000 ? 2000 : elapsed < 24000 ? 4000 : 5000;
+        const timer = window.setTimeout(run, delay);
         terminalTurnSyncRef.current.set(key, { startedAt, timer });
       });
     };
@@ -1760,19 +1805,22 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [anonymous, auth, loadSessions, redirectToLogin]);
 
   useEffect(() => {
-    if (!auth) return;
-    const timer = window.setInterval(loadSessions, 2500);
+    if (!auth || !documentVisible) return;
+    // 空闲降频：无本地运行中轮次时 15s 一轮，运行中保持 2.5s。
+    // 注意：不要在这里立即调用 loadSessions —— loadSessions 依赖 input，
+    // 每次击键都会重建本 effect，立即调用会演变成「每击键一刷」。
+    const timer = window.setInterval(loadSessions, runningTurn ? SESSIONS_ACTIVE_POLL_INTERVAL_MS : SESSIONS_IDLE_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [auth, loadSessions]);
+  }, [auth, documentVisible, loadSessions, runningTurn]);
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth || !documentVisible) return;
     void loadHandoffs();
     const timer = window.setInterval(() => {
       void loadHandoffs();
     }, 15000);
     return () => window.clearInterval(timer);
-  }, [auth, loadHandoffs]);
+  }, [auth, documentVisible, loadHandoffs]);
 
   useEffect(() => {
     if (!auth) return;
@@ -1796,27 +1844,27 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [loadMessages, loadTraces, sessionId]);
 
   useEffect(() => {
-    if (!sessionId || runningTurn?.sessionId !== sessionId) return;
+    if (!sessionId || runningTurn?.sessionId !== sessionId || !documentVisible) return;
     const timer = window.setInterval(() => {
       void loadMessages(sessionId).finally(() => {
         void loadTraces(sessionId);
       });
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
+  }, [documentVisible, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
 
   // A TL turn ends as soon as the team DAG is dispatched. The eventual synthesis is
   // persisted asynchronously, outside that turn's SSE stream, so keep the active team
   // conversation synchronized even while there is no locally running turn.
   useEffect(() => {
-    if (!sessionId || !displayedTeamId || runningTurn?.sessionId === sessionId) return;
+    if (!sessionId || !displayedTeamId || runningTurn?.sessionId === sessionId || !documentVisible) return;
     const timer = window.setInterval(() => {
       void loadMessages(sessionId).finally(() => {
         void loadTraces(sessionId);
       });
     }, 2_000);
     return () => window.clearInterval(timer);
-  }, [displayedTeamId, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
+  }, [displayedTeamId, documentVisible, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -2595,6 +2643,28 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       clearStreamSlot(id, false);
       return false;
     }
+    // 僵尸轮次：本地无 SSE、服务端事件已静默（如 serve 重启掐断了进行中的轮次），
+    // 再等也不会有终止事件。本地注入「响应中断」收尾，避免触发 1.5s 的
+    // messages+trace 轮询洪水（历史曾空转 10 分钟）。
+    if (zombieTurnIdsRef.current.has(turnId)) {
+      clearStreamSlot(id, false);
+      return false;
+    }
+    if (Date.now() - latestRunningEventTime > CHAT_ZOMBIE_TURN_SILENCE_MS) {
+      zombieTurnIdsRef.current.add(turnId);
+      clearStreamSlot(id, true);
+      appendRealtime(id, {
+        id: `stream_interrupted_${turnId}_${Date.now()}`,
+        turnId,
+        role: 'assistant',
+        content: '本次响应已中断（连接意外断开）。请重新发送消息继续。',
+        created_at: new Date().toISOString(),
+        isError: true,
+      });
+      finishTrace(turnId, true);
+      notifyStream();
+      return false;
+    }
 
     let text = '';
     runningGroup.forEach((event) => {
@@ -2639,9 +2709,11 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     if (streamChanged) notifyStream();
     return streamChanged || unseenRunningEvents.length > 0;
   }, [
+    appendRealtime,
     clearStreamSlot,
     eventTextPayload,
     eventTime,
+    finishTrace,
     getSlot,
     getStreamSlot,
     handleStreamEvent,
@@ -2973,19 +3045,31 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     uploadComposerFiles(files);
   }, [uploadComposerFiles]);
 
+  // 当前会话是否「活跃」：本地有运行中轮次，或服务端状态仍在 running/executing。
+  const currentSessionBusy = useMemo(() => {
+    if (runningTurn?.sessionId === sessionId) return true;
+    return sessions.some((item) => item.id === sessionId
+      && (item.status === 'running' || item.status === 'executing'));
+  }, [runningTurn?.sessionId, sessionId, sessions]);
+
   useEffect(() => {
-    if (!auth || !sessionId || isDraftConversationKey(sessionId)) return;
+    if (!auth || !sessionId || isDraftConversationKey(sessionId) || !documentVisible) return;
     const pollCurrentSessionEvents = () => {
       void pollScheduledSessionEvents(sessionId);
     };
     pollCurrentSessionEvents();
-    const timer = window.setInterval(pollCurrentSessionEvents, STREAM_RELAY_RECOVERY_POLL_INTERVAL_MS);
+    // 空闲降频：活跃轮次保持 5s，空闲会话放宽到 30s。
+    const timer = window.setInterval(
+      pollCurrentSessionEvents,
+      currentSessionBusy ? STREAM_RELAY_RECOVERY_POLL_INTERVAL_MS : SESSION_EVENTS_IDLE_POLL_INTERVAL_MS,
+    );
     return () => window.clearInterval(timer);
-  }, [auth, pollScheduledSessionEvents, sessionId]);
+  }, [auth, currentSessionBusy, documentVisible, pollScheduledSessionEvents, sessionId]);
 
   useEffect(() => {
     if (!auth) return;
     const pollBackgroundSessions = () => {
+      if (document.hidden) return;
       const ids = new Set<string>();
       const isLiveSseSession = (id: string) => Boolean(streamRef.current.get(id)?.abortController);
       sessions.forEach((session) => {
@@ -3005,6 +3089,21 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     const timer = window.setInterval(pollBackgroundSessions, STREAM_RELAY_RECOVERY_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [auth, pollScheduledSessionEvents, sessionId, sessions]);
+
+  // 页面回到前台时立即补刷一次：会话列表 + 当前会话事件，补齐后台暂停期间错过的更新。
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const visible = !document.hidden;
+      setDocumentVisible(visible);
+      if (!visible) return;
+      void loadSessions();
+      if (sessionId && !isDraftConversationKey(sessionId)) {
+        void pollScheduledSessionEvents(sessionId);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [loadSessions, pollScheduledSessionEvents, sessionId]);
 
   const executePreparedTurn = useCallback(async (
     prepared: PreparedChatTurn,

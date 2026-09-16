@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     # 知识路由决策缓存 TTL（秒）。知识库写路径会按库精准失效，此值仅作兜底，
     # 因此默认给 12 小时以拉高命中率；漏失效时最长 12 小时后自动新鲜。
     knowledge_route_cache_ttl_seconds: int = 12 * 3600
+    # Planner 词法快速路径（2026-09-16）：当结构性上下文排除了所有路由可能
+    # （无 SOP、无 pending 任务、非团队/定时、无待补槽）时，直接合成
+    # answer_only 计划，跳过 planner LLM（实测省 12-15s 固定开销）。
+    # 出问题置 False 一键回滚，无需改代码。
+    planner_fast_path_enabled: bool = True
 
     # ---- 定时任务调度后端（PG 主源 + Redis 仅执行触发）----
     # "rq" = 独立 rq worker 进程经 Redis 调度（默认）；"poll" = 进程内轮询线程（旧实现）。

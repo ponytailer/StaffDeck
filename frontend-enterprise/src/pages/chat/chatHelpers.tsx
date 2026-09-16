@@ -48,7 +48,13 @@ export const MODEL_CONFIG_STORAGE_PREFIX = 'skill_agent_selected_model_config';
 export const SESSION_READ_STORAGE_PREFIX = 'skill_agent_session_read_at';
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = 'skill_agent_sidebar_collapsed';
 export const RUNNING_EVENT_RECOVERY_WINDOW_MS = 600 * 1000;
-export const CHAT_STREAM_IDLE_TIMEOUT_MS = 600 * 1000;
+// 恢复轮询（syncTurnUntilAssistant / relay recovery）的总时长上限。
+// 历史 600s 曾导致服务重启掐断进行中轮次后，前端空转轮询 10 分钟的请求洪水。
+export const CHAT_STREAM_IDLE_TIMEOUT_MS = 60 * 1000;
+// 事件恢复轮询发现「运行中」轮次但事件已静默超过该窗口（且本地无 SSE）→ 判定僵尸轮次，
+// 本地注入「响应中断」收尾，不再进入 1.5s messages+trace 轮询。正常轮次在 LLM 长调用
+// 期间也可能静默几十秒，但那只发生在本地有 SSE 的场景，不会走到这条恢复路径。
+export const CHAT_ZOMBIE_TURN_SILENCE_MS = 45 * 1000;
 export const CHAT_STREAM_IDLE_CHECK_INTERVAL_MS = 5 * 1000;
 export const CHAT_STREAM_HEARTBEAT_GRACE_MS = 20 * 1000;
 export const CHAT_TRACE_RECOVERY_WINDOW_MS = 10 * 60 * 1000;
