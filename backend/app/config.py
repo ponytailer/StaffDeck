@@ -126,6 +126,17 @@ class Settings(BaseSettings):
     # 上限必须明显大于正常耗时，否则 rq worker 会 kill 掉一个其实仍在正常
     # 推进的任务，把「跑得慢」变成「跑失败」。
     knowledge_ingest_job_timeout_seconds: int = 1800
+    # 聊天 PDF 附件云端解析队列（MinerU）。50 页扫描件实测 ~46s，网络抖动留
+    # 足余量；超时上限同样必须明显大于正常耗时（轮询兜底 10 分钟 + 上传下载）。
+    attachment_parse_queue: str = "attachment_parse"
+    attachment_parse_job_timeout_seconds: int = 900
+    # MinerU 云端单文件解析的轮询上限（秒）；超时视为失败，前端给出可重试提示。
+    attachment_parse_poll_timeout_seconds: int = 600
+
+    # MinerU 开放平台 Bearer Token（https://mineru.net）。注意历史上 .env 曾误拼
+    # 为 MINUERU_TOKEN；mineru_client 会同时兼容两个键名，新环境请统一 MINERU_TOKEN。
+    mineru_token: str = ""
+    mineru_api_base: str = "https://mineru.net"
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

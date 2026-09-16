@@ -321,7 +321,10 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
                   <span className={CHAT_COMPOSER_ATTACHMENT_COPY_CLASS}>
                     <span className={CHAT_COMPOSER_ATTACHMENT_NAME_CLASS}>{attachment.filename}</span>
                     <span className={CHAT_COMPOSER_ATTACHMENT_STATUS_CLASS}>
-                      {attachment.uploadStatus === 'uploading' && '解析中'}
+                      {attachment.uploadStatus === 'uploading' &&
+                        (attachment.parse_job_id
+                          ? `云端解析中 ${Math.round(attachment.parse_progress ?? 0)}%`
+                          : '上传中')}
                       {attachment.uploadStatus === 'ready' && attachmentTypeLabel(attachment)}
                       {attachment.uploadStatus === 'error' && (attachment.error || '上传失败')}
                     </span>

@@ -16,9 +16,11 @@ import {
   SHOW_DEBUG,
   TENANT_ID,
   api,
+  fetchChatAttachmentParseJob,
   isAuthError,
   streamChatTurn,
   uploadChatAttachments,
+  type ChatAttachmentParseJob,
   type StreamEvent,
 } from '@/api/client';
 import { clearEnterpriseAuthSession, getEnterpriseAuthSession } from '@/auth';
@@ -2819,6 +2821,75 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const uploadComposerFiles = useCallback((files: File[]) => {
     const validFiles = files.filter((file) => file.size > 0);
     if (!validFiles.length) return;
+    /** PDF 云端解析（MinerU）轮询：保持 uploading 状态直到解析完成/失败，期间禁止发送。 */
+    const pollAttachmentParse = async (
+      uploadKey: string,
+      parsed: ChatAttachmentRead,
+      signal: AbortSignal,
+    ) => {
+      const jobId = parsed.parse_job_id;
+      if (!jobId) return;
+      const applyJob = (job: ChatAttachmentParseJob) => {
+        setComposerAttachments((current) =>
+          current.map((item) =>
+            item.uploadKey === uploadKey
+              ? {
+                  ...item,
+                  ...parsed,
+                  uploadKey,
+                  parse_status: job.status,
+                  parse_progress: job.progress,
+                  uploadStatus:
+                    job.status === 'succeeded' ? 'ready' : job.status === 'failed' ? 'error' : 'uploading',
+                  error: job.status === 'failed' ? job.error || '云端解析失败，请重试' : null,
+                }
+              : item,
+          ),
+        );
+      };
+      const startedAt = Date.now();
+      const parseTimeoutMs = 12 * 60 * 1000;
+      while (Date.now() - startedAt < parseTimeoutMs) {
+        if (signal.aborted) return;
+        try {
+          const job = await fetchChatAttachmentParseJob(tenantId, jobId, signal);
+          applyJob(job);
+          if (job.status === 'succeeded' || job.status === 'failed') return;
+        } catch (error) {
+          if (signal.aborted) return;
+          if (error instanceof ApiError && error.status === 404) {
+            // 任务已不存在（网关重启清库等）：放行为普通附件，不再阻塞发送
+            setComposerAttachments((current) =>
+              current.map((item) =>
+                item.uploadKey === uploadKey ? { ...item, parse_job_id: null, uploadStatus: 'ready' } : item,
+              ),
+            );
+            return;
+          }
+          // 网络抖动不终止轮询，继续下一轮
+        }
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 2000);
+          if (signal.aborted) {
+            clearTimeout(timer);
+            resolve();
+            return;
+          }
+          signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+      }
+      // 超时兜底：标记失败并提示重试（服务端 rq job 900s 超时上限 + 轮询余量）
+      setComposerAttachments((current) =>
+        current.map((item) =>
+          item.uploadKey === uploadKey
+            ? { ...item, uploadStatus: 'error', error: '云端解析超时，请移除后重新上传' }
+            : item,
+        ),
+      );
+    };
     validFiles.forEach((file) => {
       const uploadKey = `upload_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const controller = new AbortController();
@@ -2836,9 +2907,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         },
       ]);
       uploadChatAttachments<ChatAttachmentRead[]>(tenantId, [file], controller.signal)
-        .then((items) => {
+        .then(async (items) => {
           const parsed = items[0];
           if (!parsed) throw new Error('文件解析结果为空');
+          if (parsed.parse_job_id) {
+            // PDF 云端解析（MinerU）：等解析完成再变为 ready，期间保持发送禁用
+            await pollAttachmentParse(uploadKey, parsed, controller.signal);
+            return;
+          }
           setComposerAttachments((current) =>
             current.map((item) => (item.uploadKey === uploadKey ? { ...parsed, uploadKey, uploadStatus: 'ready' } : item)),
           );

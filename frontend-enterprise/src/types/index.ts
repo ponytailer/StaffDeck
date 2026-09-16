@@ -621,6 +621,11 @@ export type ChatAttachmentRead = {
   sha256?: string | null;
   python_summary?: string | null;
   error?: string | null;
+  /** PDF 云端解析（MinerU）任务 id：上传接口为 PDF 附件创建后回填，前端凭它轮询进度。 */
+  parse_job_id?: string | null;
+  parse_status?: string | null;
+  /** 解析进度 0-100（轮询接口返回）。 */
+  parse_progress?: number | null;
 };
 
 export type ChatSlashCommand = {

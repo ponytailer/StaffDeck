@@ -891,7 +891,13 @@ async def upload_chat_attachments(
         raise HTTPException(status_code=400, detail=f"最多一次上传 {MAX_CHAT_ATTACHMENTS} 个文件")
     parsed: list[ChatAttachmentRead] = []
     from app.session.attachment_store import stage_chat_attachment
+    from app.session.attachment_parse_jobs import (
+        create_parse_job,
+        schedule_attachment_parse,
+    )
+    from app.session.mineru_client import mineru_available
 
+    parse_enabled = mineru_available()
     for file in files:
         data = await file.read()
         if len(data) > MAX_CHAT_ATTACHMENT_BYTES:
@@ -902,15 +908,87 @@ async def upload_chat_attachments(
             data,
             extract_text=False,
         )
-        parsed.append(
-            stage_chat_attachment(
-                attachment,
-                data,
-                tenant_id=tenant_id,
-                user_id=current_user.id,
-            )
+        staged = stage_chat_attachment(
+            attachment,
+            data,
+            tenant_id=tenant_id,
+            user_id=current_user.id,
         )
+        # PDF 扫描件无文字层：上传即创建 MinerU 云端解析任务，前端轮询进度，
+        # 解析完成前 turn 侧拦截发送（见 _reject_unparsed_attachments）。
+        if staged.kind == "pdf" and parse_enabled:
+            try:
+                job = create_parse_job(
+                    db,
+                    staged,
+                    tenant_id=tenant_id,
+                    user_id=current_user.id,
+                )
+                if schedule_attachment_parse(
+                    job.id,
+                    tenant_id=tenant_id,
+                    filename=staged.filename,
+                ):
+                    staged = staged.model_copy(
+                        update={"parse_job_id": job.id, "parse_status": job.status}
+                    )
+            except Exception:  # noqa: BLE001 - 解析任务失败不影响附件上传本身
+                logger.warning("PDF 解析任务创建失败 attachment=%s", staged.id, exc_info=True)
+        parsed.append(staged)
     return parsed
+
+
+@router.get("/attachments/parse-jobs/{job_id}")
+def get_attachment_parse_job(
+    job_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> dict[str, object]:
+    """前端轮询 PDF 附件云端解析进度（进度/阶段/错误信息）。"""
+
+    _ensure_request_tenant(tenant_id, current_user)
+    from app.db.models import AttachmentParseJob
+
+    job = db.get(AttachmentParseJob, job_id)
+    if job is None or job.tenant_id != tenant_id or job.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="解析任务不存在")
+    return {
+        "id": job.id,
+        "attachment_id": job.attachment_id,
+        "filename": job.filename,
+        "status": job.status,
+        "stage": job.stage,
+        "progress": job.progress,
+        "error": job.error,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
+def _reject_unparsed_attachments(db: Session, request: ChatTurnRequest) -> None:
+    """PDF 附件云端解析未完成时拦截发送（409），防止模型拿到读不出文本的扫描件。"""
+
+    from app.session.attachment_parse_jobs import RUNNING_STATUSES, running_job_ids_for_attachments
+
+    pdf_ids = [item.id for item in request.attachments if item.kind == "pdf"]
+    if not pdf_ids:
+        return
+    jobs = running_job_ids_for_attachments(
+        db,
+        tenant_id=request.tenant_id,
+        attachment_ids=pdf_ids,
+    )
+    for attachment in request.attachments:
+        job = jobs.get(attachment.id)
+        if job is not None and job.status in RUNNING_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{attachment.filename} 仍在云端解析中（{int(job.progress)}%），"
+                    "请等解析完成后再发送"
+                ),
+            )
 
 
 @router.post("/turn", response_model=ChatTurnResponse)
@@ -928,6 +1006,7 @@ def chat_turn(
         }
     )
     request = _validate_chat_turn_attachments(request)
+    _reject_unparsed_attachments(db, request)
     team_tl_team: Team | None = None
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
@@ -1003,6 +1082,7 @@ def chat_stream(
         }
     )
     request = _validate_chat_turn_attachments(request)
+    _reject_unparsed_attachments(db, request)
     ensure_tenant(db, request.tenant_id)
     team_tl_team_id: str | None = None
     if request.session_id:

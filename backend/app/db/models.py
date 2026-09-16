@@ -642,6 +642,35 @@ class KnowledgeIngestJob(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class AttachmentParseJob(SQLModel, table=True):
+    """聊天附件云端解析任务（MinerU）。
+
+    PDF 扫描件无文字层，pypdf/extract_document_text 抽不出文本；上传接口对
+    PDF 附件自动创建本任务并异步调度（rq 优先、进程内兜底），前端轮询进度。
+    解析出的 markdown 写入附件暂存目录（``parsed.md``），turn 物化时直接
+    作为 extracted_text_path 提供给模型，避免模型在沙箱里再做一次必然失败的
+    文字层抽取。``metadata_json`` 保存重建暂存读取所需的附件指纹
+    （filename/content_type/size/sha256）。
+    """
+
+    __tablename__ = "attachment_parse_jobs"
+
+    id: str = Field(default_factory=lambda: new_id("pjob"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    attachment_id: str = Field(index=True)
+    filename: str
+    status: str = Field(default="queued", index=True)
+    stage: str = "queued"
+    progress: float = 0.0
+    error: Optional[str] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class ModelConfig(SQLModel, table=True):
     __tablename__ = "model_configs"
 

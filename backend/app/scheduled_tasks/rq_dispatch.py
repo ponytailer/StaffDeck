@@ -290,7 +290,11 @@ def consume_queue_names() -> list[str]:
 
     settings = get_settings()
     names = [settings.scheduled_task_queue]
-    for extra in (settings.skill_compile_queue, settings.knowledge_ingest_queue):
+    for extra in (
+        settings.skill_compile_queue,
+        settings.knowledge_ingest_queue,
+        settings.attachment_parse_queue,
+    ):
         if extra and extra not in names:
             names.append(extra)
     return names

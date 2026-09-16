@@ -511,6 +511,8 @@ def extract_document_text(
     Binary documents deliberately do not flow through ``read_file``.  The
     extracted text is persisted so the model can page through it with the
     existing bounded text reader instead of receiving an unbounded payload.
+    Documents without any extractable text (scanned PDFs, empty files) raise
+    ``DOCUMENT_EMPTY_EXTRACTION`` instead of writing an empty output file.
     """
 
     args = _as(arguments, ExtractDocumentTextArguments)
@@ -541,6 +543,27 @@ def extract_document_text(
             },
         ) from exc
 
+    # 空提取不落盘、不发布产物（2026-09-16 修复）：扫描版 PDF 没有文字层，
+    # 提取结果为 0 字符——旧行为仍把空文件写进 results/ 并发布为产物，用户
+    # 看到一个空的「生成文件」。改为直接报错并把模型引向 ocr_document。
+    if not text.strip():
+        if document_format == "pdf":
+            message = (
+                "未能从该 PDF 提取到任何文字：文件疑似扫描件（无文字层）。"
+                "请改用 ocr_document 工具逐页识别后再回答；"
+                "也可以引导用户上传文字版文档。"
+            )
+        else:
+            message = "文档中没有可提取的文本内容。"
+        raise HarnessExecutionError(
+            "DOCUMENT_EMPTY_EXTRACTION",
+            message,
+            details={
+                "path": workspace.relative(source),
+                "format": document_format,
+            },
+        )
+
     output_raw = args.output_path or f"{workspace.relative(source)}.extracted.txt"
     output = workspace.resolve(output_raw)
     if output == source:
@@ -569,6 +592,202 @@ def extract_document_text(
         "empty": not bool(text.strip()),
         "sha256": _sha256(output),
     }
+
+
+def ocr_document(
+    context: HarnessToolContext,
+    arguments: BaseModel,
+) -> dict[str, Any]:
+    """OCR a scanned PDF via the vision model into a UTF-8 workspace file.
+
+    Scanned PDFs have no text layer, so ``extract_document_text`` returns an
+    empty result for them.  This tool renders pages with PyMuPDF and asks the
+    tenant's chat model to transcribe each page image.  Pages that already
+    carry a text layer are copied verbatim — only scanned pages cost an LLM
+    call.  The per-call page budget keeps one tool invocation well inside the
+    step deadline; the model continues with the returned page range.
+    """
+
+    args = _as(arguments, OcrDocumentArguments)
+    workspace = _Workspace(context)
+    source = workspace.resolve(args.path)
+    source_metadata = workspace.require_file(source)
+    workspace.ensure_file_size(source_metadata.st_size)
+    if context.model_config is None:
+        raise HarnessExecutionError(
+            "CONFIG_MISSING",
+            "OCR requires a chat model configuration, which is unavailable in "
+            "this execution context.",
+            details={"path": workspace.relative(source)},
+        )
+    try:
+        import pymupdf
+    except Exception as exc:  # pragma: no cover - dependency availability differs by env.
+        raise HarnessExecutionError(
+            "DOCUMENT_EXTRACTION_FAILED",
+            "缺少 pymupdf，无法渲染 PDF 页面。",
+            details={"path": workspace.relative(source)},
+        ) from exc
+
+    try:
+        document = pymupdf.open(source)
+    except Exception as exc:
+        raise HarnessExecutionError(
+            "DOCUMENT_EXTRACTION_FAILED",
+            f"PDF 无法打开：{exc}",
+            details={"path": workspace.relative(source)},
+        ) from exc
+
+    with document:
+        total_pages = document.page_count
+        page_numbers = _resolve_ocr_page_range(args.pages, total_pages)
+        rendered_sections: list[str] = []
+        pages_ocr = 0
+        pages_text_layer = 0
+        empty_pages = 0
+        for number in page_numbers:
+            page = document.load_page(number - 1)  # 1-based → 0-based
+            embedded = page.get_text().strip()
+            if embedded:
+                rendered_sections.append(f"## 第 {number} 页（文字层）\n\n{embedded}")
+                pages_text_layer += 1
+                continue
+            transcribed = _ocr_pdf_page(context, page, dpi=args.dpi, page_number=number)
+            if transcribed.strip():
+                rendered_sections.append(f"## 第 {number} 页（OCR）\n\n{transcribed.strip()}")
+                pages_ocr += 1
+            else:
+                empty_pages += 1
+
+    text = "\n\n".join(rendered_sections)
+    output_raw = args.output_path or f"{workspace.relative(source)}.ocr.txt"
+    output = workspace.resolve(output_raw)
+    if output == source:
+        raise HarnessExecutionError(
+            "INVALID_PATH",
+            "OCR output must differ from the source document.",
+        )
+    workspace.prepare_parent(output, create=True)
+    content_bytes = text.encode("utf-8")
+    workspace.ensure_file_size(len(content_bytes))
+    previous_size = 0
+    if output.exists():
+        previous_size = workspace.require_file(output).st_size
+    workspace.ensure_workspace_capacity(
+        path=output,
+        replacing_bytes=previous_size,
+        new_bytes=len(content_bytes),
+    )
+    _atomic_write(output, content_bytes)
+    return {
+        "source_path": workspace.relative(source),
+        "extracted_text_path": workspace.relative(output),
+        "format": "pdf-ocr",
+        "total_pages": total_pages,
+        "pages_done": [page_numbers[0], page_numbers[-1]] if page_numbers else [],
+        "pages_ocr": pages_ocr,
+        "pages_text_layer": pages_text_layer,
+        "pages_empty": empty_pages,
+        "remaining_pages": max(0, total_pages - page_numbers[-1]) if page_numbers else 0,
+        "characters": len(text),
+        "size": len(content_bytes),
+        "empty": not bool(text.strip()),
+        "sha256": _sha256(output),
+    }
+
+
+def _resolve_ocr_page_range(pages_arg: str | None, total_pages: int) -> list[int]:
+    """Parse the ``pages`` argument into a bounded, 1-based page list."""
+
+    if total_pages <= 0:
+        return []
+    raw = str(pages_arg or "all").strip().lower()
+    limit = OCR_MAX_PAGES_PER_CALL
+    if raw in {"", "all", "*"}:
+        start, end = 1, min(total_pages, limit)
+    else:
+        match = re.fullmatch(r"(\d+)\s*[-–]\s*(\d+)|(\d+)", raw)
+        if not match:
+            raise HarnessExecutionError(
+                "INVALID_ARGUMENTS",
+                "pages 仅支持 all、单个页码或 1-5 形式的范围。",
+            )
+        if match.group(3):
+            start = end = int(match.group(3))
+        else:
+            start, end = int(match.group(1)), int(match.group(2))
+        if start < 1 or end < start:
+            raise HarnessExecutionError(
+                "INVALID_ARGUMENTS",
+                f"pages 范围无效：{raw}。",
+            )
+        end = min(end, total_pages)
+        start = min(start, end)
+        if end - start + 1 > limit:
+            end = start + limit - 1
+    return list(range(start, end + 1))
+
+
+def _ocr_pdf_page(
+    context: HarnessToolContext,
+    page: Any,
+    *,
+    dpi: int,
+    page_number: int,
+) -> str:
+    """Render one PDF page to PNG and transcribe it with the vision model."""
+
+    import base64 as _base64
+    import time as _time
+
+    import pymupdf
+
+    try:
+        pix = page.get_pixmap(dpi=dpi)
+        png_bytes = pix.tobytes("png")
+    except Exception as exc:
+        raise HarnessExecutionError(
+            "DOCUMENT_EXTRACTION_FAILED",
+            f"第 {page_number} 页渲染失败：{exc}",
+        ) from exc
+    if not png_bytes:
+        return ""
+
+    from app.llm.client import LLMClient
+    from app.observability.spans import llm_operation
+
+    image_part = {
+        "type": "image_url",
+        "image_url": {
+            "url": "data:image/png;base64," + _base64.b64encode(png_bytes).decode("ascii"),
+            "detail": "auto",
+        },
+    }
+    user_message = f"请完整转录第 {page_number} 页图片中的全部文字。"
+    payload = {
+        "user_message": user_message,
+        "conversation_context": {
+            "messages": [
+                {"role": "user", "content": user_message, "images": [image_part]}
+            ]
+        },
+    }
+    started = _time.time()
+    try:
+        result = LLMClient(context.model_config).generate_json(OCR_SYSTEM_PROMPT, payload)
+    except Exception as exc:
+        raise HarnessExecutionError(
+            "DOCUMENT_EXTRACTION_FAILED",
+            f"第 {page_number} 页 OCR 失败：当前模型可能不支持图片输入（{type(exc).__name__}）。",
+        ) from exc
+    _ = started  # duration is visible via LLM span observability
+    if isinstance(result, dict):
+        for key in ("text", "transcription", "content", "result"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+    return str(result or "")
 
 
 def write_file(

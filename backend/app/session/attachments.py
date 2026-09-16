@@ -99,8 +99,10 @@ def attachment_context_lines(attachments: Iterable[ChatAttachmentRead | dict[str
             ".htm",
         }:
             lines.append(
-                "这是文档附件；不要直接使用 read_file。先调用 extract_document_text，"
-                "再用 read_file 分页读取生成的 UTF-8 文本。"
+                "这是文档附件；不要直接使用 read_file。若附件描述已提供 "
+                "extracted_text_path（云端预解析文本），直接 read_file 读取该文件；"
+                "否则先调用 extract_document_text，再用 read_file 分页读取生成的 "
+                "UTF-8 文本。"
             )
         elif attachment.kind == "text":
             lines.append("需要内容时请使用 read_file 读取工作区文件。")

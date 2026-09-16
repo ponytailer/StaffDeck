@@ -98,6 +98,54 @@ def read_staged_chat_attachment(
     return data
 
 
+PARSE_RESULT_FILENAME = "parsed.md"
+
+
+def write_staged_parse_result(
+    *,
+    tenant_id: str,
+    user_id: str,
+    attachment_id: str,
+    markdown: str,
+) -> Path:
+    """把云端解析出的 markdown 写入附件暂存目录（turn 物化时读取）。
+
+    暂存目录本就由 upload 接口创建且只含 payload/metadata.json，这里原子写
+    入 ``parsed.md``；目录不存在视为附件已被清理，直接抛 OSError。
+    """
+
+    directory = _attachment_directory(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        attachment_id=attachment_id,
+    )
+    if not directory.is_dir():
+        raise FileNotFoundError(f"attachment staging directory missing: {attachment_id}")
+    _atomic_write(directory / PARSE_RESULT_FILENAME, markdown.encode("utf-8"))
+    return directory / PARSE_RESULT_FILENAME
+
+
+def read_staged_parse_result(
+    *,
+    tenant_id: str,
+    user_id: str,
+    attachment_id: str,
+) -> str | None:
+    """读取附件的云端解析 markdown；不存在 / 不可读返回 ``None``。"""
+
+    directory = _attachment_directory(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        attachment_id=attachment_id,
+    )
+    try:
+        if directory.is_symlink():
+            return None
+        return (directory / PARSE_RESULT_FILENAME).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+
+
 def _attachment_directory(*, tenant_id: str, user_id: str, attachment_id: str) -> Path:
     data_root = paths.user_data_dir().resolve()
     root = (data_root / "harness_uploads").resolve()
@@ -137,7 +185,10 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 __all__ = [
+    "PARSE_RESULT_FILENAME",
     "read_staged_chat_attachment",
+    "read_staged_parse_result",
     "sandbox_attachment_path",
     "stage_chat_attachment",
+    "write_staged_parse_result",
 ]

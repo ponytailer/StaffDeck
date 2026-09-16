@@ -25,6 +25,7 @@ from app.session.attachments import (
 )
 from app.session.attachment_store import (
     read_staged_chat_attachment,
+    read_staged_parse_result,
     sandbox_attachment_path,
 )
 from app.session.session_schema import ChatAttachmentRead
@@ -129,6 +130,40 @@ def materialize_task_attachments(
                 )
                 if extracted_result.success:
                     descriptor["extracted_text_path"] = extracted_path
+            elif attachment.kind == "pdf" and user_id:
+                # 云端解析（MinerU）产物：扫描件没有文字层，模型自己做
+                # extract_document_text 必然失败，这里直接把解析好的 markdown
+                # 写进沙箱并声明 extracted_text_path，引导模型跳过抽取步骤。
+                parsed_markdown = read_staged_parse_result(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    attachment_id=attachment.id,
+                )
+                if parsed_markdown:
+                    extracted_path = f"{sandbox_path}.extracted.md"
+                    extracted_result = executor.execute(
+                        context,
+                        HarnessToolCall(
+                            call_id=f"attachment-parsed-{index}",
+                            name="write_file",
+                            arguments={
+                                "path": extracted_path,
+                                "content": parsed_markdown,
+                                "create_parents": True,
+                            },
+                        ),
+                    )
+                    if extracted_result.success:
+                        descriptor.update(
+                            {
+                                "extracted_text_path": extracted_path,
+                                "note": (
+                                    "原始附件已写入当前 TaskFrame 沙箱；文档文本已由云端"
+                                    " OCR 预解析，直接 read_file 读取 extracted_text_path，"
+                                    "不要调用 extract_document_text。"
+                                ),
+                            }
+                        )
         elif attachment.text:
             sandbox_path = sandbox_attachment_path(attachment, index)
             result = executor.execute(

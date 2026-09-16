@@ -191,6 +191,53 @@ def test_extract_document_text_rejects_unsupported_binary(tmp_path: Path) -> Non
     assert error == "DOCUMENT_EXTRACTION_FAILED"
 
 
+def test_extract_document_text_rejects_scanned_pdf_without_artifact(
+    tmp_path: Path,
+) -> None:
+    """扫描件 PDF（无文字层）报 DOCUMENT_EMPTY_EXTRACTION，不写空产物。"""
+
+    from pypdf import PdfWriter
+
+    executor, context = _harness(tmp_path)
+    context.workspace_root.mkdir(parents=True)
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buffer = BytesIO()
+    writer.write(buffer)
+    source = context.workspace_root / "attachments" / "contract.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(buffer.getvalue())
+
+    error = _execute_failure(
+        executor,
+        context,
+        "extract_document_text",
+        {"path": "/workspace/attachments/contract.pdf"},
+    )
+
+    assert error == "DOCUMENT_EMPTY_EXTRACTION"
+    # 空文件/产物绝不落盘
+    assert not (context.workspace_root / "attachments" / "contract.pdf.extracted.txt").exists()
+    assert not (context.workspace_root / "results").exists()
+
+
+def test_extract_document_text_empty_text_file_fails_generic(tmp_path: Path) -> None:
+    executor, context = _harness(tmp_path)
+    context.workspace_root.mkdir(parents=True)
+    source = context.workspace_root / "notes" / "empty.txt"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"   \n")
+
+    error = _execute_failure(
+        executor,
+        context,
+        "extract_document_text",
+        {"path": "notes/empty.txt"},
+    )
+
+    assert error == "DOCUMENT_EMPTY_EXTRACTION"
+
+
 def test_harness_internal_trash_remains_reserved(tmp_path: Path) -> None:
     executor, context = _harness(tmp_path)
 

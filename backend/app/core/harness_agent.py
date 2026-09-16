@@ -111,7 +111,12 @@ class HarnessTaskAgent:
             if same_step
             else 0
         )
-        artifacts = _dict_items(checkpoint.get("artifacts")) if same_frame else []
+        # 产物只挂「本轮真正新产生」的（2026-09-16 修复）：不再从 checkpoint
+        # 恢复历史产物——同一 task frame 续轮时，上一轮的产物会被原样复挂到
+        # 每条新助手消息的「生成文件」区（典型现场：扫描合同问答里那条空的
+        # contract_text.txt 跟着后续每条消息出现）。历史产物的下载不受影响：
+        # 下载端点按会话全部消息的 harness_artifacts 检索。
+        artifacts: list[dict[str, Any]] = []
         loaded_general_skill_names = (
             _string_list(checkpoint.get("loaded_general_skill_names"))
             if same_frame

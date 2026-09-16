@@ -278,6 +278,10 @@ class ChatAttachmentRead(BaseModel):
     sha256: Optional[str] = None
     python_summary: Optional[str] = None
     error: Optional[str] = None
+    # PDF 云端解析（MinerU）：上传接口为 PDF 附件创建任务后回填给前端轮询。
+    # 这两个字段**不参与** turn 回程信任——turn 侧只按 attachment_id 查库校验。
+    parse_job_id: Optional[str] = None
+    parse_status: Optional[str] = None
 
 
 class ChatTurnResponse(BaseModel):

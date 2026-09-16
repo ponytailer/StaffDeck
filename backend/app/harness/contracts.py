@@ -52,6 +52,10 @@ class HarnessToolContext:
     sandbox_enabled: bool = True
     sandbox_network_mode: Literal["all", "allowlist", "deny"] = "all"
     sandbox_allowed_domains: tuple[str, ...] = ()
+    # 本轮主模型配置（只读快照）。仅少数需要模型推理的 typed 工具使用
+    # （如 ocr_document 视觉 OCR）；其余工具不得依赖。直连调用方可传 None，
+    # 此时依赖该字段的工具以 CONFIG_MISSING 失败。
+    model_config: Any = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, str) or not self.run_id.strip():

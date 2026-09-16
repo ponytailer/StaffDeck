@@ -130,6 +130,35 @@ export async function uploadChatAttachments<T>(
   return response.json() as Promise<T>;
 }
 
+export type ChatAttachmentParseJob = {
+  id: string;
+  attachment_id: string;
+  filename: string;
+  status: 'queued' | 'parsing' | 'succeeded' | 'failed';
+  stage: string;
+  progress: number;
+  error?: string | null;
+  created_at?: string | null;
+  finished_at?: string | null;
+};
+
+/** 轮询 PDF 附件云端解析（MinerU）进度。 */
+export async function fetchChatAttachmentParseJob(
+  tenantId: string,
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<ChatAttachmentParseJob> {
+  const response = await fetch(
+    `${API_BASE}/api/chat/attachments/parse-jobs/${encodeURIComponent(jobId)}?tenant_id=${encodeURIComponent(tenantId)}`,
+    { headers: { ...authHeader() }, signal },
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new ApiError(response.status, text, response.statusText);
+  }
+  return response.json() as Promise<ChatAttachmentParseJob>;
+}
+
 export async function streamChatTurn(
   body: Record<string, unknown>,
   onEvent: (item: StreamEvent) => void,
