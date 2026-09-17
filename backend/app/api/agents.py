@@ -28,8 +28,10 @@ from app.agents.schema import (
     AgentWorkRecordReplyStatsRead,
 )
 from app.agents.branching import (
+    BindingVisibilityPrefetch,
     agent_private_metadata,
     branch_versions,
+    build_binding_visibility_prefetch,
     copy_overall_scope_to_agent,
     ensure_agent_skill_branch,
     ensure_knowledge_base_version,
@@ -77,7 +79,7 @@ from app.public_api.credential_profiles import (
     agent_access_for_scopes,
     scopes_for_agent_access,
 )
-from app.security.auth import get_current_user
+from app.security.auth import ShareScope, get_current_user, get_share_scope
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
@@ -141,8 +143,14 @@ def create_agent(
     ensure_tenant(db, request.tenant_id)
     user = current_user
     _ensure_request_tenant(request.tenant_id, user)
-    if request.is_overall and not _is_admin_user(user):
-        raise HTTPException(status_code=403, detail="Only administrator can create overall agent")
+    if request.is_overall:
+        if not _is_admin_user(user):
+            raise HTTPException(status_code=403, detail="Only administrator can create overall agent")
+        if get_overall_agent(db, request.tenant_id) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="This tenant already has an overall agent (open gallery host)",
+            )
     name = str(request.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Agent name cannot be empty")
@@ -398,6 +406,11 @@ def update_agent(
     if request.persona_prompt is not None:
         row.persona_prompt = request.persona_prompt
     if request.status is not None:
+        if row.is_overall and request.status == "archived":
+            raise HTTPException(
+                status_code=400,
+                detail="The overall agent (open gallery host) cannot be archived; it must remain active",
+            )
         row.status = request.status
     if request.harness_max_actions is not None:
         row.harness_max_actions = request.harness_max_actions
@@ -844,6 +857,7 @@ def list_chat_agents(
     tenant_id: str = Query(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
+    share_scope: ShareScope | None = Depends(get_share_scope),
 ) -> list[AgentProfileRead]:
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
@@ -858,6 +872,12 @@ def list_chat_agents(
         .order_by(AgentProfile.updated_at.desc())
     ).all()
     rows = [row for row in rows if not _agent_hidden_from_staffdeck(row)]
+    # isinstance 而非 `is not None`：直接调用时默认值是 FastAPI 的 Depends 对象
+    if isinstance(share_scope, ShareScope):
+        # 分享访客的花名册只含被分享的那一个数字员工(dialogue 页据此渲染头像与标题)
+        rows = [row for row in rows if row.id == share_scope.agent_id]
+        bindings = _bindings_by_agent(db, tenant_id)
+        return [agent_read(row, bindings.get(row.id, []), False) for row in rows]
     used_agent_ids = _used_agent_ids_for_user(db, tenant_id, current_user)
     rows = [
         row for row in rows if _chat_agent_selectable_to_user(row, current_user, used_agent_ids)
@@ -1062,6 +1082,7 @@ def agent_read(
         is_overall=row.is_overall,
         status=row.status,
         harness_max_actions=max(1, min(int(row.harness_max_actions or 32), 100)),
+        usage_count=max(0, int(row.usage_count or 0)),
         metadata=metadata,
         resources=[binding_read(binding) for binding in bindings],
         created_at=row.created_at.isoformat(),
@@ -1887,9 +1908,11 @@ def _bindings_by_agent(db: Session, tenant_id: str) -> dict[str, list[AgentResou
         ).all()
     }
     grouped: dict[str, list[AgentResourceBinding]] = {}
+    # 一次性预取可见性判定所需的外部行：原本每个绑定 3~5 条 SQL（远程 PG 下 125 个绑定要 12~21s）
+    prefetch = build_binding_visibility_prefetch(db, tenant_id, rows)
     for row in rows:
         if not _resource_binding_visible_in_agent_summary(
-            db, tenant_id, agents_by_id.get(row.agent_id), row
+            db, tenant_id, agents_by_id.get(row.agent_id), row, prefetch
         ):
             continue
         grouped.setdefault(row.agent_id, []).append(row)
@@ -1901,43 +1924,52 @@ def _resource_binding_visible_in_agent_summary(
     tenant_id: str,
     agent: AgentProfile | None,
     binding: AgentResourceBinding,
+    prefetch: BindingVisibilityPrefetch | None = None,
 ) -> bool:
     if not agent or binding.status == "deleted":
         return False
 
-    model_by_type = {
-        "skill": Skill,
-        "general_skill": GeneralSkill,
-        "knowledge_base": KnowledgeBase,
-        "tool": Tool,
-    }
-    model = model_by_type.get(binding.resource_type)
-    if model is None:
-        return False
-    resource = db.get(model, binding.resource_id)
+    if prefetch is not None:
+        resource = prefetch.resources.get((binding.resource_type, binding.resource_id))
+    else:
+        model_by_type = {
+            "skill": Skill,
+            "general_skill": GeneralSkill,
+            "knowledge_base": KnowledgeBase,
+            "tool": Tool,
+        }
+        model = model_by_type.get(binding.resource_type)
+        if model is None:
+            return False
+        resource = db.get(model, binding.resource_id)
     if not resource or resource.tenant_id != tenant_id:
         return False
     if isinstance(resource, KnowledgeBase) and _is_empty_default_knowledge_base(
-        db, tenant_id, resource
+        db, tenant_id, resource, prefetch=prefetch
     ):
         return False
 
     if agent.is_overall:
-        if not is_open_gallery_resource(db, tenant_id, binding.resource_type, resource):
+        if not is_open_gallery_resource(
+            db, tenant_id, binding.resource_type, resource, prefetch=prefetch
+        ):
             return False
     elif not is_bound_resource_visible_for_agent(
-        db, tenant_id, binding.resource_type, resource, binding
+        db, tenant_id, binding.resource_type, resource, binding, prefetch=prefetch
     ):
         return False
 
     if isinstance(resource, Skill) and not agent.is_overall:
-        branch = db.exec(
-            select(AgentSkillBranch).where(
-                AgentSkillBranch.tenant_id == tenant_id,
-                AgentSkillBranch.agent_id == agent.id,
-                AgentSkillBranch.skill_id == resource.skill_id,
-            )
-        ).first()
+        if prefetch is not None:
+            branch = prefetch.skill_branches.get((agent.id, resource.skill_id))
+        else:
+            branch = db.exec(
+                select(AgentSkillBranch).where(
+                    AgentSkillBranch.tenant_id == tenant_id,
+                    AgentSkillBranch.agent_id == agent.id,
+                    AgentSkillBranch.skill_id == resource.skill_id,
+                )
+            ).first()
         if branch and branch.status == "deleted":
             return False
         skill_status = branch.status if branch else resource.status
@@ -1945,14 +1977,17 @@ def _resource_binding_visible_in_agent_summary(
             return False
 
     if isinstance(resource, KnowledgeBase) and not agent.is_overall:
-        branch = db.exec(
-            select(AgentKnowledgeBranch).where(
-                AgentKnowledgeBranch.tenant_id == tenant_id,
-                AgentKnowledgeBranch.agent_id == agent.id,
-                AgentKnowledgeBranch.knowledge_base_id == resource.id,
-                AgentKnowledgeBranch.status != "deleted",
-            )
-        ).first()
+        if prefetch is not None:
+            branch = prefetch.kb_branches.get((agent.id, resource.id))
+        else:
+            branch = db.exec(
+                select(AgentKnowledgeBranch).where(
+                    AgentKnowledgeBranch.tenant_id == tenant_id,
+                    AgentKnowledgeBranch.agent_id == agent.id,
+                    AgentKnowledgeBranch.knowledge_base_id == resource.id,
+                    AgentKnowledgeBranch.status != "deleted",
+                )
+            ).first()
         if not branch:
             return False
         if binding.status == "active" and branch.status != "active":
@@ -1971,17 +2006,25 @@ def _resource_binding_visible_in_agent_summary(
     return False
 
 
-def _is_empty_default_knowledge_base(db: Session, tenant_id: str, kb: KnowledgeBase) -> bool:
+def _is_empty_default_knowledge_base(
+    db: Session,
+    tenant_id: str,
+    kb: KnowledgeBase,
+    prefetch: BindingVisibilityPrefetch | None = None,
+) -> bool:
     metadata = kb.metadata_json or {}
-    has_runtime_rows = any(
-        db.exec(
-            select(model.id).where(
-                model.tenant_id == tenant_id,
-                model.knowledge_base_id == kb.id,
-            )
-        ).first()
-        for model in (KnowledgeDocument, KnowledgeBucket, KnowledgeChunk)
-    )
+    if prefetch is not None:
+        has_runtime_rows = kb.id in prefetch.kb_ids_with_runtime_rows
+    else:
+        has_runtime_rows = any(
+            db.exec(
+                select(model.id).where(
+                    model.tenant_id == tenant_id,
+                    model.knowledge_base_id == kb.id,
+                )
+            ).first()
+            for model in (KnowledgeDocument, KnowledgeBucket, KnowledgeChunk)
+        )
     if has_runtime_rows:
         return False
     if metadata.get("created_from_document_upload") and not metadata.get("source_document_id"):

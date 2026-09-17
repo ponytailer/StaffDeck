@@ -35,8 +35,29 @@
   --ink-soft: #343633;
   --copper: #a85d32;
   --olive: #6f7b42;
-  --shadow-float: 0 20px 54px rgba(37, 32, 24, 0.1);
-  --shadow-soft: 0 10px 30px rgba(37, 32, 24, 0.055);
+  /* SD1 floating-island shadows (single source of truth, equals effective SD1 values) */
+  --shadow-float: 0 18px 48px rgba(17, 17, 17, 0.10);
+  --shadow-soft: 0 8px 24px rgba(17, 17, 17, 0.045);
+  /* SD1 floating-island tokens */
+  --island-gap: 16px;
+  --island-radius: 20px;
+  --island-radius-sm: 16px;
+  --island-bg: #ffffff;
+  --island-border-color: rgba(17, 17, 17, 0.06);
+  --island-padding: 12px;
+  --island-shadow: var(--shadow-float);
+  --island-shadow-sm: var(--shadow-soft);
+  --canvas-bg: #f1f2f6;
+  --elev-card: 0 1px 2px rgba(17, 17, 17, 0.04), 0 1px 8px rgba(70, 76, 94, 0.06);
+  --elev-overlay: 0 24px 68px rgba(17, 17, 17, 0.18);
+  /* SD1 stacking tokens */
+  --z-island: 10;
+  --z-island-content: 1;
+  --z-sticky: 20;
+  --z-dropdown: 50;
+  --z-drawer: 60;
+  --z-modal: 70;
+  --z-toast: 90;
   --font-body: "Inter", "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
   --font-display: "Inter", "IBM Plex Sans", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -5189,8 +5210,7 @@ pre {
   --accent: #111111;
   --accent-soft: #f2f3f5;
   --accent-foreground: #ffffff;
-  --shadow-float: 0 18px 48px rgba(17, 17, 17, 0.10);
-  --shadow-soft: 0 8px 24px rgba(17, 17, 17, 0.045);
+  /* --shadow-float / --shadow-soft consolidated into the first :root (single source of truth) */
   --font-body: "Inter", "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
   --font-display: var(--font-body);
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -5202,12 +5222,12 @@ pre {
 
 body,
 .app-shell {
-  background: #f7f8fa;
+  background: var(--canvas-bg);
   letter-spacing: 0;
 }
 
 .app-shell {
-  background: #f7f8fa;
+  background: var(--canvas-bg);
 }
 
 .sidebar {
@@ -5523,9 +5543,9 @@ body,
 /* SD1 profile collapsed screen rebuild from Figma node 1:7470 */
 .app-shell {
   width: 100vw;
-  height: 100vh;
+  height: 100svh;
   min-height: 0;
-  background: #FCFCFC;
+  background: var(--canvas-bg);
 }
 
 .sd1-sidebar.is-expanded {
@@ -7102,3 +7122,156 @@ body,
     @apply border-border outline-ring/50;
   }
 }
+
+/* ==========================================================================
+   SD1 floating-island layer —— appended OUTSIDE every @layer on purpose.
+   依据 CSS Cascade Layers：未分层（unlayered）普通声明 > @layer utilities 普通声明，
+   因此以下规则可在**不新增任何重要声明提升**的前提下覆盖 Tailwind 工具类
+   （w-(--sidebar-width) / h-svh / border-r / backdrop-blur-* 等）。
+   ⚠️ 严禁在此块加 transform / filter / contain / 常驻 will-change —— 会破坏
+   QuickStartGuide（position: fixed，:223/:234）的定位上下文。
+   ========================================================================== */
+
+/* T02 —— 侧边栏岛（挂点 = [data-slot="sidebar-container"]，由 SIDEBAR_SHELL_CLASS
+   追加 .sd1-island-sidebar）。height 覆盖 h-svh；margin 四边各 gap；
+   border:0 压掉 group-data-[side=left]:border-r；hairline 由 box-shadow spread 承担。 */
+.sd1-island-sidebar {
+  height: calc(100svh - 2 * var(--island-gap));
+  margin: var(--island-gap);
+  border: 0;
+  border-radius: var(--island-radius);
+  background: var(--island-bg);
+  box-shadow: 0 0 0 1px var(--island-border-color), var(--island-shadow);
+}
+
+/* 收起态圆角降为 radius-sm */
+.group[data-collapsible="icon"] .sd1-island-sidebar {
+  border-radius: var(--island-radius-sm);
+}
+
+/* 展开/收起过渡：补 width/margin/border-radius/box-shadow，避免圆角与边距跳变；
+   duration/ease 沿用 sidebar.tsx 的 duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]。 */
+[data-slot="sidebar-container"] {
+  transition-property: left, right, width, margin, border-radius, box-shadow;
+}
+
+/* T02 —— sidebar-gap 占位宽度 = 岛宽 + 2×gap（覆盖 w-(--sidebar-width)） */
+[data-slot="sidebar-gap"] {
+  width: calc(var(--sidebar-width) + 2 * var(--island-gap));
+}
+
+.group[data-collapsible="icon"] [data-slot="sidebar-gap"] {
+  width: calc(var(--sidebar-width-icon) + 2 * var(--island-gap));
+}
+
+/* T01 —— 画布类（chat 页 root：ChatPage / ChatGalleryPage） */
+.sd1-canvas {
+  background: var(--canvas-bg);
+}
+
+/* ==========================================================================
+   T03 —— 内容岛（挂点 = App.tsx 新增的包裹层 .sd1-content-island）
+   左侧 16px 沟槽已由 [data-slot="sidebar-gap"] 的 252px 占位承担 → margin-left = 0。
+   仍写在 @layer 之外，靠"未分层 > 分层"覆盖 Tailwind 工具类与 .content 的 height:100vh。
+   ========================================================================== */
+.sd1-content-island {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: var(--island-gap) var(--island-gap) var(--island-gap) 0;
+  padding: var(--island-padding);
+  border-radius: var(--island-radius);
+  background: var(--island-bg);
+  box-shadow: 0 0 0 1px var(--island-border-color), var(--island-shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: var(--z-island-content);
+}
+
+/* 压掉 .content 的 height:100vh（特异性 0,2,0 > 0,1,0，无需 important 提升）。
+   .content 自身保留 overflow:auto 做滚动条，岛用 overflow:hidden 裁 20px 圆角。 */
+.sd1-content-island > .content {
+  height: 100%;
+  background: transparent;
+}
+
+/* 逃生开关：[data-island="sidebar-only"] 回退单岛；[data-island="flush"] 满屏贴边 */
+[data-island="sidebar-only"] {
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-island="flush"] {
+  padding: 0;
+}
+
+/* ==========================================================================
+   T04 —— 响应式降级（全部走令牌，禁止魔法数字；断点与现有 1181/980/760/720/420 对齐）
+   这些 :root 覆盖位于首个 :root(:17) 之后，天然生效。
+   ========================================================================== */
+@media (max-width: 1180px) {
+  :root {
+    --island-gap: 12px;
+    --island-radius: 18px;
+  }
+}
+
+@media (max-width: 980px) {
+  :root {
+    --island-gap: 8px;
+    --island-radius: 16px;
+    --island-padding: 10px;
+    --island-shadow: var(--island-shadow-sm);
+  }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --island-radius: 14px;
+    --island-padding: 8px;
+  }
+}
+
+@media (max-width: 420px) {
+  :root {
+    --island-gap: 6px;
+    --island-radius: 12px;
+  }
+}
+
+/* ==========================================================================
+   T04 —— 岛内焦点环：offset 环需完整可见（岛有 overflow:hidden，靠内边距留白）；
+   --ring=#0f766e 在岛白底对比度 5.47:1（已达 ≥3:1）。
+   ========================================================================== */
+.sd1-island-sidebar :is(a, button, [role="button"], input, select, textarea, [tabindex]):focus-visible,
+.sd1-content-island :is(a, button, [role="button"], input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ==========================================================================
+   T04 —— 降低动效：岛相关 >150ms 过渡 → 0.01ms，并移除 hover 位移动画
+   （位移仍在，但瞬时完成、无动画）。未分层，故无需 important 即可压过 utilities。
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="sidebar-container"],
+  [data-slot="sidebar-gap"],
+  .sd1-island-sidebar,
+  .sd1-content-island,
+  .sd1-island-sidebar *,
+  .sd1-content-island * {
+    transition-duration: 0.01ms;
+  }
+
+  .sd1-island-sidebar *,
+  .sd1-content-island * {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+  }
+}
+
+

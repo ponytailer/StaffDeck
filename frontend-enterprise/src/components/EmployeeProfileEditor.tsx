@@ -1,5 +1,5 @@
 import { IdcardOutlined } from '../icons';
-import { X as XIcon } from 'lucide-react';
+import { Share2, X as XIcon } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Button as UIButton,
@@ -18,6 +18,7 @@ import {
 } from '@/components/ui';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
 import { api, TENANT_ID } from '../api/client';
+import AgentShareDialog from './AgentShareDialog';
 import type { EnterpriseAuthUser } from '../auth';
 import { employeeDisplayName, employeeProfile } from '../employee';
 import type { AgentProfileRead } from '../types';
@@ -72,6 +73,7 @@ export default function EmployeeProfileEditor({
 }) {
   const [form, setForm] = useState<EmployeeProfileFormValues>(BLANK_FORM);
   const [saving, setSaving] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const profile = useMemo(() => employeeProfile(agent), [agent]);
 
   const update = (patch: Partial<EmployeeProfileFormValues>) => setForm((prev) => ({ ...prev, ...patch }));
@@ -144,6 +146,7 @@ export default function EmployeeProfileEditor({
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(next) => { if (!next && !saving) onClose(); }}>
       <DialogContent
         aria-describedby={undefined}
@@ -252,6 +255,15 @@ export default function EmployeeProfileEditor({
         <div className="flex items-center justify-end gap-[8px] px-[12px]">
           <UIButton
             variant="outline"
+            disabled={saving || !agent || agent.status !== 'active'}
+            onClick={() => setShareOpen(true)}
+            className="mr-auto h-[32px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:border-[#e3e7f1] hover:bg-[#f6f6f6] hover:text-[#18181a]"
+          >
+            <Share2 className="size-[14px]" />
+            分享
+          </UIButton>
+          <UIButton
+            variant="outline"
             disabled={saving}
             onClick={onClose}
             className="h-[32px] w-[80px] rounded-[10px] border-[#e3e7f1] bg-white px-[12px] text-[14px] font-normal text-[#464c5e] hover:border-[#e3e7f1] hover:bg-[#f6f6f6] hover:text-[#18181a]"
@@ -268,6 +280,12 @@ export default function EmployeeProfileEditor({
         </div>
       </DialogContent>
     </Dialog>
+    <AgentShareDialog
+      agent={agent ?? null}
+      open={shareOpen}
+      onClose={() => setShareOpen(false)}
+    />
+    </>
   );
 }
 

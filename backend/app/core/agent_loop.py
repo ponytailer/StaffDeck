@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator
 from time import sleep
 from typing import Any, Literal
 
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.agents.branching import (
@@ -1169,9 +1170,25 @@ class AgentLoop:
             )
             self.db.add(chat_session)
             self.db.flush()
+            self._bump_agent_usage(request.agent_id)
         elif not chat_session.agent_id and request.agent_id:
             chat_session.agent_id = request.agent_id
         return chat_session
+
+    def _bump_agent_usage(self, agent_id: str | None) -> None:
+        """数字员工「被使用」计数 +1(每新建一个会话算一次,站内与分享访客都计入)。
+
+        用 SQL 侧自增而非 read-modify-write,避免并发建会话时互相覆盖;
+        独立冗余列是为了让员工广场列表不必对每个员工做一次 count 查询。
+        """
+        if not agent_id:
+            return
+        self.db.exec(
+            update(AgentProfile)
+            .where(AgentProfile.id == agent_id)
+            .values(usage_count=AgentProfile.usage_count + 1, updated_at=utc_now())
+            .execution_options(synchronize_session=False)
+        )
 
     def _current_skill_step(
         self, skill: Skill, active_step_id: str | None

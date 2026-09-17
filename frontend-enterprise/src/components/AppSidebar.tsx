@@ -43,6 +43,7 @@ import IconToggle from '../assets/icons/action-toggle.svg?react';
 import IconHeaderCollapse from '../assets/icons/header-collapse.svg?react';
 import IconAccounts from '../assets/icons/sys-accounts.svg?react';
 import IconModels from '../assets/icons/sys-models.svg?react';
+import IconListBulleted from '../assets/icons/list-bulleted.svg?react';
 import IconSettings from '../assets/icons/action-toggle.svg?react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconAdd from '../assets/icons/add.svg?react';
@@ -68,6 +69,8 @@ const PRIMARY_NAV: NavItem[] = [
   // 暂时隐藏渠道接入入口（页面与路由保留，需要时恢复下行即可）
   // { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
   { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
+  // 平台更新内容：渲染仓库根目录的 changelog.md，全体成员可见
+  { route: EnterpriseRoute.PlatformUpdates, label: '平台更新内容', Icon: IconListBulleted },
 ];
 
 const PROFILE_NAV: NavItem[] = [
@@ -161,7 +164,7 @@ export type AppSidebarProps = AppSidebarManagementProps | AppSidebarChatProps;
 
 // Shared shell classes so the management + chat sidebars share the same chrome.
 const SIDEBAR_SHELL_CLASS =
-  'overflow-hidden border-r border-sidebar-border bg-sidebar backdrop-blur-[9.5px] **:data-[slot=sidebar-inner]:bg-sidebar';
+  'overflow-hidden border-sidebar-border bg-sidebar **:data-[slot=sidebar-inner]:bg-sidebar sd1-island-sidebar';
 
 function PrimaryNavButton({
   item,

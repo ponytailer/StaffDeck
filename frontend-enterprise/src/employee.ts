@@ -345,12 +345,15 @@ export function creatorNameFromMetadata(
   fallback = '',
 ): string {
   const meta = metadata || {};
+  // 展示名优先取「显示名」：`creator_name` / `created_by` 由后端
+  // `user_creator_metadata` 写入的是**用户名**（如 chenyi.cq），若排在前面
+  // 广场里就会把用户名当创建者显示出来。显示名缺失时才回退到用户名。
   const creator = firstString(
+    meta.created_by_display_name,
+    meta.owner_display_name,
     meta.creator_name,
     meta.created_by,
-    meta.created_by_display_name,
     meta.created_by_username,
-    meta.owner_display_name,
     meta.owner_username,
     meta.gallery_published_by,
     meta.created_by_user_id,

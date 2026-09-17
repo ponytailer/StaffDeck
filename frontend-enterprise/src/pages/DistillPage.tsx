@@ -2063,10 +2063,10 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   async function copyHistoryMessage(item: ChatItem) {
     const text = visibleChatContent(item);
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       notify.success('已复制');
     } catch {
-      notify.error('复制失败');
+      notify.error('复制失败，请手动选择复制');
     }
   }
 

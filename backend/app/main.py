@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
 from app.api import (
+    agent_shares,
     agents,
     app_updates,
     auth,
@@ -46,6 +48,7 @@ from app.public_api.maintenance import start_public_api_maintenance, stop_public
 from app.public_api.webhooks import enqueue_due_webhook_deliveries
 from app.runtime_lock import acquire_runtime_instance_lock, release_runtime_instance_lock
 from app.scheduled_tasks.worker import start_background_worker, stop_background_worker
+from app.security.auth import read_token_payload, share_scope_from_payload
 from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.teams.sweeper import start_timeout_sweeper, stop_timeout_sweeper
 from app.version import app_version
@@ -67,6 +70,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 分享访客令牌允许访问的路径前缀:只开放对话链路与分享自身的接口。
+# 访客身份是一条真实的 users 行,没有这层白名单就等于把整个租户 API 交出去。
+_SHARE_SCOPE_ALLOWED_PREFIXES = (
+    "/api/chat/",
+    "/api/public/agent-shares/",
+)
+
+
+def share_scope_allows_path(path: str) -> bool:
+    """分享访客令牌可达的路径:只放行对话链路与分享自身接口。"""
+    return path.startswith(_SHARE_SCOPE_ALLOWED_PREFIXES)
+
+
+@app.middleware("http")
+async def restrict_share_scope(request: Request, call_next):
+    header = request.headers.get("authorization") or ""
+    if header[:7].lower() == "bearer ":
+        payload = read_token_payload(header[7:].strip())
+        if payload is not None and share_scope_from_payload(payload) is not None:
+            if not share_scope_allows_path(request.url.path):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Share link cannot access this resource"},
+                )
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -123,6 +152,8 @@ def health() -> dict[str, str]:
 
 
 app.include_router(app_updates.router)
+app.include_router(agent_shares.router)
+app.include_router(agent_shares.public_router)
 app.include_router(chat.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)

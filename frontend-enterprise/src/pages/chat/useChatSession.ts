@@ -322,10 +322,15 @@ export type UseChatSessionOptions = {
   sessionId?: string;
   /** Keep navigation and shared employee scope owned by the embedding page. */
   embedded?: boolean;
+  /**
+   * 分享链接访客模式：不加载站内模型列表（访客没有该接口权限），也不做模型校验。
+   * 模型在创建分享时锁定，由后端在对话链路里强制覆盖。
+   */
+  shareMode?: boolean;
 };
 
 export function useChatSession(options: UseChatSessionOptions = {}) {
-  const { anonymous = false, embedded = false } = options;
+  const { anonymous = false, embedded = false, shareMode = false } = options;
   const { t } = useI18n();
   const { sessionId: routeSessionId, draftAgentId } = useParams<{ sessionId?: string; draftAgentId?: string }>();
   const sessionId = options.sessionId || routeSessionId;
@@ -354,7 +359,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [selectedModelConfigId, setSelectedModelConfigId] = useState(
     () => window.localStorage.getItem(modelStorageKey(tenantId)) || '',
   );
-  const [modelConfigsLoading, setModelConfigsLoading] = useState(Boolean(auth));
+  const [modelConfigsLoading, setModelConfigsLoading] = useState(Boolean(auth) && !shareMode);
   const [modelConfigsLoadError, setModelConfigsLoadError] = useState('');
   const [modelSetupOpen, setModelSetupOpen] = useState(false);
   const [input, setInput] = useState('');
@@ -554,7 +559,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [userId]);
 
   const currentSession = sessionId ? sessions.find((item) => item.id === sessionId) || null : null;
-  const availableAgents = visibleChatEmployees(agents, auth?.user);
+  const availableAgents = shareMode ? agents : visibleChatEmployees(agents, auth?.user);
   const explicitDraftAgentId = draftAgentId || '';
   const routeDraftAgent = explicitDraftAgentId
     ? availableAgents.find((agent) => agent.id === explicitDraftAgentId) || null
@@ -674,6 +679,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [changeModelConfig]);
 
   const ensureModelAvailable = useCallback(() => {
+    // 分享访客不选模型：模型在创建分享时已锁定，由后端强制注入
+    if (shareMode) return true;
     if (modelConfigsLoading) {
       notify.warning(t('模型配置正在加载，请稍后再发送'));
       return false;
@@ -687,7 +694,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       return false;
     }
     return true;
-  }, [modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, t]);
+  }, [modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, shareMode, t]);
 
   const loadAgents = useCallback(async (preferredAgentId?: string) => {
     setAgentsLoaded(false);
@@ -697,7 +704,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       setSelectedAgentId((current) => {
         // A team scope is not part of the employee roster; keep it untouched.
         if (isTeamScope(current)) return current;
-        const employeeRows = visibleChatEmployees(rows, auth?.user);
+        // 分享访客的花名册已由后端收敛到分享的那一个员工，前端不再做成员可见性过滤
+        const employeeRows = shareMode ? rows : visibleChatEmployees(rows, auth?.user);
         if (preferredAgentId && employeeRows.some((item) => item.id === preferredAgentId)) return preferredAgentId;
         if (current && employeeRows.some((item) => item.id === current)) return current;
         const next = employeeRows[0]?.id || '';
@@ -708,7 +716,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     } finally {
       setAgentsLoaded(true);
     }
-  }, [auth?.user, tenantId]);
+  }, [auth?.user, shareMode, tenantId]);
 
   useEffect(() => {
     void loadAgents();
@@ -826,7 +834,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [currentSession?.team_id, currentSession?.title, embedded, navigate]);
 
   useEffect(() => {
-    if (!auth) {
+    // 分享访客没有站内模型列表的访问权限；模型由分享锁定，后端在对话链路里强制注入
+    if (!auth || shareMode) {
       setModelConfigsLoading(false);
       return;
     }
@@ -856,7 +865,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         setModelConfigsLoadError(error instanceof Error ? error.message : '模型配置加载失败');
       })
       .finally(() => setModelConfigsLoading(false));
-  }, [auth, redirectToLogin, tenantId]);
+  }, [auth, redirectToLogin, shareMode, tenantId]);
 
   useEffect(() => {
     const onModelConfigsUpdated = (event: Event) => {

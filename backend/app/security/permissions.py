@@ -56,6 +56,18 @@ def ensure_open_gallery_admin(tenant_id: str, current_user: User) -> None:
     ensure_tenant_admin(tenant_id, current_user)
 
 
+def ensure_open_gallery_member(tenant_id: str, current_user: User) -> User:
+    """Open-gallery writes (general_skill) are open to every member of the tenant.
+
+    Decoupling the open gallery from admin-only publishing: any tenant member may
+    import/publish a general skill into the open gallery. Retained separately from
+    ``ensure_open_gallery_admin`` because the other resource types (skill/knowledge/
+    tool) still require admin.
+    """
+    ensure_current_user_tenant(tenant_id, current_user)
+    return current_user
+
+
 def ensure_agent_scope_manager(
     db: Session,
     tenant_id: str,

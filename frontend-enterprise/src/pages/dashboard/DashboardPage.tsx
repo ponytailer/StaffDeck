@@ -195,6 +195,15 @@ export default function DashboardPage({
     return <div className="page dashboard-page" />;
   }
 
+  // 技能广场在无数字员工时也应可浏览（公司内部 skill 分享）
+  if (profileTab === 'skills' && !selectedAgent) {
+    return (
+      <div className="page dashboard-page">
+        <GeneralSkillsPage embedded currentUser={currentUser} onLogout={onLogout} />
+      </div>
+    );
+  }
+
   if (!selectedAgent && !isAdmin) {
     return (
       <div className="page dashboard-page">

@@ -55,6 +55,8 @@ class AgentProfileRead(BaseModel):
     is_overall: bool
     status: str
     harness_max_actions: int = 32
+    # 被使用次数:员工广场卡片展示(每次新建会话 +1)
+    usage_count: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
     resources: list[AgentResourceBindingRead] = Field(default_factory=list)
     created_at: str

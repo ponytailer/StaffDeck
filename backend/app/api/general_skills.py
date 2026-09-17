@@ -17,20 +17,20 @@ from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlmodel import Session, select
 
 from app.agents.branching import (
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
     get_agent,
+    get_overall_agent,
     hide_open_gallery_binding,
     is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
     metadata_preserving_creator,
-    require_overall_agent,
     user_creator_metadata,
 )
 from app.capabilities.local_general_skill import (
@@ -66,6 +66,8 @@ from app.security.auth import get_current_user
 from app.security.permissions import (
     ensure_agent_scope_manager,
     ensure_open_gallery_admin,
+    ensure_open_gallery_member,
+    is_admin_user,
     require_agent_scope_viewer,
 )
 from app.security.tenant import ensure_tenant
@@ -83,13 +85,18 @@ MAX_CLAWHUB_FILES = 240
 REMOTE_SKILL_DOWNLOAD_TIMEOUT_SECONDS = 120
 GENERAL_SKILL_STREAM_IDLE_TIMEOUT_SECONDS = 600
 GENERAL_SKILL_DEBUG_CHANNEL = "skill_test"
+GENERAL_SKILL_MISSING_REFERENCES_CODE = "GENERAL_SKILL_MISSING_REFERENCES"
 GITHUB_HOSTS = {"github.com", "www.github.com"}
 RAW_GITHUB_HOST = "raw.githubusercontent.com"
 CLAWHUB_HOSTS = {"clawhub.ai", "www.clawhub.ai"}
 SKILLHUB_HOSTS = {"skillhub.ai", "www.skillhub.ai"}
 REMOTE_SKILLHUB_HOSTS = CLAWHUB_HOSTS | SKILLHUB_HOSTS
 CLAWHUB_DOWNLOAD_ENDPOINT = "https://wry-manatee-359.convex.site/api/v1/download"
-LOCAL_REFERENCE_PATTERN = re.compile(r"(?<![\w./-])(?:\./)?references/[^\s`'\"<>|]+")
+# 只吃「像路径」的字符。早先的字符类 `[^\s`'"<>|]` 会把 markdown 链接语法一起吞掉：
+# `[aiapp.md](./references/products/aiapp.md)` 被整体匹配成
+# `references/products/aiapp.md](./references/products/aiapp.md`，生成一个**永不可能存在**
+# 的路径，于是一个文件都不缺的包也会被判定为缺失（2026-09-20 实测 dws.zip：12 条报错里 11 条是假路径）。
+LOCAL_REFERENCE_PATTERN = re.compile(r"(?<![\w./-])(?:\./)?references/[\w.+@~%/-]+")
 
 
 def _agent_id_or_none(agent_id: object | None) -> str | None:
@@ -148,7 +155,7 @@ def import_general_skill(
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
     is_private_agent_scope = bool(agent and not agent.is_overall)
     if not is_private_agent_scope:
-        ensure_open_gallery_admin(request.tenant_id, current_user)
+        ensure_open_gallery_member(request.tenant_id, current_user)
     row = None
     package_source_row = None
     inherited_capability_scope = "general"
@@ -179,6 +186,11 @@ def import_general_skill(
                 package_source_row = row
                 row = None
                 slug = _unique_slug(db, request.tenant_id, slug)
+        else:
+            # Open-gallery update path: the existing skill may only be overwritten by
+            # its creator or an administrator (prevents a member from clobbering another
+            # member's published skill via original_slug).
+            _require_gallery_skill_owner_or_admin(row, current_user)
     else:
         conflict = db.exec(
             select(GeneralSkill).where(
@@ -211,7 +223,9 @@ def import_general_skill(
         if request.directories is not None
         else None
     )
-    _validate_skill_package_references(files)
+    _validate_skill_package_references(
+        files, allow_missing=request.allow_missing_references
+    )
     now = utc_now()
     if row:
         metadata = metadata_preserving_creator(row.metadata_json, parsed_metadata)
@@ -340,6 +354,7 @@ def import_skillhub_skill(
         homepage=request.homepage,
         capability_scope=request.capability_scope,
         current_user=current_user,
+        allow_missing_references=request.allow_missing_references,
     )
 
 
@@ -391,6 +406,7 @@ def import_general_skill_package(
         homepage=request.homepage,
         capability_scope=request.capability_scope,
         current_user=current_user,
+        allow_missing_references=request.allow_missing_references,
     )
 
 
@@ -408,8 +424,11 @@ def _create_imported_general_skill(
     homepage: str | None = None,
     capability_scope: str = "general",
     current_user: object | None = None,
+    allow_missing_references: bool = False,
 ) -> GeneralSkillRead:
-    _validate_skill_package_references(files)
+    _validate_skill_package_references(
+        files, allow_missing=allow_missing_references
+    )
     markdown = _skill_markdown_from_files(files)
     metadata = _parse_skill_metadata(markdown)
     resolved_name = (
@@ -456,7 +475,7 @@ def _create_imported_general_skill(
         updated_at=now,
     )
     if not (agent and not agent.is_overall):
-        ensure_open_gallery_admin(tenant_id, current_user)
+        ensure_open_gallery_member(tenant_id, current_user)
     if agent and not agent.is_overall:
         mark_resource_private_for_agent(row, agent.id, row.metadata_json or {})
     else:
@@ -487,6 +506,78 @@ def _create_imported_general_skill(
     return general_skill_read(row)
 
 
+def _general_skill_created_by(row: GeneralSkill, user_id: str | None) -> bool:
+    if not user_id:
+        return False
+    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+    return user_id in {metadata.get("owner_user_id"), metadata.get("created_by_user_id")}
+
+
+def _list_my_general_skills(
+    db: Session, tenant_id: str, current_user: User
+) -> list[GeneralSkillRead]:
+    """「我创建的技能」：跨作用域列出当前用户创建的技能（广场 + 挂在员工下的）。
+
+    技能广场解耦数字员工后，成员在广场里创建的技能不再挂在任何数字员工下，
+    该口径给创建者一个维护入口（编辑 / 启停 / 删除），不随当前作用域变化。
+    """
+    rows = db.exec(
+        select(GeneralSkill)
+        .where(GeneralSkill.tenant_id == tenant_id)
+        .order_by(GeneralSkill.updated_at.desc())
+    ).all()
+    owned = [row for row in rows if _general_skill_created_by(row, current_user.id)]
+    if not owned:
+        return []
+    overall = get_overall_agent(db, tenant_id)
+    overall_id = overall.id if overall else ""
+    # 私有技能的启停状态记在宿主员工的绑定行上，广场技能记在 overall 员工的绑定行上。
+    # 两类绑定一次查齐，避免逐行查询（远程 PG 单次往返 ~10ms）。
+    agent_ids: set[str] = {overall_id} if overall_id else set()
+    for row in owned:
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        owner_agent_id = str(metadata.get("owner_agent_id") or "")
+        if owner_agent_id:
+            agent_ids.add(owner_agent_id)
+    binding_status: dict[tuple[str, str], str] = {}
+    if agent_ids:
+        for binding in db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == tenant_id,
+                AgentResourceBinding.resource_type == "general_skill",
+                AgentResourceBinding.agent_id.in_(agent_ids),
+            )
+        ).all():
+            binding_status[(binding.agent_id, binding.resource_id)] = binding.status
+    result: list[GeneralSkillRead] = []
+    for row in owned:
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        owner_agent_id = str(metadata.get("owner_agent_id") or "")
+        if not owner_agent_id:
+            # 广场技能：已在广场删掉的（overall 绑定行被置为 deleted）不再回显，
+            # 否则会变成一条删不掉的幽灵行。
+            if binding_status.get((overall_id, row.id)) == "deleted":
+                continue
+            result.append(general_skill_read(row))
+            continue
+        status = binding_status.get((owner_agent_id, row.id))
+        if status == "deleted":
+            # 已从宿主员工移除的技能不再出现在维护列表里
+            continue
+        if status is None:
+            result.append(general_skill_read(row))
+            continue
+        result.append(
+            general_skill_read(
+                row,
+                status_override=(
+                    "published" if status == "active" and row.status == "published" else "archived"
+                ),
+            )
+        )
+    return result
+
+
 @router.get(
     "", response_model=list[GeneralSkillRead], dependencies=[Depends(require_agent_scope_viewer)]
 )
@@ -494,9 +585,21 @@ def list_general_skills(
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
     agent_id: str | None = Query(None),
+    # 刻意用「标量类型 + 裸默认值」而不是 Query(False)：本函数既当 HTTP handler，又被
+    # public_api/resources.py 与多处测试直接当成普通函数调用。直接调用时 FastAPI 的
+    # Query()/Depends() 默认值会以哨兵对象漏进来——Query(False) 是 truthy（会误进 mine
+    # 分支），Depends() 哨兵没有 .id（AttributeError）。裸默认值在直接调用时是真正的
+    # False；FastAPI 对「标量 + 裸默认值」同样按 query 参数解析，HTTP 行为与 Query(False) 一致。
+    mine: bool = False,
+    current_user: User | None = Depends(get_current_user),
 ) -> list[GeneralSkillRead]:
     ensure_tenant(db, tenant_id)
     agent_id = _agent_id_or_none(agent_id)
+    if mine:
+        # 同理：直接调用时 current_user 可能是 Depends() 哨兵，不能直接当 User 用。
+        if not isinstance(current_user, User):
+            raise HTTPException(status_code=401, detail="Authentication required")
+        return _list_my_general_skills(db, tenant_id, current_user)
     agent = get_agent(db, tenant_id, agent_id)
     if agent and not agent.is_overall:
         bindings = db.exec(
@@ -562,6 +665,33 @@ def get_general_skill(
     return general_skill_read(row)
 
 
+@router.get("/{slug}/package", dependencies=[Depends(require_agent_scope_viewer)])
+def download_general_skill_package(
+    slug: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
+    db: Session = Depends(get_session),
+) -> Response:
+    """下载技能 zip 包；包内容与导入格式同构，可直接再导入。"""
+    row = _get_general_skill(db, tenant_id, slug)
+    _ensure_general_skill_visible(db, tenant_id, row, agent_id)
+    archive = _general_skill_package_archive(row)
+    # 中文技能名不能进 `filename=`（latin-1 头会炸），故用 slug 兜底 + RFC 5987 的
+    # `filename*=` 携带真实名，浏览器优先取后者。
+    fallback_filename = f"{row.slug}.zip"
+    filename = f"{row.name or row.slug}.zip"
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{fallback_filename}\"; "
+                f"filename*=UTF-8''{quote(filename, safe='')}"
+            )
+        },
+    )
+
+
 @router.post("/{slug}/publish", response_model=GeneralSkillRead)
 def publish_general_skill(
     slug: str,
@@ -586,7 +716,7 @@ def publish_general_skill(
         db.add(binding)
         db.commit()
         return general_skill_read(row, status_override="published")
-    ensure_open_gallery_admin(tenant_id, current_user)
+    _require_gallery_skill_owner_or_admin(row, current_user)
     row.status = "published"
     mark_resource_open_gallery(row, row.metadata_json or {})
     row.updated_at = utc_now()
@@ -623,7 +753,7 @@ def archive_general_skill(
         db.add(binding)
         db.commit()
         return general_skill_read(row, status_override="archived")
-    ensure_open_gallery_admin(tenant_id, current_user)
+    _require_gallery_skill_owner_or_admin(row, current_user)
     row.status = "archived"
     row.updated_at = utc_now()
     db.add(row)
@@ -697,11 +827,21 @@ def delete_general_skill(
         db.commit()
         return {"status": "hidden", "slug": slug}
 
-    require_overall_agent(db, tenant_id, agent_id)
-    ensure_open_gallery_admin(tenant_id, current_user)
-    db.delete(row)
+    # Open-gallery skill deletion is limited to the creator or an admin. This also
+    # fixes the prior defect where the no-agent_id hard-delete branch called
+    # require_overall_agent(..., None) and blocked even administrators (issue: an
+    # admin could not delete a global resource without passing an overall agent_id).
+    _require_gallery_skill_owner_or_admin(row, current_user)
+    overall = get_overall_agent(db, tenant_id)
+    if overall is None:
+        db.delete(row)
+        db.commit()
+        return {"status": "deleted", "slug": slug}
+    if not is_open_gallery_resource(db, tenant_id, "general_skill", row):
+        return {"status": "hidden", "slug": slug}
+    hide_open_gallery_binding(db, tenant_id, "general_skill", row.id)
     db.commit()
-    return {"status": "deleted", "slug": slug}
+    return {"status": "hidden", "slug": slug}
 
 
 @router.post("/{slug}/run", response_model=GeneralSkillRunResponse)
@@ -978,6 +1118,24 @@ def _get_general_skill(db: Session, tenant_id: str, slug: str) -> GeneralSkill:
     return row
 
 
+def _require_gallery_skill_owner_or_admin(row: GeneralSkill, current_user: User) -> None:
+    """Open-gallery general_skill mutation/deletion is limited to the creator or an admin.
+
+    After decoupling, any member may *publish* into the open gallery, but removing or
+    archiving a gallery skill is restricted to its creator or a tenant administrator so a
+    member cannot take down someone else's published skill.
+    """
+    if is_admin_user(current_user):
+        return
+    owner_id = (row.metadata_json or {}).get("owner_user_id")
+    if owner_id == current_user.id:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Only the creator or administrator can manage this open-gallery skill",
+    )
+
+
 def _private_skill_owned_by_agent(
     db: Session, tenant_id: str, row: GeneralSkill, agent_id: str
 ) -> bool:
@@ -1198,29 +1356,49 @@ def _replace_skill_markdown_in_package(
     return updated
 
 
-def _validate_skill_package_references(files: list[GeneralSkillFile]) -> None:
+def _validate_skill_package_references(
+    files: list[GeneralSkillFile], *, allow_missing: bool = False
+) -> None:
+    """校验 SKILL.md 里 `references/...` 形式的本地引用是否都进包了。
+
+    `allow_missing=True` 表示用户在二次确认弹窗里选择了「仍要导入」——缺文档的技能
+    会降级（按需读取时读不到），但不再阻断导入。
+    """
     skill_file = _find_skill_file(files)
-    if skill_file is None:
+    if skill_file is None or allow_missing:
         return
-    package_paths = {file.path.replace("\\", "/").lstrip("./") for file in files}
+    package_paths = {file.path.replace("\\", "/").removeprefix("./") for file in files}
+    content = skill_file.content
     referenced_paths: set[str] = set()
-    for match in LOCAL_REFERENCE_PATTERN.finditer(skill_file.content):
+    for match in LOCAL_REFERENCE_PATTERN.finditer(content):
+        # 通配引用（`references/products/*.md`）匹配会在 `*` 前停住，按后缀判断跳过
+        if content[match.end() : match.end() + 1] in {"*", "{"}:
+            continue
         raw_path = unquote(match.group(0)).replace("\\", "/")
         raw_path = raw_path.split("#", 1)[0].split("?", 1)[0]
         raw_path = raw_path.rstrip(")]}.,;:!?，。；：！？")
         if any(marker in raw_path for marker in ("*", "{", "}")):
             continue
-        normalized = raw_path.removeprefix("./").strip("/")
-        if normalized and not normalized.endswith("/"):
-            referenced_paths.add(normalized)
+        # 尾部的 `/` 是「目录引用」标记（如 `references/products/`），**不能** strip 掉：
+        # 否则目录会被当成一个不存在的文件名去比对，包再完整也会误报缺失。
+        normalized = raw_path.removeprefix("./").lstrip("/")
+        if not normalized or normalized.endswith("/"):
+            continue
+        referenced_paths.add(normalized)
     missing = sorted(referenced_paths - package_paths)
     if missing:
+        # 结构化 detail：前端据此判定「缺引用」并弹二次确认，确认后带
+        # allow_missing_references=true 重试。message 保持原英文文案不变。
         raise HTTPException(
             status_code=400,
-            detail=(
-                "General skill package is missing files referenced by SKILL.md: "
-                + ", ".join(missing)
-            ),
+            detail={
+                "code": GENERAL_SKILL_MISSING_REFERENCES_CODE,
+                "message": (
+                    "General skill package is missing files referenced by SKILL.md: "
+                    + ", ".join(missing)
+                ),
+                "paths": missing,
+            },
         )
 
 
@@ -1289,6 +1467,28 @@ def _skill_files_or_markdown(row: GeneralSkill) -> list[dict[str, object]]:
             "size": len(row.skill_markdown.encode("utf-8")),
         }
     ]
+
+
+def _general_skill_package_archive(row: GeneralSkill) -> bytes:
+    """把库里存的技能文件重新打成 zip（与导入格式同构，可直接再导入）。
+
+    两处刻意的取舍：
+
+    - **按 UTF-8 回写**。存储层把每个文件都存成文本（导入时 `_files_from_zip` 走
+      `_decode_text`，非 UTF-8 字节已被 `errors="replace"` 破坏），所以二进制附件天然
+      有损。这是既有存储模型的限制，不是本端点引入的。
+    - **zip 根目录即技能根目录**。导入时 `_normalize_skill_files` 已经剥掉 SKILL.md 所在的
+      外层目录，库里存的 path 是技能根相对路径，因此导出的包再导入一次是等价的。
+    """
+    files = [GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)]
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        # 空目录不会从文件列表里推导出来，必须显式写目录项才不会丢
+        for directory in _skill_directories(row):
+            archive.writestr(f"{directory}/", b"")
+        for file in files:
+            archive.writestr(_clean_package_path(file.path), (file.content or "").encode("utf-8"))
+    return buffer.getvalue()
 
 
 def _parse_skill_metadata(markdown: str) -> dict[str, object]:

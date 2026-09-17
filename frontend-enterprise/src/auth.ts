@@ -15,8 +15,16 @@ export type EnterpriseAuthSession = {
 
 export const ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_auth';
 
+// 分享页等场景的「内存态身份覆盖」：只在本标签页有效、不落 localStorage，
+// 避免访客身份把浏览器里已有的站内登录态冲掉（反之亦然）。
+let authOverride: EnterpriseAuthSession | null = null;
+
+export function setEnterpriseAuthOverride(session: EnterpriseAuthSession | null): void {
+  authOverride = session;
+}
+
 export function getEnterpriseAuthSession(): EnterpriseAuthSession | null {
-  return readStoredSession(ENTERPRISE_AUTH_STORAGE_KEY);
+  return authOverride ?? readStoredSession(ENTERPRISE_AUTH_STORAGE_KEY);
 }
 
 export function setEnterpriseAuthSession(session: EnterpriseAuthSession): void {

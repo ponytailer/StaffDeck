@@ -58,7 +58,7 @@ from app.observability.spans import (
 )
 from app.scheduled_tasks.schema import ScheduledTaskDraftRead
 from app.scheduled_tasks.service import DEFAULT_TASK_TIME, detect_scheduled_task_draft
-from app.security.auth import get_current_user
+from app.security.auth import ShareScope, get_current_user, get_share_scope
 from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
 from app.session.attachments import (
@@ -996,8 +996,10 @@ def chat_turn(
     request: ChatTurnRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
+    share_scope: ShareScope | None = Depends(get_share_scope),
 ) -> ChatTurnResponse:
     _ensure_request_tenant(request.tenant_id, current_user)
+    request = _apply_share_scope(request, share_scope)
     request = request.model_copy(
         update={
             "user_id": current_user.id,
@@ -1011,10 +1013,10 @@ def chat_turn(
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
         _ensure_team_session_human_writable(chat_session)
-        request = _bind_request_to_session_agent(db, request, chat_session, current_user)
+        request = _bind_request_to_session_agent(db, request, chat_session, current_user, share_scope)
         team_tl_team = _team_tl_session_team(db, chat_session)
     else:
-        _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
+        _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user, share_scope)
     ensure_tenant(db, request.tenant_id)
     if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -1072,8 +1074,10 @@ def chat_stream(
     request: ChatTurnRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
+    share_scope: ShareScope | None = Depends(get_share_scope),
 ) -> StreamingResponse:
     _ensure_request_tenant(request.tenant_id, current_user)
+    request = _apply_share_scope(request, share_scope)
     request = request.model_copy(
         update={
             "user_id": current_user.id,
@@ -1088,11 +1092,11 @@ def chat_stream(
     if request.session_id:
         chat_session = _ensure_chat_session_available(db, request.tenant_id, current_user.id, request.session_id)
         _ensure_team_session_human_writable(chat_session)
-        request = _bind_request_to_session_agent(db, request, chat_session, current_user)
+        request = _bind_request_to_session_agent(db, request, chat_session, current_user, share_scope)
         team_tl_team = _team_tl_session_team(db, chat_session)
         team_tl_team_id = team_tl_team.id if team_tl_team is not None else None
     else:
-        _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
+        _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user, share_scope)
     if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     original_message = request.message
@@ -2677,11 +2681,33 @@ def _user_can_read_handoff_session(db: Session, tenant_id: str, current_user: Us
     return db.exec(statement).first() is not None
 
 
+def _apply_share_scope(
+    request: ChatTurnRequest,
+    share_scope: ShareScope | None,
+) -> ChatTurnRequest:
+    """分享访客令牌:强制绑定分享时锁定的数字员工与模型。
+
+    请求体里的 agent_id / model_config_id 一律忽略 —— 否则访客可以自己换员工或换模型,
+    绕过分享者在创建链接时做的选择。
+    """
+    # 用 isinstance 而非 `is not None`：直接调用（单测/内部复用）时默认值是 FastAPI 的
+    # Depends 对象，`is not None` 会把普通请求误判成分享访客。
+    if not isinstance(share_scope, ShareScope):
+        return request
+    return request.model_copy(
+        update={
+            "agent_id": share_scope.agent_id,
+            "model_config_id": share_scope.model_config_id,
+        }
+    )
+
+
 def _ensure_chat_agent_available(
     db: Session,
     tenant_id: str,
     agent_id: str | None,
     current_user: User,
+    share_scope: ShareScope | None = None,
 ) -> AgentProfile:
     if not agent_id:
         raise HTTPException(status_code=400, detail="Agent is required")
@@ -2689,6 +2715,11 @@ def _ensure_chat_agent_available(
     row = db.get(AgentProfile, agent_id)
     if not row or row.tenant_id != tenant_id or row.status != "active" or row.is_overall:
         raise HTTPException(status_code=404, detail="Agent not available")
+    if isinstance(share_scope, ShareScope):
+        # 访客没有成员身份,不能用成员可见性判定;只认分享时锁定的那一个数字员工
+        if share_scope.agent_id != row.id or share_scope.tenant_id != tenant_id:
+            raise HTTPException(status_code=403, detail="Agent not available")
+        return row
     if not _chat_agent_visible_to_user(row, current_user):
         raise HTTPException(status_code=403, detail="Agent not available")
     return row
@@ -2699,13 +2730,14 @@ def _bind_request_to_session_agent(
     request: ChatTurnRequest,
     chat_session: ChatSession,
     current_user: User,
+    share_scope: ShareScope | None = None,
 ) -> ChatTurnRequest:
     if chat_session.agent_id:
         if request.agent_id and request.agent_id != chat_session.agent_id:
             raise HTTPException(status_code=409, detail="Session is already bound to another agent")
         return request.model_copy(update={"agent_id": chat_session.agent_id})
 
-    agent = _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
+    agent = _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user, share_scope)
     chat_session.agent_id = agent.id
     chat_session.updated_at = utc_now()
     db.add(chat_session)

@@ -69,6 +69,7 @@ def init_db() -> None:
     _migrate_user_department_manual()
     _migrate_tenant_seed_fingerprint()
     _migrate_model_custom_headers_schema()
+    _migrate_agent_usage_count()
     _purge_orphaned_chat_sessions()
 
 
@@ -3190,6 +3191,24 @@ def _migrate_model_custom_headers_schema() -> None:
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE model_configs ADD COLUMN custom_headers_json JSON"))
         conn.execute(text("UPDATE model_configs SET custom_headers_json = '{}'"))
+
+
+def _migrate_agent_usage_count() -> None:
+    """agent_profiles 表补齐被使用次数列(usage_count)，SQLite 与 PostgreSQL 通用。"""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "agent_profiles" not in tables:
+        return
+    columns = {column["name"] for column in inspector.get_columns("agent_profiles")}
+    if "usage_count" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE agent_profiles ADD COLUMN usage_count "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        )
 
 
 def _migrate_pg_api_key_schema() -> None:

@@ -14,6 +14,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
+import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import TeamCard, { teamLeader } from '../components/TeamCard';
 import {
   canManageEmployeeAgent,
@@ -273,6 +274,32 @@ export default function EmployeeGalleryPage({
     ? '换个关键词再试试'
     : '请先在管理端创建团队并设置项目领导';
 
+  // 「我的数字员工」还需要在下方挂「我创建的技能」维护区，所以把员工网格抽出来复用，
+  // 避免在 mine / 其它两个 tab 之间复制同一段 JSX。
+  const employeeGrid = (
+    <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
+      {filteredEmployees.map((employee) => (
+        <EmployeeCard
+          key={employee.id}
+          employee={employee}
+          busy={startingAgentId === employee.id}
+          canManage={canManageEmployeeAgent(employee, currentUser)}
+          showMenu={false}
+          onOpen={() => void startEmployeeChat(employee)}
+          onStatus={(status) => void updateStatus(employee, status)}
+          onGallery={(published) => void updateGalleryState(employee, published)}
+          onDelete={() => setDeleteTarget(employee)}
+          onAvatar={() => setAvatarAgent(employee)}
+          onEdit={() => setProfileAgent(employee)}
+          onChat={() => void startEmployeeChat(employee)}
+        />
+      ))}
+      {!filteredEmployees.length && (
+        <EmployeeGalleryEmptyState title={emptyText} description={emptyDescription} />
+      )}
+    </div>
+  );
+
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader
@@ -322,28 +349,13 @@ export default function EmployeeGalleryPage({
             )}
           </div>
         </section>
+      ) : scope === 'mine' ? (
+        <>
+          <section aria-label="我的数字员工">{employeeGrid}</section>
+          <MyCreatedSkillsPanel agents={agents} searchTerm={searchTerm} />
+        </>
       ) : (
-        <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
-          {filteredEmployees.map((employee) => (
-            <EmployeeCard
-              key={employee.id}
-              employee={employee}
-              busy={startingAgentId === employee.id}
-              canManage={canManageEmployeeAgent(employee, currentUser)}
-              showMenu={false}
-              onOpen={() => void startEmployeeChat(employee)}
-              onStatus={(status) => void updateStatus(employee, status)}
-              onGallery={(published) => void updateGalleryState(employee, published)}
-              onDelete={() => setDeleteTarget(employee)}
-              onAvatar={() => setAvatarAgent(employee)}
-              onEdit={() => setProfileAgent(employee)}
-              onChat={() => void startEmployeeChat(employee)}
-            />
-          ))}
-          {!filteredEmployees.length && (
-            <EmployeeGalleryEmptyState title={emptyText} description={emptyDescription} />
-          )}
-        </div>
+        employeeGrid
       )}
 
       <EmployeeAvatarEditor

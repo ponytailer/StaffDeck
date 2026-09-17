@@ -5,6 +5,7 @@ import sys
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 from zipfile import ZipFile
 
 import pytest
@@ -14,8 +15,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
 from app.api.general_skills import (
+    _files_from_zip,
+    _general_skill_package_archive,
+    _list_my_general_skills,
     archive_general_skill,
     delete_general_skill,
+    download_general_skill_package,
     get_general_skill,
     import_clawhub_skill,
     import_general_skill,
@@ -563,6 +568,106 @@ def test_import_general_skill_rejects_missing_reference_files() -> None:
 
         assert exc_info.value.status_code == 400
         assert "references/wecomcli-calendar-meeting-room.md" in str(exc_info.value.detail)
+
+
+def test_import_general_skill_accepts_markdown_link_references() -> None:
+    """SKILL.md 用 `[x.md](./references/x.md)` 引用参考文件时不得误判缺失。
+
+    这是 2026-09-20 报错 400 的根因：旧正则 `references/[^\\s...]+` 会把
+    `](./references/products/aitable.md)` 整段吞成一个永不可能存在的路径。
+    """
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+
+        created = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="飞书工具箱",
+                slug="lark-toolkit",
+                files=[
+                    {
+                        "path": "SKILL.md",
+                        "content": (
+                            "# 飞书工具箱\n\n"
+                            "| 产品 | 参考文件 |\n"
+                            "| --- | --- |\n"
+                            "| AI表格 | [aitable.md](./references/products/aitable.md) |\n"
+                            "| 云文档 | [doc.md](./references/products/doc.md) |\n\n"
+                            "参考目录：references/products/\n"
+                            "通配引用：references/products/*.md\n"
+                        ),
+                    },
+                    {"path": "references/products/aitable.md", "content": "# AI表格\n"},
+                    {"path": "references/products/doc.md", "content": "# 云文档\n"},
+                ],
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert created.slug == "lark-toolkit"
+
+
+def test_general_skill_reference_validation_reports_only_real_missing_paths() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+
+        with pytest.raises(HTTPException) as exc_info:
+            import_general_skill(
+                GeneralSkillImportRequest(
+                    tenant_id="tenant_demo",
+                    name="飞书工具箱",
+                    slug="lark-toolkit",
+                    files=[
+                        {
+                            "path": "SKILL.md",
+                            "content": (
+                                "# 飞书工具箱\n\n"
+                                "| AI表格 | [aitable.md](./references/products/aitable.md) |\n"
+                                "| AI应用 | [aiapp.md](./references/products/aiapp.md) |\n"
+                            ),
+                        },
+                        {"path": "references/products/aitable.md", "content": "# AI表格\n"},
+                    ],
+                ),
+                db,
+                _admin_user(),
+            )
+
+        assert exc_info.value.status_code == 400
+        detail = exc_info.value.detail
+        # 缺失清单必须恰好等于真实缺失，且路径是可读的原始路径（不带 `](` 之类的语法碎片）
+        assert detail["code"] == "GENERAL_SKILL_MISSING_REFERENCES"
+        assert detail["paths"] == ["references/products/aiapp.md"]
+
+
+def test_import_general_skill_allows_missing_references_when_confirmed() -> None:
+    """前端二次确认（allow_missing_references=true）后，缺参考文件不再阻断导入。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+
+        created = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="飞书工具箱",
+                slug="lark-toolkit",
+                allow_missing_references=True,
+                files=[
+                    {
+                        "path": "SKILL.md",
+                        "content": (
+                            "# 飞书工具箱\n\n"
+                            "| AI应用 | [aiapp.md](./references/products/aiapp.md) |\n"
+                        ),
+                    },
+                ],
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert created.slug == "lark-toolkit"
+        assert [file.path for file in created.skill_files] == ["SKILL.md"]
 
 
 def test_markdown_only_update_preserves_existing_skill_package_files() -> None:
@@ -1228,6 +1333,295 @@ def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:
         )
 
 
+def test_member_can_import_open_gallery_skill_and_see_it_in_list() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        member = User(
+            id="user_member",
+            tenant_id="tenant_demo",
+            username="member",
+            password_hash="x",
+        )
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="成员天气技能",
+                slug="member-weather",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            member,
+        )
+        assert imported.metadata["owner_user_id"] == "user_member"
+
+        listed = list_general_skills("tenant_demo", db)
+        assert [row.slug for row in listed] == ["member-weather"]
+
+
+def test_member_cannot_delete_others_gallery_skill_but_can_delete_own() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        author = User(
+            id="user_author", tenant_id="tenant_demo", username="author", password_hash="x"
+        )
+        other = User(
+            id="user_other_member",
+            tenant_id="tenant_demo",
+            username="other_member",
+            password_hash="x",
+        )
+
+        own = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="作者天气技能",
+                slug="author-weather",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            author,
+        )
+
+        with pytest.raises(HTTPException) as delete_error:
+            delete_general_skill(own.slug, "tenant_demo", db, current_user=other)
+        assert delete_error.value.status_code == 403
+
+        deleted = delete_general_skill(own.slug, "tenant_demo", db, current_user=author)
+        assert deleted == {"status": "hidden", "slug": "author-weather"}
+        assert list_general_skills("tenant_demo", db) == []
+
+
+def test_admin_can_delete_any_gallery_skill_without_agent_id() -> None:
+    """Regression for the delete ordering defect: an admin deleting a gallery skill
+    without an overall agent_id was previously blocked by require_overall_agent even
+    though the administrator is allowed to remove global resources."""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        author = User(
+            id="user_author", tenant_id="tenant_demo", username="author", password_hash="x"
+        )
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="作者天气技能",
+                slug="author-weather",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            author,
+        )
+
+        deleted = delete_general_skill(
+            imported.slug, "tenant_demo", db, current_user=_admin_user()
+        )
+        assert deleted == {"status": "hidden", "slug": "author-weather"}
+        assert list_general_skills("tenant_demo", db) == []
+
+
+def test_member_cannot_overwrite_others_gallery_skill_via_original_slug() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        author = User(
+            id="user_author", tenant_id="tenant_demo", username="author", password_hash="x"
+        )
+        other = User(
+            id="user_other_member",
+            tenant_id="tenant_demo",
+            username="other_member",
+            password_hash="x",
+        )
+
+        import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="作者天气技能",
+                slug="author-weather",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            author,
+        )
+
+        with pytest.raises(HTTPException) as overwrite_error:
+            import_general_skill(
+                GeneralSkillImportRequest(
+                    tenant_id="tenant_demo",
+                    original_slug="author-weather",
+                    slug="author-weather",
+                    name="被恶意覆盖",
+                    markdown="# 被恶意覆盖\n",
+                ),
+                db,
+                other,
+            )
+        assert overwrite_error.value.status_code == 403
+
+        survived = db.exec(
+            select(GeneralSkill).where(
+                GeneralSkill.tenant_id == "tenant_demo",
+                GeneralSkill.slug == "author-weather",
+            )
+        ).first()
+        assert survived is not None
+        assert survived.name == "作者天气技能"
+
+
+def test_member_can_overwrite_own_gallery_skill_via_original_slug() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        author = User(
+            id="user_author", tenant_id="tenant_demo", username="author", password_hash="x"
+        )
+
+        import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="作者天气技能",
+                slug="author-weather",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            author,
+        )
+        updated = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                original_slug="author-weather",
+                slug="author-weather",
+                name="作者更新版本",
+                markdown="# 作者更新版本\n",
+            ),
+            db,
+            author,
+        )
+        assert updated.name == "作者更新版本"
+        assert updated.metadata["owner_user_id"] == "user_author"
+
+
+def test_member_cannot_publish_others_gallery_skill() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        author = User(
+            id="user_author", tenant_id="tenant_demo", username="author", password_hash="x"
+        )
+        other = User(
+            id="user_other_member",
+            tenant_id="tenant_demo",
+            username="other_member",
+            password_hash="x",
+        )
+
+        import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="作者天气技能",
+                slug="author-weather",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            author,
+        )
+
+        with pytest.raises(HTTPException) as publish_error:
+            publish_general_skill("author-weather", "tenant_demo", db, current_user=other)
+        assert publish_error.value.status_code == 403
+
+
+def test_member_can_publish_own_and_admin_can_publish_others() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        author = User(
+            id="user_author", tenant_id="tenant_demo", username="author", password_hash="x"
+        )
+        other = User(
+            id="user_other_member",
+            tenant_id="tenant_demo",
+            username="other_member",
+            password_hash="x",
+        )
+        admin = _admin_user()
+
+        import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="作者天气技能",
+                slug="author-weather",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            author,
+        )
+        import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="他人天气技能",
+                slug="other-weather",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            other,
+        )
+
+        own_published = publish_general_skill(
+            "other-weather", "tenant_demo", db, current_user=other
+        )
+        assert own_published.status == "published"
+
+        admin_published = publish_general_skill(
+            "author-weather", "tenant_demo", db, current_user=admin
+        )
+        assert admin_published.status == "published"
+
+
 def test_scene_layer_prompt_contract_mentions_general_skill_tools() -> None:
     prompt_dir = Path(__file__).resolve().parents[1] / "app" / "llm" / "prompts"
 
@@ -1679,6 +2073,238 @@ def test_general_skill_runner_stops_on_non_retryable_failure(monkeypatch) -> Non
     assert any(item["phase"] == "reflection_stopped" for item in response.execution_trace)
 
 
+def test_list_my_general_skills_cross_scope_only_mine() -> None:
+    """「我创建的技能」跨作用域（广场 + 挂在员工下）列出，且只列自己创建的。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_private", tenant_id="tenant_demo", name="私有员工", is_overall=False
+            )
+        )
+        db.commit()
+
+        user_a = User(id="user_a", tenant_id="tenant_demo", username="a", password_hash="x")
+        user_b = User(id="user_b", tenant_id="tenant_demo", username="b", password_hash="x")
+
+        a_gallery = GeneralSkill(
+            id="genskill_a_gallery",
+            tenant_id="tenant_demo",
+            slug="a-gallery",
+            name="A 的广场技能",
+            skill_markdown="# A 广场\n",
+            status="published",
+            metadata_json={"owner_user_id": "user_a"},
+        )
+        a_private = GeneralSkill(
+            id="genskill_a_private",
+            tenant_id="tenant_demo",
+            slug="a-private",
+            name="A 的私有技能",
+            skill_markdown="# A 私有\n",
+            status="published",
+            metadata_json={"owner_user_id": "user_a", "owner_agent_id": "agent_private"},
+        )
+        b_gallery = GeneralSkill(
+            id="genskill_b_gallery",
+            tenant_id="tenant_demo",
+            slug="b-gallery",
+            name="B 的广场技能",
+            skill_markdown="# B 广场\n",
+            status="published",
+            metadata_json={"owner_user_id": "user_b"},
+        )
+        db.add(a_gallery)
+        db.add(a_private)
+        db.add(b_gallery)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_private",
+                resource_type="general_skill",
+                resource_id=a_private.id,
+                status="active",
+            )
+        )
+        db.commit()
+
+        mine_a = _list_my_general_skills(db, "tenant_demo", user_a)
+        assert {row.slug for row in mine_a} == {"a-gallery", "a-private"}
+
+        mine_b = _list_my_general_skills(db, "tenant_demo", user_b)
+        assert {row.slug for row in mine_b} == {"b-gallery"}
+
+
+def test_list_my_general_skills_private_status_mapping() -> None:
+    """挂在员工下的技能：绑定 inactive → 返回 archived；active 且 published → published。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_private", tenant_id="tenant_demo", name="私有员工", is_overall=False
+            )
+        )
+        db.commit()
+
+        user_a = User(id="user_a", tenant_id="tenant_demo", username="a", password_hash="x")
+
+        active_skill = GeneralSkill(
+            id="genskill_active",
+            tenant_id="tenant_demo",
+            slug="a-active",
+            name="A 活跃私有",
+            skill_markdown="# active\n",
+            status="published",
+            metadata_json={"owner_user_id": "user_a", "owner_agent_id": "agent_private"},
+        )
+        inactive_skill = GeneralSkill(
+            id="genskill_inactive",
+            tenant_id="tenant_demo",
+            slug="a-inactive",
+            name="A 停用私有",
+            skill_markdown="# inactive\n",
+            status="published",
+            metadata_json={"owner_user_id": "user_a", "owner_agent_id": "agent_private"},
+        )
+        db.add(active_skill)
+        db.add(inactive_skill)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_private",
+                resource_type="general_skill",
+                resource_id=active_skill.id,
+                status="active",
+            )
+        )
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_private",
+                resource_type="general_skill",
+                resource_id=inactive_skill.id,
+                status="inactive",
+            )
+        )
+        db.commit()
+
+        mine = _list_my_general_skills(db, "tenant_demo", user_a)
+        by_slug = {row.slug: row.status for row in mine}
+        assert by_slug["a-active"] == "published"
+        assert by_slug["a-inactive"] == "archived"
+
+
+def test_list_my_general_skills_private_deleted_excluded() -> None:
+    """宿主员工绑定 status=deleted 的私有技能不出现在维护列表里。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_private", tenant_id="tenant_demo", name="私有员工", is_overall=False
+            )
+        )
+        db.commit()
+
+        user_a = User(id="user_a", tenant_id="tenant_demo", username="a", password_hash="x")
+        deleted_skill = GeneralSkill(
+            id="genskill_deleted",
+            tenant_id="tenant_demo",
+            slug="a-deleted",
+            name="A 被移除私有",
+            skill_markdown="# deleted\n",
+            status="published",
+            metadata_json={"owner_user_id": "user_a", "owner_agent_id": "agent_private"},
+        )
+        db.add(deleted_skill)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_private",
+                resource_type="general_skill",
+                resource_id=deleted_skill.id,
+                status="deleted",
+            )
+        )
+        db.commit()
+
+        assert _list_my_general_skills(db, "tenant_demo", user_a) == []
+
+
+def test_list_my_general_skills_gallery_ghost_excluded() -> None:
+    """广场技能在 overall 员工上的绑定 status=deleted（用户删过的）→ 不回显成幽灵行。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        user_a = User(id="user_a", tenant_id="tenant_demo", username="a", password_hash="x")
+        ghost = GeneralSkill(
+            id="genskill_ghost",
+            tenant_id="tenant_demo",
+            slug="a-ghost",
+            name="A 已删广场技能",
+            skill_markdown="# ghost\n",
+            status="published",
+            metadata_json={"owner_user_id": "user_a"},
+        )
+        visible = GeneralSkill(
+            id="genskill_visible",
+            tenant_id="tenant_demo",
+            slug="a-visible",
+            name="A 可见广场技能",
+            skill_markdown="# visible\n",
+            status="published",
+            metadata_json={"owner_user_id": "user_a"},
+        )
+        db.add(ghost)
+        db.add(visible)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_overall",
+                resource_type="general_skill",
+                resource_id=ghost.id,
+                status="deleted",
+            )
+        )
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_overall",
+                resource_type="general_skill",
+                resource_id=visible.id,
+                status="active",
+            )
+        )
+        db.commit()
+
+        mine = _list_my_general_skills(db, "tenant_demo", user_a)
+        assert {row.slug for row in mine} == {"a-visible"}
+
+
+def test_list_my_general_skills_requires_auth() -> None:
+    """mine=1 且未登录（current_user=None）必须 401。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        with pytest.raises(HTTPException) as auth_error:
+            list_general_skills("tenant_demo", db, mine=True, current_user=None)
+        assert auth_error.value.status_code == 401
+
+
 def _seed_minimal_tenant(db: Session) -> None:
     db.add(Tenant(id="tenant_demo", name="Demo"))
     db.add(
@@ -1734,3 +2360,122 @@ def _test_session():
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+def test_download_general_skill_package_returns_zip_with_files_and_directories() -> None:
+    """下载端点：返回 application/zip，包含文件与显式目录项，响应头带中文名的 RFC 5987 编码。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        # is_open_gallery_resource 以 overall agent 的绑定为准，没有它广场技能一律不可见
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="目录技能包",
+                slug="package-skill",
+                files=[
+                    {"path": "SKILL.md", "content": "# 目录技能包\n\n见 references/a.md\n"},
+                    {"path": "references/a.md", "content": "参考内容\n"},
+                ],
+                directories=["assets"],
+            ),
+            db,
+            _admin_user(),
+        )
+
+        response = download_general_skill_package(imported.slug, "tenant_demo", None, db)
+
+        assert response.media_type == "application/zip"
+        disposition = response.headers["content-disposition"]
+        # slug 走 filename= 兜底（纯 ASCII，不会炸 latin-1 头），真实中文名走 filename*=
+        assert 'filename="package-skill.zip"' in disposition
+        assert "filename*=UTF-8''" in disposition
+        assert quote("目录技能包.zip", safe="") in disposition
+
+        with ZipFile(BytesIO(response.body)) as archive:
+            names = archive.namelist()
+            assert "SKILL.md" in names
+            assert "references/a.md" in names
+            # 空目录无法从文件列表推导，必须显式写成目录项
+            assert "assets/" in names
+            assert archive.read("SKILL.md").decode("utf-8") == imported.skill_markdown
+            assert archive.read("references/a.md").decode("utf-8") == "参考内容\n"
+
+
+def test_download_general_skill_package_is_reimportable() -> None:
+    """导出的 zip 与导入格式同构：解出来的文件集合与入库时逐字节一致。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="回灌技能",
+                slug="roundtrip-skill",
+                files=[
+                    {"path": "SKILL.md", "content": "# 回灌技能\n\n见 references/b.md\n"},
+                    {"path": "references/b.md", "content": "B\n"},
+                    {"path": "scripts/run.py", "content": "print('hi')\n"},
+                ],
+            ),
+            db,
+            _admin_user(),
+        )
+
+        stored = db.get(GeneralSkill, imported.id)
+        assert stored is not None
+        roundtripped = _files_from_zip(_general_skill_package_archive(stored))
+
+        assert {file.path: file.content for file in roundtripped} == {
+            file.path: file.content for file in imported.skill_files
+        }
+
+
+def test_download_general_skill_package_hides_invisible_skill() -> None:
+    """私有技能不带 agent_id 下载 → 404；不存在的 slug → 404。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        # 特意把 overall agent 也建出来：这样 404 只可能来自「私有技能不进广场」，
+        # 而不是「租户压根没有广场」这条更弱的路径。
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_private", tenant_id="tenant_demo", name="私有员工", is_overall=False
+            )
+        )
+        db.commit()
+        private = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="私有技能",
+                slug="private-skill",
+                markdown="# 私有技能\n",
+                agent_id="agent_private",
+            ),
+            db,
+            _admin_user(),
+        )
+
+        with pytest.raises(HTTPException) as invisible:
+            download_general_skill_package(private.slug, "tenant_demo", None, db)
+        assert invisible.value.status_code == 404
+        assert "not visible in open gallery" in str(invisible.value.detail)
+
+        with pytest.raises(HTTPException) as missing:
+            download_general_skill_package("no-such-skill", "tenant_demo", None, db)
+        assert missing.value.status_code == 404
+        assert "not found" in str(missing.value.detail)

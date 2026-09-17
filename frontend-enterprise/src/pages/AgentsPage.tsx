@@ -14,6 +14,7 @@ import { type EnterpriseAuthUser } from '../auth';
 import AppHeader from '../components/AppHeader';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
+import AgentShareDialog from '../components/AgentShareDialog';
 import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
@@ -53,10 +54,11 @@ export default function AgentsPage({
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
   const [apiKeyAgent, setApiKeyAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
+  const [shareAgent, setShareAgent] = useState<AgentProfileRead | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline' | 'pending'>('all');
+  const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline'>('all');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
     () => readEmployeeScope() || null,
   );
@@ -104,20 +106,12 @@ export default function AgentsPage({
   );
   const offlineEmployees = employees.filter((item) => item.status !== 'active');
   const onlineEmployees = employees.filter((item) => item.status === 'active');
-  const pendingEmployees = employees.filter((item) => {
-    const metadata = item.metadata || {};
-    return item.status === 'pending'
-      || metadata.review_status === 'pending'
-      || metadata.approval_status === 'pending'
-      || metadata.audit_status === 'pending';
-  });
   const filteredEmployees = employees.filter((item) => {
     const profile = employeeProfile(item);
     const keyword = searchTerm.trim().toLowerCase();
     const matchesFilter = employeeFilter === 'all'
       || (employeeFilter === 'online' && item.status === 'active')
-      || (employeeFilter === 'offline' && item.status !== 'active')
-      || (employeeFilter === 'pending' && pendingEmployees.includes(item));
+      || (employeeFilter === 'offline' && item.status !== 'active');
     if (!matchesFilter) return false;
     if (!keyword) return true;
     return [
@@ -234,12 +228,6 @@ export default function AgentsPage({
   const summaryStats: { key: typeof employeeFilter; value: number; label: string; sub: string }[] = [
     { key: 'all', value: employees.length, label: '员工总数', sub: `${onlineEmployees.length}位在线` },
     { key: 'offline', value: offlineEmployees.length, label: '下线员工', sub: '0位在线' },
-    {
-      key: 'pending',
-      value: pendingEmployees.length,
-      label: '待审批',
-      sub: `${pendingEmployees.filter((item) => item.status === 'active').length}位在线`,
-    },
   ];
 
   return (
@@ -319,6 +307,7 @@ export default function AgentsPage({
             onEdit={() => setProfileAgent(employee)}
             onChat={() => startEmployeeChat(employee)}
             onApiKeys={() => setApiKeyAgent(employee)}
+            onShare={() => setShareAgent(employee)}
           />
         ))}
         {!filteredEmployees.length && (
@@ -342,6 +331,11 @@ export default function AgentsPage({
         agent={apiKeyAgent}
         open={Boolean(apiKeyAgent)}
         onClose={() => setApiKeyAgent(null)}
+      />
+      <AgentShareDialog
+        agent={shareAgent}
+        open={Boolean(shareAgent)}
+        onClose={() => setShareAgent(null)}
       />
       <ConfirmDialog
         open={Boolean(deleteTarget)}

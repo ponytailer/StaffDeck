@@ -15,7 +15,7 @@ import IconMore from '../assets/icons/more.svg?react';
 import IconPause from '../assets/icons/pause.svg?react';
 import IconPlay from '../assets/icons/play.svg?react';
 import IconTrash from '../assets/icons/trash.svg?react';
-import { KeyRound } from 'lucide-react';
+import { KeyRound, Share2 } from 'lucide-react';
 import { isGalleryEmployee } from '../auth';
 import { employeeDisplayNameWithCreator, employeeProfile, resourceCount } from '../employee';
 import type { AgentProfileRead } from '../types';
@@ -44,6 +44,7 @@ export type EmployeeCardProps = {
   onEdit: () => void;
   onChat: () => void;
   onApiKeys?: () => void;
+  onShare?: () => void;
 };
 
 export default function EmployeeCard({
@@ -60,6 +61,7 @@ export default function EmployeeCard({
   onEdit,
   onChat,
   onApiKeys,
+  onShare,
 }: EmployeeCardProps) {
   const profile = employeeProfile(employee);
   const sopCount = resourceCount(employee.resources, 'skill');
@@ -67,16 +69,18 @@ export default function EmployeeCard({
   const kbCount = resourceCount(employee.resources, 'knowledge_base');
   const galleryPublished = isGalleryEmployee(employee);
   const online = employee.status === 'active';
+  const usageCount = Math.max(0, Number(employee.usage_count || 0));
 
   // Show raw API values on the card (bypass the SD1 term relabeling in staffdeckDisplayText).
   const rawRoleName = (employee.metadata?.role_name as string | undefined) || profile.roleName;
   const displayName = employee.is_overall ? '开放广场' : employeeDisplayNameWithCreator(employee);
   const displayDescription = employee.description || '暂无描述';
 
-  const stats: Array<{ value: number; label: string }> = [
+  const stats: Array<{ value: number | string; label: string }> = [
     { value: kbCount, label: '资料' },
     { value: skillCount, label: '技能' },
     { value: sopCount, label: 'SOP' },
+    { value: usageCount > 9999 ? '9999+' : usageCount, label: '被使用' },
   ];
 
   return (
@@ -177,6 +181,17 @@ export default function EmployeeCard({
               <IconChat className="size-[16px]" />
               发起对话
             </DropdownMenuItem>
+            {onShare && (
+              <DropdownMenuItem
+                className={MENU_ITEM_CLASS}
+                disabled={!online || busy}
+                onClick={(event) => event.stopPropagation()}
+                onSelect={() => onShare()}
+              >
+                <Share2 className="size-[16px]" />
+                分享
+              </DropdownMenuItem>
+            )}
             {online ? (
               <DropdownMenuItem
                 className={MENU_ITEM_CLASS}
@@ -270,12 +285,12 @@ export default function EmployeeCard({
       </div>
 
       {/* Stats — pinned to the bottom of the card */}
-      <div className="mt-auto grid grid-cols-3 rounded-[14px] border border-[#E3E7F1] box-sizing: border-box">
+      <div className="mt-auto grid grid-cols-4 rounded-[14px] border border-[#E3E7F1] box-sizing: border-box">
         {stats.map((stat, index) => (
           <div
             key={stat.label}
             className={cn(
-              'flex flex-col justify-center gap-[4px] px-[20px] py-[6px]',
+              'flex flex-col justify-center gap-[4px] px-[10px] py-[6px]',
               index < stats.length - 1 && 'border-r border-[#eef1f5]',
             )}
           >

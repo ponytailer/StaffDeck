@@ -8,7 +8,7 @@ import {
 import { notify } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import type { ComponentType, ReactNode, SVGProps } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
 import { isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
@@ -50,6 +50,9 @@ import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 type PlatformKind = 'agents' | 'knowledge' | 'general-skills' | 'skills' | 'tools';
+
+/** 每个广场模块各自的数据加载状态：进页面只拉当前 tab 用到的接口。 */
+type KindLoadState = 'idle' | 'loading' | 'ready' | 'error';
 
 type PlatformConfig = {
   kind: PlatformKind;
@@ -157,6 +160,12 @@ function platformCountLabel(kind: PlatformKind): string {
   return kind === 'agents' ? '员工' : '内容';
 }
 
+// 广场资源挂在 is_overall 的宿主数字员工下，模块接口都要带它的 agent_id 取广场作用域。
+function overallSuffixFor(rows: AgentProfileRead[]): string {
+  const overall = rows.find((item) => item.is_overall);
+  return overall ? `&agent_id=${encodeURIComponent(overall.id)}` : '';
+}
+
 // Bottom metric segments for a 数字员工广场 card.
 function employeeStats(agent: AgentProfileRead): PlatformStat[] {
   return [
@@ -210,11 +219,20 @@ export default function OpenPlatformPage({
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
   const [skills, setSkills] = useState<SkillRead[]>([]);
   const [tools, setTools] = useState<ToolRead[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [kindStates, setKindStates] = useState<Partial<Record<PlatformKind, KindLoadState>>>({});
   const [deletingItemKey, setDeletingItemKey] = useState('');
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [detailItem, setDetailItem] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
+
+  // 已加载过的模块不重复拉；同一模块并发只发一次请求（ref 与 state 同步写，保证守卫是同步准确的）。
+  const agentsCacheRef = useRef<AgentProfileRead[] | null>(null);
+  const kindStatesRef = useRef<Partial<Record<PlatformKind, KindLoadState>>>({});
+  const inFlightKindsRef = useRef<Set<PlatformKind>>(new Set());
+  const setKindState = useCallback((target: PlatformKind, state: KindLoadState) => {
+    kindStatesRef.current = { ...kindStatesRef.current, [target]: state };
+    setKindStates(kindStatesRef.current);
+  }, []);
 
   useEffect(() => {
     if (kind && PLATFORM_BY_KIND.has(kind)) {
@@ -235,35 +253,59 @@ export default function OpenPlatformPage({
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, []);
 
-  const loadPlatformData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const agentRows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
-      const overall = agentRows.find((item) => item.is_overall);
-      const overallSuffix = overall ? `&agent_id=${encodeURIComponent(overall.id)}` : '';
-      const [kbRows, generalRows, skillRows, toolRows] = await Promise.all([
-        api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${overallSuffix}`),
-        api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${overallSuffix}`),
-        overall
-          ? api.get<SkillRead[]>(`/api/enterprise/agents/${overall.id}/skills?tenant_id=${TENANT_ID}`)
-          : Promise.resolve([]),
-        api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${overallSuffix}`),
-      ]);
-      setAgents(agentRows);
-      setKnowledgeBases(kbRows);
-      setGeneralSkills(generalRows);
-      setSkills(skillRows);
-      setTools(toolRows);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '加载开放广场失败');
-    } finally {
-      setLoading(false);
-    }
+  const fetchAgents = useCallback(async (): Promise<AgentProfileRead[]> => {
+    if (agentsCacheRef.current) return agentsCacheRef.current;
+    const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+    agentsCacheRef.current = rows;
+    setAgents(rows);
+    return rows;
   }, []);
 
+  /**
+   * 加载某个广场模块的数据。
+   *
+   * 数字员工列表是其他模块的前置依赖（拿 overall 宿主 id 拼 agent_id，以及"复制到员工"的目标），
+   * 所以统一先确保它到位，再按 target 只拉对应模块那一个接口 —— 不再一进页面就把 5 个接口全打一遍。
+   */
+  const loadKindData = useCallback(async (target: PlatformKind, options?: { force?: boolean }) => {
+    if (!options?.force) {
+      const current = kindStatesRef.current[target];
+      if (current === 'ready' || current === 'loading') return;
+    }
+    if (inFlightKindsRef.current.has(target)) return;
+    inFlightKindsRef.current.add(target);
+    if (options?.force && target === 'agents') agentsCacheRef.current = null;
+    setKindState(target, 'loading');
+    try {
+      const agentRows = await fetchAgents();
+      if (target === 'knowledge') {
+        setKnowledgeBases(await api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}`));
+      } else if (target === 'general-skills') {
+        setGeneralSkills(await api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}`));
+      } else if (target === 'skills') {
+        const overall = agentRows.find((item) => item.is_overall);
+        setSkills(overall
+          ? await api.get<SkillRead[]>(`/api/enterprise/agents/${overall.id}/skills?tenant_id=${TENANT_ID}`)
+          : []);
+      } else if (target === 'tools') {
+        setTools(await api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}`));
+      }
+      setKindState(target, 'ready');
+    } catch (error) {
+      // 失败也要落到终态，否则骨架屏会一直转
+      setKindState(target, 'error');
+      notify.error(error instanceof Error ? error.message : '加载开放广场失败');
+    } finally {
+      inFlightKindsRef.current.delete(target);
+    }
+  }, [fetchAgents, setKindState]);
+
   useEffect(() => {
-    void loadPlatformData();
-  }, [loadPlatformData]);
+    void loadKindData(activeKind);
+  }, [activeKind, loadKindData]);
+
+  const activeKindState = kindStates[activeKind] || 'idle';
+  const loading = activeKindState === 'idle' || activeKindState === 'loading';
 
   const visibleAgents = useMemo(
     () => agents.filter((item) => !item.is_overall && item.status === 'active' && isGalleryEmployee(item)),
@@ -352,9 +394,10 @@ export default function OpenPlatformPage({
       PLATFORM_CONFIGS.map((config) => ({
         value: config.kind,
         label: config.title,
-        count: platformItems[config.kind].length,
+        // 懒加载下未访问过的模块还不知道数量，先不显示角标，避免假 0
+        count: kindStates[config.kind] === 'ready' ? platformItems[config.kind].length : undefined,
       })),
-    [platformItems],
+    [kindStates, platformItems],
   );
 
   function ensureTargetEmployee(): boolean {
@@ -450,7 +493,7 @@ export default function OpenPlatformPage({
         current && current.kind === platformKind && current.item.id === item.id ? null : current
       ));
       setConfirmTarget(null);
-      await loadPlatformData();
+      await loadKindData(platformKind, { force: true });
     } catch (error) {
       notify.error(error instanceof Error
         ? error.message
@@ -472,15 +515,6 @@ export default function OpenPlatformPage({
   }
 
   function handleCreateGeneralSkill() {
-    const overall = agents.find((item) => item.is_overall);
-    if (!overall) {
-      notify.error('暂时无法找到开放广场');
-      return;
-    }
-    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, overall.id);
-    window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', {
-      detail: { agentId: overall.id },
-    }));
     navigate('/enterprise/general-skills/new?scope=gallery');
   }
 
@@ -618,14 +652,16 @@ export default function OpenPlatformPage({
                   )}
                 >
                   <span>{item.label}</span>
-                  <span
-                    className={cn(
-                      'rounded-[90px] px-[7px] py-[1px] text-[11px] leading-none',
-                      active ? 'bg-white text-[#1a71ff]' : 'bg-[#f2f4f8] text-[#757f9c]',
-                    )}
-                  >
-                    {item.count}
-                  </span>
+                  {item.count !== undefined && (
+                    <span
+                      className={cn(
+                        'rounded-[90px] px-[7px] py-[1px] text-[11px] leading-none',
+                        active ? 'bg-white text-[#1a71ff]' : 'bg-[#f2f4f8] text-[#757f9c]',
+                      )}
+                    >
+                      {item.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -640,7 +676,7 @@ export default function OpenPlatformPage({
             )}
             <UIButton
               variant="outline"
-              onClick={() => void loadPlatformData()}
+              onClick={() => void loadKindData(activeKind, { force: true })}
               disabled={loading}
               className="h-8 gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
             >

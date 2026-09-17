@@ -12,7 +12,7 @@ import {
 import type { ChangeEvent, DragEvent, HTMLAttributes, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Ban, ChevronRight, CircleCheck, Copy, Eye, EyeOff, FilePlus2, FolderPlus, Users } from 'lucide-react';
+import { Ban, ChevronRight, CircleCheck, Copy, Download, Eye, EyeOff, FilePlus2, FolderPlus, Users } from 'lucide-react';
 import { ContextMenu } from 'radix-ui';
 
 import { api, streamPost, TENANT_ID } from '../api/client';
@@ -48,6 +48,7 @@ import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
+import { missingSkillReferencePaths } from '@/lib/general-skill-import-error';
 import {
   MENU_CONTENT_CLASS,
   MENU_ITEM_CLASS,
@@ -362,16 +363,39 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<GeneralSkillRead | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [missingRefsPrompt, setMissingRefsPrompt] = useState<MissingReferencesPrompt | null>(null);
+
+  /** 命中「缺参考文件」的 400 时挂起二次确认；返回 true 表示已接管错误提示。 */
+  function promptForMissingReferences(error: unknown, retry: () => void | Promise<void>): boolean {
+    const paths = missingSkillReferencePaths(error);
+    if (!paths.length) return false;
+    setMissingRefsPrompt({ paths, retry });
+    return true;
+  }
+
+  function confirmMissingReferences() {
+    const prompt = missingRefsPrompt;
+    setMissingRefsPrompt(null);
+    if (prompt) void prompt.retry();
+  }
 
   const pageTitle = isOverallAgent ? '技能广场' : '技能';
   const listLabel = isOverallAgent ? '技能广场列表' : '技能列表';
   const currentAgent = useMemo(() => agents.find((item) => item.id === agentId), [agents, agentId]);
-  const canManageCurrentScope = currentAgent
-    ? canManageEmployeeAgent(currentAgent, currentUser)
-    : isEnterpriseAdmin(currentUser) && isOverallAgent;
+  const canManageCurrentScope = isOverallAgent
+    ? true
+    : currentAgent
+      ? canManageEmployeeAgent(currentAgent, currentUser)
+      : isEnterpriseAdmin(currentUser);
+  // 广场技能（metadata.scope === 'open_gallery'）只能从广场进入编辑器，跳转时带上
+  // ?scope=gallery，否则编辑器会按员工作用域解析，返回时掉出广场。
+  const editRouteFor = (row: GeneralSkillRead) =>
+    `/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit${
+      row.metadata?.scope === 'open_gallery' ? '?scope=gallery' : ''
+    }`;
 
   const load = () => {
-    const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
     setLoading(true);
     return api
       .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentSuffix}`)
@@ -381,9 +405,10 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   };
 
   useEffect(() => {
+    if (!agentScopeLoaded) return;
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId]);
+  }, [agentId, isOverallAgent, agentScopeLoaded]);
 
   useEffect(() => {
     api
@@ -450,7 +475,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
 
   async function setSkillPublished(row: GeneralSkillRead, published: boolean) {
     try {
-      const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+      const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
       const next = await api.post<GeneralSkillRead>(
         `/api/enterprise/general-skills/${row.slug}/${published ? 'publish' : 'archive'}?tenant_id=${TENANT_ID}${agentSuffix}`,
       );
@@ -474,13 +499,34 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     }
   }
 
+  async function downloadSkillPackage(row: GeneralSkillRead) {
+    // 广场作用域（isOverallAgent）不带 agent_id —— 后端据此走「开放广场」可见性分支
+    const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    try {
+      const blob = await api.blob(
+        `/api/enterprise/general-skills/${encodeURIComponent(row.slug)}/package?tenant_id=${TENANT_ID}${agentSuffix}`,
+      );
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${row.slug}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      notify.success(`已下载技能包：${row.slug}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '技能包下载失败');
+    }
+  }
+
   async function confirmDeleteSkill() {
     const row = deleteTarget;
     if (!row) return;
     const branchMode = !isOverallAgent;
     setDeleting(true);
     try {
-      const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+      const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
       await api.delete(`/api/enterprise/general-skills/${row.slug}?tenant_id=${TENANT_ID}${agentSuffix}`);
       setRows((current) => current.filter((item) => item.id !== row.id));
       notify.success(branchMode ? '已移除技能' : '已删除技能');
@@ -580,7 +626,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     }
   }
 
-  async function importClawHubSource() {
+  async function importClawHubSource(allowMissingReferences = false) {
     if (!clawhubSource.trim()) {
       notify.warning('请输入开源平台地址、GitHub 仓库或 SKILL.md 链接');
       return;
@@ -595,17 +641,20 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         agent_id: !isOverallAgent && agentId ? agentId : undefined,
         source: clawhubSource.trim(),
         status: 'published',
+        allow_missing_references: allowMissingReferences,
       }, controller.signal);
       if (controller.signal.aborted) return;
       notify.success(`已新增 ${row.name}`);
       setRows((current) => [row, ...current.filter((item) => item.id !== row.id && item.slug !== row.slug)]);
       setClawhubModalOpen(false);
-      navigate(`/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit`);
+      // 导入＝创建新技能，留在技能广场列表看结果（不再跳进新建技能的编辑页）
+      void load();
     } catch (error) {
       if (isAbortError(error)) {
         notify.info('已取消导入');
         return;
       }
+      if (promptForMissingReferences(error, () => importClawHubSource(true))) return;
       notify.error(error instanceof Error ? error.message : '从开源平台导入失败');
     } finally {
       if (clawhubAbortRef.current === controller) {
@@ -617,9 +666,12 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
 
   function renderActions(row: GeneralSkillRead) {
     const published = row.status === 'published';
-    if (isOverallAgent && !canManageCurrentScope) {
-      return null;
-    }
+    // 广场作用域：编辑/启停/删除等管理操作仅对管理员或创建者可见（全员可发布，但管理受限）；
+    // 「下载」对所有能看到该技能的人开放，所以菜单本身不再整体隐藏。
+    const canManage =
+      !isOverallAgent ||
+      isEnterpriseAdmin(currentUser) ||
+      row.metadata?.owner_user_id === currentUser?.id;
     return (
       <DropdownMenu>
         <DropdownMenuTrigger
@@ -631,37 +683,48 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         <DropdownMenuContent align="end" className={MENU_CONTENT_CLASS}>
           <DropdownMenuItem
             className={MENU_ITEM_CLASS}
-            onSelect={() => navigate(`/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit`)}
+            onSelect={() => void downloadSkillPackage(row)}
           >
-            <IconEdit />
-            {isOverallAgent ? '编辑' : '编辑本地版本'}
+            <Download />
+            下载
           </DropdownMenuItem>
-          {published ? (
-            <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void setSkillPublished(row, false)}>
-              <Ban />
-              停用
-            </DropdownMenuItem>
-          ) : (
-            <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void setSkillPublished(row, true)}>
-              <CircleCheck />
-              启用
-            </DropdownMenuItem>
+          {canManage && (
+            <>
+              <DropdownMenuItem
+                className={MENU_ITEM_CLASS}
+                onSelect={() => navigate(editRouteFor(row))}
+              >
+                <IconEdit />
+                {isOverallAgent ? '编辑' : '编辑本地版本'}
+              </DropdownMenuItem>
+              {published ? (
+                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void setSkillPublished(row, false)}>
+                  <Ban />
+                  停用
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void setSkillPublished(row, true)}>
+                  <CircleCheck />
+                  启用
+                </DropdownMenuItem>
+              )}
+              {!isOverallAgent && row.metadata?.scope === 'agent_private' && (
+                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void publishSkillToGallery(row)}>
+                  <UploadOutlined />
+                  发布到广场
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator className="my-[2px] bg-[#eef0f4]" />
+              <DropdownMenuItem
+                variant="destructive"
+                className={MENU_ITEM_DANGER_CLASS}
+                onSelect={() => setDeleteTarget(row)}
+              >
+                <IconTrash />
+                {isOverallAgent ? '删除' : '移除'}
+              </DropdownMenuItem>
+            </>
           )}
-          {!isOverallAgent && row.metadata?.scope === 'agent_private' && (
-            <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void publishSkillToGallery(row)}>
-              <UploadOutlined />
-              发布到广场
-            </DropdownMenuItem>
-          )}
-          <DropdownMenuSeparator className="my-[2px] bg-[#eef0f4]" />
-          <DropdownMenuItem
-            variant="destructive"
-            className={MENU_ITEM_DANGER_CLASS}
-            onSelect={() => setDeleteTarget(row)}
-          >
-            <IconTrash />
-            {isOverallAgent ? '删除' : '移除'}
-          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     );
@@ -946,6 +1009,12 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         onSubmit={() => void submitAgentImportSkills()}
       />
 
+      <MissingReferencesConfirm
+        prompt={missingRefsPrompt}
+        onCancel={() => setMissingRefsPrompt(null)}
+        onConfirm={confirmMissingReferences}
+      />
+
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
@@ -960,6 +1029,57 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         onConfirm={() => void confirmDeleteSkill()}
       />
     </div>
+  );
+}
+
+type MissingReferencesPrompt = {
+  /** SKILL.md 引用了、但技能包里没有的文件路径。 */
+  paths: string[];
+  /** 用户确认「仍要导入」后重放的导入动作（带 allow_missing_references=true）。 */
+  retry: () => void | Promise<void>;
+};
+
+const MISSING_REFERENCES_PREVIEW_LIMIT = 20;
+
+/**
+ * 「技能包缺少 SKILL.md 引用的文件」二次确认。
+ *
+ * 后端默认对缺引用直接 400，这里把真实的缺失清单摊开给用户看，确认后带
+ * `allow_missing_references=true` 重放导入——既不静默放过残包，也不把用户卡死。
+ */
+function MissingReferencesConfirm({
+  prompt,
+  onCancel,
+  onConfirm,
+}: {
+  prompt: MissingReferencesPrompt | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const paths = prompt?.paths || [];
+  const preview = paths.slice(0, MISSING_REFERENCES_PREVIEW_LIMIT);
+  return (
+    <ConfirmDialog
+      open={Boolean(prompt)}
+      onOpenChange={(open) => !open && onCancel()}
+      destructive={false}
+      title={`技能包缺少 ${paths.length} 个 SKILL.md 引用的文件`}
+      confirmText="仍要导入"
+      description={
+        <div className="flex flex-col gap-[8px]">
+          <span>这些文件不在技能包里，导入后按需读取时可能读不到。确认后仍可导入。</span>
+          <ul className="m-0 flex max-h-[168px] list-none flex-col gap-[2px] overflow-auto rounded-[8px] bg-[#f4f5f8] p-[8px] font-mono text-[12px] leading-[18px] text-[#464c5e]">
+            {preview.map((path) => (
+              <li key={path} className="truncate" title={path}>{path}</li>
+            ))}
+          </ul>
+          {paths.length > preview.length && (
+            <span>另有 {paths.length - preview.length} 个文件未列出。</span>
+          )}
+        </div>
+      }
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -1472,6 +1592,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [createEntryMode, setCreateEntryMode] = useState<'file' | 'folder' | null>(null);
   const [createEntryValue, setCreateEntryValue] = useState('');
   const [importPrepareOpen, setImportPrepareOpen] = useState(false);
+  const [missingRefsPrompt, setMissingRefsPrompt] = useState<MissingReferencesPrompt | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const clawhubAbortRef = useRef<AbortController | null>(null);
@@ -1499,9 +1620,16 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const selectedFileCanPreview = selectedFileLanguage === 'markdown';
   const isNew = mode === 'new';
   const currentAgent = useMemo(() => agents.find((item) => item.id === agentId), [agents, agentId]);
-  const canManageCurrentScope = currentAgent
-    ? canManageEmployeeAgent(currentAgent, currentUser)
-    : isEnterpriseAdmin(currentUser) && isOverallAgent;
+  const canManageCurrentScope = isOverallAgent
+    ? true
+    : currentAgent
+      ? canManageEmployeeAgent(currentAgent, currentUser)
+      : isEnterpriseAdmin(currentUser);
+  // 从开放广场「技能广场」进入（?scope=gallery）时，返回/新建都应回到广场列表，
+  // 而不是员工技能列表（enterprise/general-skills）。
+  const skillsLandingRoute = forceGalleryScope
+    ? '/enterprise/platform/general-skills'
+    : '/enterprise/general-skills';
   const pageTitle = isNew ? '新建空白技能' : '编辑技能';
   const pageDescription = isOverallAgent
     ? (isNew
@@ -1512,7 +1640,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       : '维护当前数字员工技能的定义、文件包和运行测试。');
 
   const load = () => {
-    const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
     return api
       .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentSuffix}`)
       .then((items) => {
@@ -1534,7 +1662,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   }, [mode]);
 
   useEffect(() => {
-    if (mode === 'new' || (forceGalleryScope && !agentScopeLoaded)) return;
+    if (mode === 'new' || !agentScopeLoaded) return;
     void load();
   }, [agentId, mode, routeSlug, forceGalleryScope, agentScopeLoaded]);
 
@@ -1543,14 +1671,17 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
       .then((items) => {
         setAgents(items);
-        const scopedAgent = forceGalleryScope
-          ? items.find((item) => item.is_overall)
-          : items.find((item) => item.id === agentId);
-        if (scopedAgent && scopedAgent.id !== agentId) {
-          window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, scopedAgent.id);
-          setAgentId(scopedAgent.id);
+        if (forceGalleryScope) {
+          // 广场态不依赖 overall agent 是否被命中，也不写全局作用域
+          setIsOverallAgent(true);
+        } else {
+          const scopedAgent = items.find((item) => item.id === agentId);
+          if (scopedAgent && scopedAgent.id !== agentId) {
+            window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, scopedAgent.id);
+            setAgentId(scopedAgent.id);
+          }
+          setIsOverallAgent(Boolean(scopedAgent?.is_overall ?? true));
         }
-        setIsOverallAgent(Boolean(scopedAgent?.is_overall ?? true));
         setAgentScopeLoaded(true);
       })
       .catch(() => {
@@ -1629,6 +1760,20 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     }
   }, [selectedFileCanPreview]);
 
+  /** 命中「缺参考文件」的 400 时挂起二次确认；返回 true 表示已接管错误提示。 */
+  function promptForMissingReferences(error: unknown, retry: () => void | Promise<void>): boolean {
+    const paths = missingSkillReferencePaths(error);
+    if (!paths.length) return false;
+    setMissingRefsPrompt({ paths, retry });
+    return true;
+  }
+
+  function confirmMissingReferences() {
+    const prompt = missingRefsPrompt;
+    setMissingRefsPrompt(null);
+    if (prompt) void prompt.retry();
+  }
+
   function hasUnsavedEditingChanges(): boolean {
     if (!editingSlug) return false;
     const original = rows.find((row) => row.slug === editingSlug);
@@ -1648,8 +1793,25 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     );
   }
 
-  async function importSkill(): Promise<GeneralSkillRead | null> {
-    if (!canManageCurrentScope) {
+  /**
+   * 保存技能（新建 / 编辑共用）。这不是「导入外部技能包」，而是「保存当前编辑器里的内容」：
+   * 用户可以先把 SKILL.md 写好、再逐个补齐它引用的参考文件（如 references/products/aiapp.md），
+   * 所以保存一律带 allow_missing_references，**不**弹「技能包缺少 SKILL.md 引用文件」的二次确认。
+   * 那个拦截只属于「导入整包」的动作：上传 zip（/import-package）和从开源平台拉取（/import-skillhub）。
+   */
+  async function importSkill(
+    options: { stayInEditor?: boolean } = {},
+  ): Promise<GeneralSkillRead | null> {
+    // 广场作用域：新建技能全员可发布；编辑已有技能仅创建者或管理员
+    if (isOverallAgent) {
+      if (editingSlug) {
+        const existing = rows.find((item) => item.slug === editingSlug);
+        if (!(isEnterpriseAdmin(currentUser) || existing?.metadata?.owner_user_id === currentUser?.id)) {
+          notify.error('只有创建者或管理员可以编辑该技能');
+          return null;
+        }
+      }
+    } else if (!canManageCurrentScope) {
       notify.error('只有管理员可以编辑技能广场内容');
       return null;
     }
@@ -1657,6 +1819,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       notify.warning('请先粘贴或上传 SKILL.md');
       return null;
     }
+    // 「新建」还是「编辑既有技能」在进入函数时就定下来：保存成功后要据此决定落点。
+    const isCreating = !editingSlug;
     setSaving(true);
     try {
       const row = await api.post<GeneralSkillRead>('/api/enterprise/general-skills/import', {
@@ -1672,6 +1836,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         directories: skillDirectories,
         status: 'published',
         original_slug: editingSlug || undefined,
+        // 保存不做缺引用校验：参考文件允许在编辑器里随后补齐（见 importSkill 的说明）
+        allow_missing_references: true,
       });
       notify.success(editingSlug ? `已保存 ${row.name}` : `已新增 ${row.name}`);
       setSelectedSlug(row.slug);
@@ -1691,7 +1857,12 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         return [row, ...withoutSaved];
       });
       const scopeQuery = row.metadata?.scope === 'open_gallery' ? '?scope=gallery' : '';
-      navigate(`/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit${scopeQuery}`, { replace: !editingSlug });
+      if (isCreating && !options.stayInEditor) {
+        // 创建完成回技能广场列表，而不是停在新技能的编辑页（replace 掉 /new，避免返回又回到空表单）
+        navigate(skillsLandingRoute, { replace: true });
+        return row;
+      }
+      navigate(`/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit${scopeQuery}`, { replace: false });
       return row;
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '保存技能失败');
@@ -1757,12 +1928,17 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   }
 
   async function setSkillPublished(row: GeneralSkillRead, published: boolean) {
-    if (!canManageCurrentScope) {
+    if (isOverallAgent) {
+      if (!(isEnterpriseAdmin(currentUser) || row.metadata?.owner_user_id === currentUser?.id)) {
+        notify.error('只有创建者或管理员可以编辑该技能');
+        return;
+      }
+    } else if (!canManageCurrentScope) {
       notify.error('只有管理员可以编辑技能广场内容');
       return;
     }
     try {
-      const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+      const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
       const next = await api.post<GeneralSkillRead>(
         `/api/enterprise/general-skills/${row.slug}/${published ? 'publish' : 'archive'}?tenant_id=${TENANT_ID}${agentSuffix}`,
       );
@@ -1776,13 +1952,18 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   async function runDeleteSkill() {
     const row = deleteSkillTarget;
     if (!row) return;
-    if (!canManageCurrentScope) {
+    if (isOverallAgent) {
+      if (!(isEnterpriseAdmin(currentUser) || row.metadata?.owner_user_id === currentUser?.id)) {
+        notify.error('只有创建者或管理员可以编辑该技能');
+        return;
+      }
+    } else if (!canManageCurrentScope) {
       notify.error('只有管理员可以编辑技能广场内容');
       return;
     }
     const branchMode = !isOverallAgent;
     try {
-      const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+      const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
       await api.delete(`/api/enterprise/general-skills/${row.slug}?tenant_id=${TENANT_ID}${agentSuffix}`);
       const nextRows = rows.filter((item) => item.id !== row.id);
       setRows(nextRows);
@@ -1825,7 +2006,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   async function confirmImportPrepareSave() {
     const action = importPrepareActionRef.current;
     setImportPrepareOpen(false);
-    const saved = await importSkill();
+    // 这一支是「先保存再继续导入」，保存后必须留在编辑器里接续动作，不能回列表
+    const saved = await importSkill({ stayInEditor: true });
     if (saved && action) await action();
     importPrepareActionRef.current = null;
   }
@@ -1933,7 +2115,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     }
   }
 
-  async function importClawHubSource() {
+  async function importClawHubSource(allowMissingReferences = false) {
     if (!clawhubSource.trim()) {
       notify.warning('请输入开源平台地址、GitHub 仓库或 SKILL.md 链接');
       return;
@@ -1948,19 +2130,20 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         agent_id: !isOverallAgent && agentId ? agentId : undefined,
         source: clawhubSource.trim(),
         status: 'published',
+        allow_missing_references: allowMissingReferences,
       }, controller.signal);
       if (controller.signal.aborted) return;
       notify.success(`已新增 ${row.name}`);
       setRows((current) => [row, ...current.filter((item) => item.id !== row.id && item.slug !== row.slug)]);
-      setSelectedSlug(row.slug);
-      editSkill(row);
       setClawhubModalOpen(false);
-      void load();
+      // 从开源平台导入＝创建新技能，导入完成回技能广场列表看结果
+      navigate(skillsLandingRoute, { replace: true });
     } catch (error) {
       if (isAbortError(error)) {
         notify.info('已取消导入');
         return;
       }
+      if (promptForMissingReferences(error, () => importClawHubSource(true))) return;
       notify.error(error instanceof Error ? error.message : '从开源平台导入失败');
     } finally {
       if (clawhubAbortRef.current === controller) {
@@ -1970,7 +2153,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     }
   }
 
-  async function importSkillPackageFile(file: File) {
+  async function importSkillPackageFile(file: File, allowMissingReferences = false) {
     const controller = new AbortController();
     clawhubAbortRef.current?.abort();
     clawhubAbortRef.current = controller;
@@ -1984,19 +2167,20 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         filename: file.name,
         content_base64: contentBase64,
         status: 'published',
+        allow_missing_references: allowMissingReferences,
       }, controller.signal);
       if (controller.signal.aborted) return;
       notify.success(`已上传 ${row.name}`);
       setRows((current) => [row, ...current.filter((item) => item.id !== row.id && item.slug !== row.slug)]);
-      setSelectedSlug(row.slug);
-      editSkill(row);
       setClawhubModalOpen(false);
-      void load();
+      // 上传技能包＝创建了一个新技能，导入完成回技能广场列表看结果
+      navigate(skillsLandingRoute, { replace: true });
     } catch (error) {
       if (isAbortError(error)) {
         notify.info('已取消导入');
         return;
       }
+      if (promptForMissingReferences(error, () => importSkillPackageFile(file, true))) return;
       notify.error(error instanceof Error ? error.message : '上传技能包失败');
     } finally {
       if (clawhubAbortRef.current === controller) {
@@ -2265,7 +2449,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         `/api/enterprise/general-skills/${slug}/run/stream`,
         {
           tenant_id: TENANT_ID,
-          agent_id: agentId || undefined,
+          agent_id: !isOverallAgent && agentId ? agentId : undefined,
           user_id: 'enterprise_demo',
           query,
           model_config_id: selectedRunModelId || undefined,
@@ -2514,12 +2698,12 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       />
 
       <div className="mt-[20px] mb-[16px] flex flex-wrap justify-end gap-[16px]">
-        <UIButton variant="outline" className={RETURN_BUTTON_CLASS} onClick={() => navigate('/enterprise/general-skills')}>
+        <UIButton variant="outline" className={RETURN_BUTTON_CLASS} onClick={() => navigate(skillsLandingRoute)}>
           <IconArrowRight className="size-3.5 rotate-180" />
-          返回技能
+          返回
         </UIButton>
         {!isNew && canManageCurrentScope && (
-          <UIButton variant="outline" className={RETURN_BUTTON_CLASS} onClick={() => navigate('/enterprise/general-skills/new')}>
+          <UIButton variant="outline" className={RETURN_BUTTON_CLASS} onClick={() => navigate(`/enterprise/general-skills/new${forceGalleryScope ? '?scope=gallery' : ''}`)}>
             <PlusOutlined />
             新建技能
           </UIButton>
@@ -2949,6 +3133,12 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         onSelectedChange={setAgentImportSelectedSkillIds}
         onClose={() => setAgentImportOpen(false)}
         onSubmit={() => void submitAgentImportSkills()}
+      />
+
+      <MissingReferencesConfirm
+        prompt={missingRefsPrompt}
+        onCancel={() => setMissingRefsPrompt(null)}
+        onConfirm={confirmMissingReferences}
       />
 
       <ConfirmDialog

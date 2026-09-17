@@ -61,7 +61,14 @@ import {
 import type { UseChatSession } from '../useChatSession';
 import SlashCommandChip from './SlashCommandChip';
 
-export default function Composer({ chat }: { chat: UseChatSession }) {
+export default function Composer({
+  chat,
+  hideModelSelector = false,
+}: {
+  chat: UseChatSession;
+  /** 分享访客场景：模型在创建分享时已锁定，隐藏选择器 */
+  hideModelSelector?: boolean;
+}) {
   const { t } = useI18n();
   const {
     input,
@@ -519,6 +526,7 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
               <div className={CHAT_COMPOSER_HINT_CLASS}>Enter 发送 / Shift+Enter 换行</div>
             </div>
             <div className={CHAT_COMPOSER_ACTIONS_ROW_CLASS}>
+              {!hideModelSelector && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -550,6 +558,7 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>
+              )}
               {currentSessionRunning && (
                 <button
                   type="button"

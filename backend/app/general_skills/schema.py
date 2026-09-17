@@ -27,6 +27,8 @@ class GeneralSkillImportRequest(BaseModel):
     status: str = "published"
     capability_scope: Optional[CapabilityScope] = None
     original_slug: Optional[str] = None
+    # 用户在「缺少 SKILL.md 引用文件」的二次确认弹窗里点了「仍要导入」时为 True。
+    allow_missing_references: bool = False
 
 
 class GeneralSkillClawHubImportRequest(BaseModel):
@@ -39,6 +41,7 @@ class GeneralSkillClawHubImportRequest(BaseModel):
     homepage: Optional[str] = None
     status: str = "published"
     capability_scope: CapabilityScope = "general"
+    allow_missing_references: bool = False
 
 
 class GeneralSkillPackageUploadRequest(BaseModel):
@@ -52,6 +55,7 @@ class GeneralSkillPackageUploadRequest(BaseModel):
     homepage: Optional[str] = None
     status: str = "published"
     capability_scope: CapabilityScope = "general"
+    allow_missing_references: bool = False
 
 
 class GeneralSkillRead(BaseModel):

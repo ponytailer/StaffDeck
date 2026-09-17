@@ -921,6 +921,12 @@ class AgentProfile(SQLModel, table=True):
     is_overall: bool = Field(default=False, index=True)
     status: str = Field(default="active", index=True)
     harness_max_actions: int = Field(default=32)
+    # 被使用次数:每新建一个会话 +1(站内与分享链接访客都计入),员工广场卡片展示。
+    # 冗余计数列而非实时 count(sessions) —— 广场列表逐行 count 在远程 PG 上会退化成 N+1。
+    usage_count: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -971,6 +977,57 @@ class AgentResourceBinding(SQLModel, table=True):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentShareLink(SQLModel, table=True):
+    """数字员工分享链接:站内生成,访客凭 token 免登录打开对话窗。
+
+    `model_config_id` 是分享时锁定的模型,访客端不提供模型选择,
+    对话链路会强制覆盖请求体里的 model_config_id。
+    """
+
+    __tablename__ = "agent_share_links"
+    __table_args__ = (UniqueConstraint("token", name="uq_agent_share_link_token"),)
+
+    id: str = Field(default_factory=lambda: new_id("agentshare"), primary_key=True)
+    token: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    model_config_id: str = Field(index=True)
+    created_by: str = Field(index=True)
+    # 空 = 永久有效
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    access_count: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
+    last_access_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentShareVisitor(SQLModel, table=True):
+    """分享链接访客:一个浏览器 = 一个虚拟用户,承载独立的多轮上下文。
+
+    `visitor_key` 是服务端签发的不可猜测随机串,前端存 localStorage 后回传,
+    据此复用同一条会话线;换浏览器/清存储即得到新上下文。
+    """
+
+    __tablename__ = "agent_share_visitors"
+    __table_args__ = (UniqueConstraint("visitor_key", name="uq_agent_share_visitor_key"),)
+
+    id: str = Field(default_factory=lambda: new_id("sharevisitor"), primary_key=True)
+    share_id: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    # users 表里的虚拟访客账号 id:作为 sessions.user_id,保证访客之间上下文互不可见
+    user_id: str = Field(index=True)
+    visitor_key: str = Field(index=True)
+    message_count: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    last_seen_at: datetime = Field(default_factory=utc_now)
 
 
 class Tool(SQLModel, table=True):

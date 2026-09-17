@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   EMPLOYEE_AVATAR_PRESETS,
   EMPLOYEE_TEMPLATES,
+  creatorNameFromMetadata,
   employeeAvatarImage,
+  employeeDisplayNameWithCreator,
   employeeMetadataFromTemplate,
+  resourceCreatorName,
 } from './employee';
 
 const EXPANDED_EMPLOYEES = [
@@ -48,5 +51,45 @@ describe('expanded employee presets', () => {
     }));
 
     expect(new Set(images)).toHaveLength(EXPANDED_EMPLOYEES.length);
+  });
+});
+
+// 线上真实 metadata 形状（后端 user_creator_metadata 写入）：
+// creator_name/created_by/created_by_username 存**用户名**，显示名另存 display_name。
+const PLAZA_METADATA = {
+  scope: 'open_gallery',
+  creator_name: 'chenyi.cq',
+  created_by: 'chenyi.cq',
+  created_by_username: 'chenyi.cq',
+  created_by_display_name: '陈怡',
+  owner_username: 'chenyi.cq',
+  owner_display_name: '陈怡',
+  owner_user_id: 'user_5faedb0287a547c8',
+};
+
+describe('creator display name', () => {
+  it('prefers the display name over the stamped username', () => {
+    expect(creatorNameFromMetadata(PLAZA_METADATA)).toBe('陈怡');
+    expect(resourceCreatorName({ metadata: PLAZA_METADATA })).toBe('陈怡');
+  });
+
+  it('falls back to the username when no display name was stamped', () => {
+    expect(creatorNameFromMetadata({ creator_name: 'user_demo' })).toBe('user_demo');
+    expect(creatorNameFromMetadata({ created_by_username: 'user_demo' })).toBe('user_demo');
+  });
+
+  it('uses the display name in the plaza card title suffix', () => {
+    const agent = {
+      id: 'agent-1',
+      name: 'AI G.O',
+      is_overall: false,
+      metadata: { ...PLAZA_METADATA, created_by_display_name: '黄松', owner_display_name: '黄松' },
+    } as never;
+    expect(employeeDisplayNameWithCreator(agent)).toBe('AI G.O @黄松');
+  });
+
+  it('keeps the caller-provided fallback when nothing is stamped', () => {
+    expect(creatorNameFromMetadata({}, '未知')).toBe('未知');
+    expect(creatorNameFromMetadata(null, '未知')).toBe('未知');
   });
 });

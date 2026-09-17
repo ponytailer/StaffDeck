@@ -204,6 +204,8 @@ export type AgentProfileRead = {
   is_overall: boolean;
   status: 'active' | 'archived' | string;
   harness_max_actions?: number;
+  /** 被使用次数：每次新建会话 +1，员工广场卡片展示 */
+  usage_count?: number;
   metadata: Record<string, unknown>;
   resources: AgentResourceBindingRead[];
   created_at: string;
@@ -305,7 +307,7 @@ export type GeneralSkillRead = {
     mime_type?: string;
   }>;
   skill_directories?: string[];
-  metadata: Record<string, unknown>;
+  metadata: Record<string, unknown> & { owner_user_id?: string };
   status: 'draft' | 'published' | 'archived';
   permissions: Record<string, unknown>;
   runtime_config: Record<string, unknown>;

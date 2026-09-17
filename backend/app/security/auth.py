@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Depends, HTTPException, Query
@@ -43,12 +44,100 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 
 def create_access_token(user: User) -> str:
-    payload = {
-        "tenant_id": user.tenant_id,
-        "user_id": user.id,
-        "username": user.username,
-        "exp": int(time.time()) + TOKEN_TTL_SECONDS,
-    }
+    return _encode_token(
+        {
+            "tenant_id": user.tenant_id,
+            "user_id": user.id,
+            "username": user.username,
+            "exp": int(time.time()) + TOKEN_TTL_SECONDS,
+        }
+    )
+
+
+# 分享访客 token 的最长存活时间:即使分享本身永久有效,单次浏览器会话也不会拿到超长凭证
+SHARE_TOKEN_MAX_TTL_SECONDS = 60 * 60 * 12
+
+
+@dataclass(frozen=True)
+class ShareScope:
+    """分享链接访客的受限身份上下文(从 access token 的 claim 解出)。"""
+
+    share_id: str
+    share_token: str
+    tenant_id: str
+    agent_id: str
+    model_config_id: str
+    visitor_id: str
+
+
+def create_share_access_token(
+    visitor: User,
+    *,
+    share_id: str,
+    share_token: str,
+    agent_id: str,
+    model_config_id: str,
+    ttl_seconds: int | None = None,
+) -> str:
+    """签发分享访客 token:身份仍是普通 User 行(会话隔离靠它),但带 `share` claim。
+
+    带该 claim 的请求会被主应用的中间件限制在分享白名单路径内。
+    """
+    ttl = SHARE_TOKEN_MAX_TTL_SECONDS if ttl_seconds is None else max(60, int(ttl_seconds))
+    ttl = min(ttl, SHARE_TOKEN_MAX_TTL_SECONDS)
+    return _encode_token(
+        {
+            "tenant_id": visitor.tenant_id,
+            "user_id": visitor.id,
+            "username": visitor.username,
+            "exp": int(time.time()) + ttl,
+            "share": 1,
+            "share_id": share_id,
+            "share_token": share_token,
+            "share_agent_id": agent_id,
+            "share_model_config_id": model_config_id,
+        }
+    )
+
+
+def share_scope_from_payload(payload: dict[str, Any]) -> ShareScope | None:
+    if not payload.get("share"):
+        return None
+    share_id = str(payload.get("share_id") or "")
+    visitor_id = str(payload.get("user_id") or "")
+    if not share_id or not visitor_id:
+        return None
+    return ShareScope(
+        share_id=share_id,
+        share_token=str(payload.get("share_token") or ""),
+        tenant_id=str(payload.get("tenant_id") or ""),
+        agent_id=str(payload.get("share_agent_id") or ""),
+        model_config_id=str(payload.get("share_model_config_id") or ""),
+        visitor_id=visitor_id,
+    )
+
+
+def read_token_payload(token: str | None) -> dict[str, Any] | None:
+    """宽松解析 token payload:签名/过期异常一律返回 None(调用方按匿名处理)。"""
+    if not token:
+        return None
+    try:
+        return _decode_token(token)
+    except HTTPException:
+        return None
+
+
+def get_share_scope(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> ShareScope | None:
+    """当前请求是否来自分享访客令牌:站内登录令牌一律返回 None。"""
+    payload = read_token_payload(credentials.credentials if credentials else None)
+    if payload is None:
+        return None
+    return share_scope_from_payload(payload)
+
+
+def _encode_token(payload: dict[str, Any]) -> str:
     body = _b64(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     signature = _sign(body)
     return f"{body}.{signature}"

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, KeyRound } from 'lucide-react';
+import { ChevronLeft, KeyRound, Share2 } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -22,6 +22,7 @@ import IconEdit from '@/assets/icons/edit.svg?react';
 import IconChevronDown from '@/assets/icons/chevron-down.svg?react';
 import IconLogout from '@/assets/icons/logout.svg?react';
 import AccountApiKeyDialog from '@/components/AccountApiKeyDialog';
+import AgentShareDialog from '@/components/AgentShareDialog';
 import EditDepartmentDialog from '@/components/EditDepartmentDialog';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 
@@ -46,6 +47,7 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const sessionTeamName = currentSession?.team_name || null;
   const [teamName, setTeamName] = useState<string | null>(sessionTeamName);
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [editDepartmentOpen, setEditDepartmentOpen] = useState(false);
   const name = teamId
@@ -123,6 +125,17 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
     </div>
 
       <div className="flex shrink-0 items-center gap-[8px]">
+        {chat.displayedAgent && !teamId && (
+          <button
+            type="button"
+            aria-label="分享数字员工"
+            title="分享数字员工"
+            onClick={() => setShareOpen(true)}
+            className="grid size-[32px] shrink-0 place-items-center rounded-[10px] text-[#757F9C] transition-colors hover:bg-[#f4f6f9] hover:text-[#18181A]"
+          >
+            <Share2 className="size-[16px]" />
+          </button>
+        )}
         <LanguageSwitcher />
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -215,6 +228,11 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
         account={user ?? null}
         open={apiKeyOpen}
         onClose={() => setApiKeyOpen(false)}
+      />
+      <AgentShareDialog
+        agent={chat.displayedAgent ?? null}
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
       />
       <EditDepartmentDialog
         open={editDepartmentOpen}

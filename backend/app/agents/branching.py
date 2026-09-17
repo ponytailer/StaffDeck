@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy.orm import load_only
 from sqlmodel import Session, select
 
 from app.db.models import (
@@ -285,23 +288,141 @@ def resource_binding_metadata(
     return {binding.resource_id: dict(binding.metadata_json or {}) for binding in bindings}
 
 
+_RESOURCE_MODEL_BY_TYPE: dict[str, Any] = {
+    "skill": Skill,
+    "general_skill": GeneralSkill,
+    "knowledge_base": KnowledgeBase,
+    "tool": Tool,
+}
+
+# 只取可见性判定真正读到的列。general_skills.skill_files_json 单列就有 6.5MB（12 行），
+# 全实体查询要 9.8s，按列取只要 0.02s；Skill/Tool 没有 metadata_json 列，无需列进来。
+_RESOURCE_LOAD_COLUMNS: dict[str, tuple[str, ...]] = {
+    "skill": ("id", "tenant_id", "skill_id", "status"),
+    "general_skill": ("id", "tenant_id", "status", "metadata_json"),
+    "knowledge_base": ("id", "tenant_id", "name", "status", "metadata_json"),
+    "tool": ("id", "tenant_id", "enabled"),
+}
+
+
+@dataclass
+class BindingVisibilityPrefetch:
+    """绑定可见性判定所需数据的批量快照。
+
+    "按绑定逐行判定"的路径（典型是 `_bindings_by_agent`）原本每个绑定要打 3~5 条 SQL：
+    `db.get(resource)` + `get_overall_agent()` + overall 绑定查询 + branch 查询。
+    远程 PG 单程约 35ms，125 个绑定实测 339 条 SQL / 12~21s，把列表接口整体拖到秒级。
+
+    这里一次性把用到的行全部取出来，判定阶段退化为纯内存 dict 查找。
+    **必须由完整的租户绑定集合构建**（否则 overall 绑定集合不全会误判广场可见性）。
+    """
+
+    resources: dict[tuple[str, str], Any] = field(default_factory=dict)
+    overall_agent: AgentProfile | None = None
+    overall_bindings: dict[tuple[str, str], AgentResourceBinding] = field(default_factory=dict)
+    skill_branches: dict[tuple[str, str], AgentSkillBranch] = field(default_factory=dict)
+    kb_branches: dict[tuple[str, str], AgentKnowledgeBranch] = field(default_factory=dict)
+    kb_ids_with_runtime_rows: set[str] = field(default_factory=set)
+
+
+def build_binding_visibility_prefetch(
+    db: Session,
+    tenant_id: str,
+    bindings: Sequence[AgentResourceBinding],
+) -> BindingVisibilityPrefetch:
+    """把一份租户绑定集合所需的外部行一次性取齐，供可见性判定复用。"""
+    prefetch = BindingVisibilityPrefetch()
+
+    ids_by_type: dict[str, set[str]] = {}
+    for binding in bindings:
+        ids_by_type.setdefault(binding.resource_type, set()).add(binding.resource_id)
+
+    for resource_type, model in _RESOURCE_MODEL_BY_TYPE.items():
+        resource_ids = ids_by_type.get(resource_type)
+        if not resource_ids:
+            continue
+        statement = select(model).where(
+            model.tenant_id == tenant_id,
+            model.id.in_(resource_ids),
+        )
+        load_columns = _RESOURCE_LOAD_COLUMNS.get(resource_type, ())
+        if load_columns:
+            statement = statement.options(
+                load_only(*(getattr(model, name) for name in load_columns))
+            )
+        for row in db.exec(statement).all():
+            prefetch.resources[(resource_type, row.id)] = row
+
+    prefetch.overall_agent = get_overall_agent(db, tenant_id)
+    overall_id = prefetch.overall_agent.id if prefetch.overall_agent else None
+    if overall_id:
+        for binding in bindings:
+            if binding.agent_id == overall_id:
+                prefetch.overall_bindings[(binding.resource_type, binding.resource_id)] = binding
+
+    agent_ids = {binding.agent_id for binding in bindings}
+    if agent_ids:
+        # 两张 branch 表都有 (tenant_id, agent_id, <resource>) 唯一约束，setdefault 等价于 .first()
+        for branch in db.exec(
+            select(AgentSkillBranch).where(
+                AgentSkillBranch.tenant_id == tenant_id,
+                AgentSkillBranch.agent_id.in_(agent_ids),
+            )
+        ).all():
+            prefetch.skill_branches.setdefault((branch.agent_id, branch.skill_id), branch)
+        for kb_branch in db.exec(
+            select(AgentKnowledgeBranch).where(
+                AgentKnowledgeBranch.tenant_id == tenant_id,
+                AgentKnowledgeBranch.agent_id.in_(agent_ids),
+            )
+        ).all():
+            if kb_branch.status == "deleted":
+                continue
+            prefetch.kb_branches.setdefault(
+                (kb_branch.agent_id, kb_branch.knowledge_base_id), kb_branch
+            )
+
+    kb_ids = ids_by_type.get("knowledge_base")
+    if kb_ids:
+        for model in (KnowledgeDocument, KnowledgeBucket, KnowledgeChunk):
+            for kb_id in db.exec(
+                select(model.knowledge_base_id).where(
+                    model.tenant_id == tenant_id,
+                    model.knowledge_base_id.in_(kb_ids),
+                )
+            ).all():
+                prefetch.kb_ids_with_runtime_rows.add(kb_id)
+
+    return prefetch
+
+
 def is_open_gallery_resource(
-    db: Session, tenant_id: str, resource_type: str, resource: object
+    db: Session,
+    tenant_id: str,
+    resource_type: str,
+    resource: object,
+    prefetch: BindingVisibilityPrefetch | None = None,
 ) -> bool:
     resource_id = getattr(resource, "id", None)
     if not resource_id or getattr(resource, "tenant_id", None) != tenant_id:
         return False
-    overall = get_overall_agent(db, tenant_id)
+    if prefetch is not None:
+        overall = prefetch.overall_agent
+        overall_binding = prefetch.overall_bindings.get((resource_type, resource_id))
+    else:
+        overall = get_overall_agent(db, tenant_id)
+        overall_binding = None
+        if overall:
+            overall_binding = db.exec(
+                select(AgentResourceBinding).where(
+                    AgentResourceBinding.tenant_id == tenant_id,
+                    AgentResourceBinding.agent_id == overall.id,
+                    AgentResourceBinding.resource_type == resource_type,
+                    AgentResourceBinding.resource_id == resource_id,
+                )
+            ).first()
     if not overall:
         return False
-    overall_binding = db.exec(
-        select(AgentResourceBinding).where(
-            AgentResourceBinding.tenant_id == tenant_id,
-            AgentResourceBinding.agent_id == overall.id,
-            AgentResourceBinding.resource_type == resource_type,
-            AgentResourceBinding.resource_id == resource_id,
-        )
-    ).first()
     if not overall_binding:
         return False
     return overall_binding.status != "deleted" and not _binding_is_private(overall_binding)
@@ -313,6 +434,7 @@ def is_bound_resource_visible_for_agent(
     resource_type: str,
     resource: object,
     binding: AgentResourceBinding,
+    prefetch: BindingVisibilityPrefetch | None = None,
 ) -> bool:
     if binding.status == "deleted":
         return False
@@ -320,7 +442,9 @@ def is_bound_resource_visible_for_agent(
         return False
     if _binding_is_private(binding) or _metadata_is_private(_resource_metadata(resource)):
         return True
-    return is_open_gallery_resource(db, tenant_id, resource_type, resource)
+    return is_open_gallery_resource(
+        db, tenant_id, resource_type, resource, prefetch=prefetch
+    )
 
 
 def project_skill_with_branch(

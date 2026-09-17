@@ -51,10 +51,12 @@ import GeneralSkillsPage, {
 } from "./pages/GeneralSkillsPage";
 import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
+import ShareChatPage from "./pages/ShareChatPage";
 import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
 import ApiKeyApprovalsPage from "./pages/ApiKeyApprovalsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
+import PlatformUpdatesPage from "./pages/PlatformUpdatesPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
 import TeamChatPage from "./pages/TeamChatPage";
@@ -159,10 +161,16 @@ function Shell({
   const isAdmin = isEnterpriseAdmin(auth.user);
   const accountRoleLabel = isAdmin ? "管理员" : "";
   const isDistillRoute = location.pathname === "/enterprise/skills/distill";
+  // 开放广场平台命中 /enterprise/platform 与 /enterprise/platform/:kind。
+  // 注意 /enterprise/platform-updates 也以该串开头，必须按路径段边界判断，
+  // 否则「平台更新内容」会被误高亮成「开放广场平台」。
+  const isOpenPlatformRoute =
+    location.pathname === "/enterprise/platform" ||
+    location.pathname.startsWith("/enterprise/platform/");
   const selected =
     location.pathname === "/enterprise"
       ? "/enterprise/dashboard"
-      : location.pathname.startsWith("/enterprise/platform")
+      : isOpenPlatformRoute
         ? "/enterprise/platform"
         : location.pathname.startsWith("/enterprise/knowledge")
           ? "/enterprise/knowledge"
@@ -379,7 +387,6 @@ function Shell({
     "/enterprise/memories",
     "/enterprise/feedback",
     "/enterprise/knowledge",
-    "/enterprise/general-skills",
     "/enterprise/skills",
     "/enterprise/tools",
   ];
@@ -518,6 +525,7 @@ function Shell({
         modelSetupAttention={isAdmin && showModelSetupNotice}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="sd1-content-island" data-island="double">
         <div
           className={`content flex-1 ${isDistillRoute ? "flex min-h-0 flex-col overflow-hidden p-0!" : ""} ${selected === "/enterprise/dashboard" ? "sd1-dashboard-content" : ""} ${selected !== "/enterprise/dashboard" && !isDistillRoute ? "sd1-management-content" : ""}`}
         >
@@ -566,7 +574,7 @@ function Shell({
             <Routes>
               <Route
                 path="/enterprise"
-                element={<Navigate to="/enterprise/dashboard" replace />}
+                element={<Navigate to={EnterpriseRoute.Platform} replace />}
               />
               <Route
                 path="/enterprise/platform"
@@ -584,6 +592,15 @@ function Shell({
                   <OpenPlatformPage
                     currentUser={auth.user}
                     isAdmin={isAdmin}
+                    onLogout={onLogout}
+                  />
+                }
+              />
+              <Route
+                path="/enterprise/platform-updates"
+                element={
+                  <PlatformUpdatesPage
+                    currentUser={auth.user}
                     onLogout={onLogout}
                   />
                 }
@@ -756,7 +773,7 @@ function Shell({
                   isAdmin ? (
                     <AccountsPage currentUser={auth.user} onLogout={onLogout} />
                   ) : (
-                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                    <Navigate to={EnterpriseRoute.Platform} replace />
                   )
                 }
               />
@@ -770,7 +787,7 @@ function Shell({
                   isAdmin ? (
                     <RuntimeSettingsPage currentUser={auth.user} />
                   ) : (
-                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                    <Navigate to={EnterpriseRoute.Platform} replace />
                   )
                 }
               />
@@ -780,7 +797,7 @@ function Shell({
                   isAdmin ? (
                     <ApiKeyApprovalsPage currentUser={auth.user} onLogout={onLogout} />
                   ) : (
-                    <Navigate to={EnterpriseRoute.Gallery} replace />
+                    <Navigate to={EnterpriseRoute.Platform} replace />
                   )
                 }
               />
@@ -841,6 +858,7 @@ function Shell({
               />
             </Routes>
           )}
+        </div>
         </div>
       </div>
       <Dialog open={agentCreateOpen} onOpenChange={setAgentCreateOpen}>
@@ -995,7 +1013,8 @@ function AuthedApp({
 }) {
   const location = useLocation();
   if (location.pathname === "/") {
-    return <Navigate to={EnterpriseRoute.Gallery} replace />;
+    // 站点默认首页是开放广场平台；对话广场（/workspace/gallery）不再是落地页。
+    return <Navigate to={EnterpriseRoute.Platform} replace />;
   }
   if (location.pathname === "/chat" || location.pathname === "/chat/") {
     return <Navigate to={EnterpriseRoute.Gallery} replace />;
@@ -1092,10 +1111,15 @@ export default function App() {
     setAuthChecked(true);
   }
 
+  // 分享页是免登录的独立表面：不要叠加站内的引导 / 更新提醒浮层
+  const isShareRoute = window.location.pathname.startsWith('/share/');
+
   return (
     <TooltipProvider>
       <BrowserRouter>
         <Routes>
+          {/* 数字员工分享：访客免登录进入对话窗，不经过登录守卫 */}
+          <Route path="/share/:token" element={<ShareChatPage />} />
           <Route
             path="/*"
             element={
@@ -1111,9 +1135,9 @@ export default function App() {
             }
           />
         </Routes>
-        {auth && authChecked ? <OnboardingGuide /> : null}
-        {auth && authChecked ? <QuickStartGuide isAdmin={isEnterpriseAdmin(auth.user)} /> : null}
-        {auth && authChecked ? <UpdateReminder enabled={guidesCompleted} /> : null}
+        {auth && authChecked && !isShareRoute ? <OnboardingGuide /> : null}
+        {auth && authChecked && !isShareRoute ? <QuickStartGuide isAdmin={isEnterpriseAdmin(auth.user)} /> : null}
+        {auth && authChecked && !isShareRoute ? <UpdateReminder enabled={guidesCompleted} /> : null}
       </BrowserRouter>
       <Toaster richColors closeButton position="top-center" />
     </TooltipProvider>

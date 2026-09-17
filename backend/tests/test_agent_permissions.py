@@ -1111,3 +1111,66 @@ def _test_session() -> Session:
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+def test_overall_agent_cannot_be_archived() -> None:
+    with _test_session() as db:
+        _owner, _other, admin = _seed_users(db)
+        overall = AgentProfile(
+            id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+        )
+        db.add(overall)
+        db.commit()
+
+        with pytest.raises(HTTPException) as archive_error:
+            update_agent(
+                overall.id,
+                AgentProfileUpdateRequest(tenant_id="tenant_demo", status="archived"),
+                db=db,
+                current_user=admin,
+            )
+        assert archive_error.value.status_code == 400
+
+        # A non-status update still works for the overall agent.
+        updated = update_agent(
+            overall.id,
+            AgentProfileUpdateRequest(tenant_id="tenant_demo", description="更新描述"),
+            db=db,
+            current_user=admin,
+        )
+        assert updated.description == "更新描述"
+        assert updated.status == "active"
+
+
+def test_cannot_create_second_overall_agent() -> None:
+    with _test_session() as db:
+        _owner, _other, admin = _seed_users(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException) as create_error:
+            create_agent(
+                AgentProfileCreateRequest(
+                    tenant_id="tenant_demo",
+                    name="第二个整体智能体",
+                    is_overall=True,
+                    source_mode="blank",
+                ),
+                db=db,
+                current_user=admin,
+            )
+        assert create_error.value.status_code == 409
+
+        created = create_agent(
+            AgentProfileCreateRequest(
+                tenant_id="tenant_demo", name="普通员工", source_mode="blank"
+            ),
+            db=db,
+            current_user=admin,
+        )
+        assert created.is_overall is False
+

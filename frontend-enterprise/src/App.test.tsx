@@ -75,14 +75,14 @@ const modelConfig = {
   enabled: true,
 };
 
-function stubAppFetch() {
+function stubAppFetch(currentUser: unknown = authUser) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method || 'GET').toUpperCase();
     if (method === 'POST' && url.includes('/tl/session')) {
       return jsonResponse({ session_id: 'session-tl-1' });
     }
-    if (url.includes('/api/auth/me')) return jsonResponse(authUser);
+    if (url.includes('/api/auth/me')) return jsonResponse(currentUser);
     if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
     if (/\/api\/enterprise\/teams\/team-1\/(tasks|blackboard|events)/.test(url)) {
       return jsonResponse([]);
@@ -175,5 +175,70 @@ describe('App team scope selection', () => {
       expect(switcher.textContent).toContain('增长团队');
     });
     expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('team:team-1');
+  });
+});
+
+describe('App default landing route', () => {
+  it('sends the site root to the open platform instead of the chat gallery', async () => {
+    stubAppFetch();
+    window.history.pushState({}, '', '/');
+    render(<I18nProvider><App /></I18nProvider>);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/enterprise/platform');
+    });
+  });
+
+  it('sends the bare /enterprise path to the open platform', async () => {
+    stubAppFetch();
+    window.history.pushState({}, '', '/enterprise');
+    render(<I18nProvider><App /></I18nProvider>);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/enterprise/platform');
+    });
+  });
+
+  it('renders the changelog on the platform updates page', async () => {
+    stubAppFetch();
+    window.history.pushState({}, '', '/enterprise/platform-updates');
+    render(<I18nProvider><App /></I18nProvider>);
+
+    // changelog.md 的一级标题与首段正文都渲染出来了
+    expect(await screen.findByRole('heading', { name: 'Changelog' })).toBeTruthy();
+    expect(screen.getByText(/按天归纳/)).toBeTruthy();
+    // 侧边栏高亮必须落在「平台更新内容」而不是同样以 /enterprise/platform 开头的「开放广场平台」
+    const navItem = await screen.findByRole('button', { name: '平台更新内容' });
+    expect(navItem.getAttribute('data-active')).toBe('true');
+    const platformItem = await screen.findByRole('button', { name: '开放广场平台' });
+    expect(platformItem.getAttribute('data-active')).toBe('false');
+  });
+
+  it('localizes the platform updates entry through the en catalog', async () => {
+    // i18n 是 DOM 级自动翻译（en.json 命中即替换文本节点），并非只在 t() 调用处生效，
+    // 所以新入口只需在 en.json 里登记词条。
+    window.localStorage.setItem('staffdeck_locale', 'en-US');
+    stubAppFetch();
+    window.history.pushState({}, '', '/enterprise/platform-updates');
+    render(<I18nProvider><App /></I18nProvider>);
+
+    expect(
+      await screen.findByRole('button', { name: 'Platform Updates' }),
+    ).toBeTruthy();
+  });
+
+  it('bounces a non-admin off admin-only routes to the open platform', async () => {
+    const memberUser = { ...authUser, role: 'member' };
+    window.localStorage.setItem(
+      AUTH_STORAGE_KEY,
+      JSON.stringify({ token: 'token-1', user: memberUser }),
+    );
+    stubAppFetch(memberUser);
+    window.history.pushState({}, '', '/enterprise/accounts');
+    render(<I18nProvider><App /></I18nProvider>);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/enterprise/platform');
+    });
   });
 });

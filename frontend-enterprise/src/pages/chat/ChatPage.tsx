@@ -27,7 +27,7 @@ export default function ChatPage() {
           '--sidebar-width-icon': '72px',
         } as CSSProperties
       }
-      className="h-screen min-h-0 bg-[#fcfcfc] text-[#18181a]"
+      className="h-screen min-h-0 sd1-canvas text-[#18181a]"
     >
       <AppSidebar
         variant="chat"
