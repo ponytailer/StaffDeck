@@ -652,10 +652,14 @@ export type KnowledgeCitation = {
   chunk_id?: string;
   concept_id?: string;
   concept_type?: string;
+  /** 后端给出的展示分组键：同一文档同一位置归一张卡片。 */
+  display_key?: string;
   // When several retrieved chunks resolve to the same source document, the
   // display layer collapses them into one card. These fields keep the merged
   // passages so the citation detail dialog can still show each chunk.
   mergedCount?: number;
+  /** 该卡片覆盖的正文编号（合并后可能不止一个，如 ['[2]', '[3]']）。 */
+  labels?: string[];
   chunkIds?: string[];
   mergedChunks?: Array<{
     label: string;

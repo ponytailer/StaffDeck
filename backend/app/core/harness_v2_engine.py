@@ -67,7 +67,11 @@ from app.db.models import (
     Team,
     utc_now,
 )
-from app.knowledge.citations import compact_knowledge_citation_labels
+from app.knowledge.citations import (
+    citation_identity,
+    compact_knowledge_citation_labels,
+    renumber_citations,
+)
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
 from app.memory.service import memory_read
 from app.session.helpers import public_session
@@ -2231,40 +2235,43 @@ def _inject_handoff_context(
         payload["handoff_info"] = handoff_info
 
 
+_MAX_GLOBAL_CITATIONS = 8
+
+
 def _globalize_citations(
     results: list[TaskExecutionResult],
 ) -> list[dict[str, Any]]:
-    citations: list[dict[str, Any]] = []
-    labels_by_identity: dict[str, str] = {}
+    """把各任务帧的引用合成一份全局编号表。
+
+    编号必须全局连续且同一条证据只占一个号：各帧的 citations 各自从 ``kref_1``
+    起编号，直接拼起来会撞 ``id``（前端拿它当 React key），同一证据被两个知识库
+    版本重复收录时还会白占两个号——正文里的 ``[n]`` 就找不到对应卡片了。
+    """
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for result in results:
-        relabeled: list[dict[str, Any]] = []
         for citation in result.citations:
-            identity = _citation_identity(citation)
-            if not identity:
+            identity = citation_identity(citation)
+            if not identity or identity in seen:
                 continue
-            label = labels_by_identity.get(identity)
-            if label is None:
-                if len(citations) >= 8:
-                    continue
-                label = f"[{len(citations) + 1}]"
-                labels_by_identity[identity] = label
-                citations.append({**citation, "label": label})
-            relabeled.append({**citation, "label": label})
-        result.citations = relabeled
-    return citations
-
-
-def _citation_identity(citation: dict[str, Any]) -> str:
-    for field in ("concept_id", "chunk_id"):
-        value = str(citation.get(field) or "").strip()
-        if value:
-            return f"{field}:{value}"
-    components = [
-        str(citation.get(field) or "").strip()
-        for field in ("source_path", "section_path", "title", "excerpt")
-    ]
-    normalized = "|".join(component for component in components if component)
-    return normalized[:2_000]
+            seen.add(identity)
+            if len(unique) >= _MAX_GLOBAL_CITATIONS:
+                continue
+            unique.append(citation)
+    numbered = renumber_citations(unique)
+    by_identity = {citation_identity(item): item for item in numbered}
+    for result in results:
+        deduped: list[dict[str, Any]] = []
+        seen_in_frame: set[str] = set()
+        for citation in result.citations:
+            identity = citation_identity(citation)
+            shared = by_identity.get(identity)
+            if shared is None or identity in seen_in_frame:
+                continue
+            seen_in_frame.add(identity)
+            deduped.append(shared)
+        result.citations = deduped
+    return numbered
 
 
 def _aggregate_artifacts(

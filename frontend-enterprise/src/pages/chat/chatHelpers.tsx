@@ -1773,18 +1773,40 @@ function citationLabelNumber(citation: KnowledgeCitation, fallback: number): num
   return fallback;
 }
 
-function citationDisplayIdentity(citation: KnowledgeCitation): string {
-  const raw = (
-    citation.title
-    || citation.section_path
-    || citation.source_path
-    || citation.concept_id
-    || citation.summary
-    || citation.excerpt
-    || citation.id
-    || ''
-  );
-  return normalizeMessageText(raw).toLowerCase();
+/**
+ * 展示分组键：同一文档同一位置的多段证据只占一张卡片。
+ *
+ * 必须带上文档维度——只比标题会把不同 PDF 里同名的「第 3 页」并成一条，
+ * 卡片编号就会和正文里的 [n] 对不上。后端已给出 display_key；历史消息没有
+ * 这个字段，回退到本地推导。
+ */
+function citationGroupKey(citation: KnowledgeCitation): string {
+  const displayKey = typeof citation.display_key === 'string' ? citation.display_key.trim() : '';
+  if (displayKey) return `display:${displayKey}`;
+  const document = (citation.document_id || citation.source_path || '').trim();
+  const section = (citation.section_path || citation.title || '').trim();
+  const raw = document && section
+    ? `${document}#${section}`
+    : document
+      || section
+      || citation.concept_id
+      || citation.summary
+      || citation.excerpt
+      || citation.id
+      || '';
+  return `local:${normalizeMessageText(raw).toLowerCase()}`;
+}
+
+function firstCitationLabelNumber(citation: KnowledgeCitation, fallback: number): number {
+  const candidates = citation.labels?.length ? citation.labels : [citation.label || citation.id];
+  for (const label of candidates) {
+    const match = String(label || '').match(/\[(\d+)\]/);
+    if (match) {
+      const value = Number(match[1]);
+      if (Number.isInteger(value) && value >= 1) return value;
+    }
+  }
+  return fallback;
 }
 
 export function knowledgeCitations(item: ChatMessage, content: string): KnowledgeCitation[] {
@@ -1806,7 +1828,7 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
   // individual passages are preserved in `mergedChunks` for the detail dialog.
   const groups = new Map<string, Array<{ citation: KnowledgeCitation; labelNumber: number }>>();
   for (const entry of candidates) {
-    const key = citationDisplayIdentity(entry.citation);
+    const key = citationGroupKey(entry.citation);
     if (!key) continue;
     const group = groups.get(key);
     if (group) group.push(entry);
@@ -1817,6 +1839,9 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
   for (const group of groups.values()) {
     group.sort((a, b) => a.labelNumber - b.labelNumber);
     const representative = group[0].citation;
+    // 卡片必须把组内**全部**编号列出来：正文里的 [3] 若被折叠掉，
+    // 用户就会觉得「有 1、2、4 却没有 3」。
+    const labels = group.map((entry) => `[${entry.labelNumber}]`);
     const chunkIds = group
       .map((entry) => String((entry.citation as KnowledgeCitation).chunk_id || '').trim())
       .filter(Boolean);
@@ -1840,6 +1865,7 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
       });
     merged.push({
       ...representative,
+      labels,
       // The badge shows the number of *distinct* passages the user will see
       // after deduplication, not the raw chunk count. This matches the detail
       // dialog and avoids the confusion of "×4" with only 1 unique passage.
@@ -1849,7 +1875,18 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
     });
   }
 
-  return merged.sort((a, b) => citationLabelNumber(a, 0) - citationLabelNumber(b, 0));
+  const sorted = merged.sort((a, b) => (
+    firstCitationLabelNumber(a, 0) - firstCitationLabelNumber(b, 0)
+  ));
+
+  if (usedLabels.size > 0) return sorted;
+  // 正文里没有任何 [n] 时编号并不指向具体位置，纯粹是列表序号：此时按合并后的
+  // 卡片顺序重排成连续的 1..N，否则合并留下的空号会让用户以为丢了引用。
+  return sorted.map((citation, index) => ({
+    ...citation,
+    label: `[${index + 1}]`,
+    labels: [`[${index + 1}]`],
+  }));
 }
 
 /**

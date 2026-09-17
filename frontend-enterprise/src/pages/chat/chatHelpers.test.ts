@@ -295,6 +295,98 @@ describe('chat history consumer contract', () => {
     );
   });
 
+  it('keeps every merged label so an inline [n] always resolves to a card', () => {
+    const item = message({
+      content: 'Answer [2] and [3]',
+      metadata: {
+        knowledge_citations: [
+          {
+            id: 'kref_1',
+            chunk_id: 'chunk-1',
+            label: '[2]',
+            title: 'PDF 文档 / 第 4 页',
+            document_id: 'kdoc_a',
+            display_key: 'doc:kdoc_a#PDF 文档 / 第 4 页',
+          },
+          {
+            id: 'kref_2',
+            chunk_id: 'chunk-2',
+            label: '[3]',
+            title: 'PDF 文档 / 第 4 页',
+            document_id: 'kdoc_a',
+            display_key: 'doc:kdoc_a#PDF 文档 / 第 4 页',
+          },
+        ],
+      },
+    });
+
+    const merged = knowledgeCitations(item, item.content);
+    expect(merged).toHaveLength(1);
+    // 正文引用了 [2] 和 [3]，卡片必须同时列出两个号，否则 [3] 找不到落点。
+    expect(merged[0].labels).toEqual(['[2]', '[3]']);
+    expect(merged[0].label).toBe('[2]');
+  });
+
+  it('renumbers merged cards contiguously when the reply has no inline markers', () => {
+    const item = message({
+      content: '回答里没有引用编号。',
+      metadata: {
+        knowledge_citations: [
+          { id: 'kref_1', label: '[1]', title: 'PDF 文档 / 第 6 页', display_key: 'doc:kdoc_a#第 6 页' },
+          { id: 'kref_2', label: '[2]', title: 'PDF 文档 / 第 4 页', display_key: 'doc:kdoc_a#第 4 页' },
+          { id: 'kref_3', label: '[3]', title: 'PDF 文档 / 第 4 页', display_key: 'doc:kdoc_a#第 4 页' },
+          { id: 'kref_4', label: '[4]', title: 'PDF 文档 / 第 5 页', display_key: 'doc:kdoc_a#第 5 页' },
+        ],
+      },
+    });
+
+    const merged = knowledgeCitations(item, item.content);
+    // 第 4 页的两条合并后不留下空号：[1][2][3] 而不是 [1][2][4]。
+    expect(merged.map((citation) => citation.label)).toEqual(['[1]', '[2]', '[3]']);
+    expect(merged[1].labels).toEqual(['[2]']);
+    expect(merged[1].mergedChunks).toHaveLength(2);
+  });
+
+  it('keeps same-titled pages from different documents apart', () => {
+    const item = message({
+      content: '回答里没有引用编号。',
+      metadata: {
+        knowledge_citations: [
+          {
+            id: 'kref_1',
+            label: '[1]',
+            title: 'PDF 文档 / 第 3 页',
+            document_id: 'kdoc_a',
+            display_key: 'doc:kdoc_a#第 3 页',
+          },
+          {
+            id: 'kref_2',
+            label: '[2]',
+            title: 'PDF 文档 / 第 3 页',
+            document_id: 'kdoc_b',
+            display_key: 'doc:kdoc_b#第 3 页',
+          },
+        ],
+      },
+    });
+
+    expect(knowledgeCitations(item, item.content)).toHaveLength(2);
+  });
+
+  it('falls back to source path grouping for citations without a display key', () => {
+    const item = message({
+      content: '回答里没有引用编号。',
+      metadata: {
+        knowledge_citations: [
+          { id: 'kref_1', label: '[1]', title: 'PDF 文档 / 第 3 页', source_path: 'a.pdf / 第 3 页' },
+          { id: 'kref_2', label: '[2]', title: 'PDF 文档 / 第 3 页', source_path: 'b.pdf / 第 3 页' },
+        ],
+      },
+    });
+
+    expect(knowledgeCitations(item, item.content)).toHaveLength(2);
+  });
+
   it('restores scheduled drafts and attachments from persisted metadata', () => {
     const draft = {
       should_create: true,

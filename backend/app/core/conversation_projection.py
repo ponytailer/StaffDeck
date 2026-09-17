@@ -5,7 +5,11 @@ from collections.abc import Callable
 from typing import Any
 
 from app.db.models import ChatSession, Message, Skill
-from app.knowledge.citations import knowledge_citations_from_results
+from app.knowledge.citations import (
+    citation_identity,
+    knowledge_citations_from_results,
+    renumber_citations,
+)
 from app.session.attachments import (
     message_content_with_attachment_context,
     message_images_from_metadata,
@@ -67,28 +71,21 @@ class ConversationProjection:
         citations: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         seen: set[str] = set()
-        result: list[dict[str, Any]] = []
+        unique: list[dict[str, Any]] = []
         for citation in citations:
             if not isinstance(citation, dict):
                 continue
-            identity = str(
-                citation.get("title")
-                or citation.get("section_path")
-                or citation.get("summary")
-                or citation.get("excerpt")
-                or citation.get("source_path")
-                or citation.get("concept_id")
-                or citation.get("id")
-                or ""
-            )
-            key = re.sub(r"\s+", " ", identity).strip().lower()
+            # 去重口径必须与生成侧一致：按 title 去重会把同一文档同一页的
+            # 不同片段并成一条，只按 chunk_id 又会把重复收录的同一段留成两条。
+            key = citation_identity(citation)
             if not key or key in seen:
                 continue
             seen.add(key)
-            result.append({**citation, "label": f"[{len(result) + 1}]"})
-            if len(result) >= 4:
+            unique.append(citation)
+            if len(unique) >= 4:
                 break
-        return result
+        # 去重后重新编号，保证 [n] 连续且 id 唯一（前端拿它当 React key）。
+        return renumber_citations(unique)
 
     @staticmethod
     def user_message_metadata(request: ChatTurnRequest) -> dict[str, Any]:

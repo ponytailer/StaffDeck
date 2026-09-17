@@ -153,17 +153,23 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
           </DialogHeader>
           {activeCitation && (
             <div className={CHAT_CITATION_DETAIL_CLASS}>
-              <div className={CHAT_CITATION_DETAIL_EYEBROW_CLASS}>{citationKindLabel(activeCitation)}</div>
+              <div className={CHAT_CITATION_DETAIL_EYEBROW_CLASS}>
+                {`${citationKindLabel(activeCitation)} · ${
+                  (activeCitation.labels?.length ? activeCitation.labels : [activeCitation.label])
+                    .filter(Boolean)
+                    .join('')
+                }`}
+              </div>
               <h3 className={CHAT_CITATION_DETAIL_TITLE_CLASS}>{citationDisplayTitle(activeCitation)}</h3>
               {activeCitation.mergedChunks && activeCitation.mergedChunks.length > 1 ? (
                 <div className={CHAT_CITATION_DETAIL_SECTION_CLASS}>
                   <span>
                     引用片段（共 {activeCitation.mergedChunks.length} 段）
                   </span>
-                  {activeCitation.mergedChunks.map((chunk) => (
-                    <div key={chunk.label} className={CHAT_CITATION_DETAIL_MERGE_CLASS}>
+                  {activeCitation.mergedChunks.map((chunk, index) => (
+                    <div key={`${chunk.label}-${index}`} className={CHAT_CITATION_DETAIL_MERGE_CLASS}>
                       <div className={CHAT_CITATION_DETAIL_MERGE_HEAD_CLASS}>
-                        <span className={CHAT_CITATION_DETAIL_INDEX_CLASS}>{chunk.label}</span>
+                        <span className={CHAT_CITATION_DETAIL_INDEX_CLASS}>片段 {index + 1}</span>
                         {chunk.section_path || chunk.source_path ? (
                           <span className={CHAT_CITATION_DETAIL_MERGE_META_CLASS}>
                             {chunk.section_path || chunk.source_path}

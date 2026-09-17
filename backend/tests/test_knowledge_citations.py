@@ -1,7 +1,10 @@
 from app.knowledge.citations import (
     CITATION_EXCERPT_CHAR_LIMIT,
+    citation_display_key,
+    citation_identity,
     compact_knowledge_citation_labels,
     knowledge_citations_from_results,
+    renumber_citations,
     restore_truncated_atomic_references,
 )
 
@@ -412,3 +415,158 @@ def test_knowledge_citations_cap_evidence_excerpt_at_display_limit() -> None:
     )
 
     assert citations[0]["excerpt"] == excerpt[:CITATION_EXCERPT_CHAR_LIMIT]
+
+
+# ---------------------------------------------------------------------------
+# 引用编号一致性：正文里的 [n] 必须能在卡片列表里找到同号卡片
+# ---------------------------------------------------------------------------
+
+
+def test_citation_identity_collapses_duplicate_copies_of_one_chunk() -> None:
+    """同一文档同一页被两个 bucket 重复收录：chunk_id 不同但正文一致。"""
+    original = {
+        "kind": "evidence",
+        "document_id": "kdoc_project",
+        "section_path": "PDF 文档 / 第 4 页",
+        "chunk_id": "kchunk_a",
+        "bucket_id": "kbucket_a",
+        "excerpt": "年客流 2000 万人次。",
+    }
+    duplicated = {**original, "chunk_id": "kchunk_b", "bucket_id": "kbucket_b"}
+
+    assert citation_identity(original) == citation_identity(duplicated)
+
+
+def test_citation_identity_keeps_distinct_passages_on_the_same_page() -> None:
+    shared = {
+        "kind": "evidence",
+        "document_id": "kdoc_project",
+        "section_path": "PDF 文档 / 第 4 页",
+    }
+    first = {**shared, "chunk_id": "kchunk_a", "excerpt": "第一段。"}
+    second = {**shared, "chunk_id": "kchunk_b", "excerpt": "第二段。"}
+
+    assert citation_identity(first) != citation_identity(second)
+    # 但展示上仍算同一张卡：位置相同，片段留在详情弹窗里。
+    assert citation_display_key(first) == citation_display_key(second)
+
+
+def test_citation_display_key_separates_same_page_of_different_documents() -> None:
+    first = {
+        "title": "PDF 文档 / 第 3 页",
+        "document_id": "kdoc_a",
+        "section_path": "PDF 文档 / 第 3 页",
+    }
+    second = {**first, "document_id": "kdoc_b"}
+
+    assert citation_display_key(first) != citation_display_key(second)
+
+
+def test_knowledge_citations_dedupe_redundant_copies_with_contiguous_labels() -> None:
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "evidence_pack": [
+                    {
+                        "chunk_id": "kchunk_a",
+                        "document_id": "kdoc_project",
+                        "bucket_id": "kbucket_a",
+                        "source_path": "project.pdf",
+                        "section_path": "PDF 文档 / 第 4 页",
+                        "excerpt": "年客流 2000 万人次。",
+                    },
+                    {
+                        # 重复收录：同文档、同页、同内容，只有 chunk/bucket 不同。
+                        "chunk_id": "kchunk_b",
+                        "document_id": "kdoc_project",
+                        "bucket_id": "kbucket_b",
+                        "source_path": "project.pdf",
+                        "section_path": "PDF 文档 / 第 4 页",
+                        "excerpt": "年客流 2000 万人次。",
+                    },
+                    {
+                        "chunk_id": "kchunk_c",
+                        "document_id": "kdoc_project",
+                        "bucket_id": "kbucket_a",
+                        "source_path": "project.pdf",
+                        "section_path": "PDF 文档 / 第 5 页",
+                        "excerpt": "乐园全年龄段适配。",
+                    },
+                ]
+            }
+        ]
+    )
+
+    assert [item["chunk_id"] for item in citations] == ["kchunk_a", "kchunk_c"]
+    assert [item["label"] for item in citations] == ["[1]", "[2]"]
+    assert [item["id"] for item in citations] == ["kref_1", "kref_2"]
+    assert citations[0]["display_key"]
+
+
+def test_renumber_citations_keeps_labels_contiguous_and_ids_unique() -> None:
+    renumbered = renumber_citations(
+        [
+            {"id": "kref_1", "label": "[1]", "chunk_id": "chunk-a"},
+            {"id": "kref_1", "label": "[1]", "chunk_id": "chunk-b"},
+            {"id": "kref_4", "label": "[4]", "chunk_id": "chunk-c"},
+        ]
+    )
+
+    assert [item["label"] for item in renumbered] == ["[1]", "[2]", "[3]"]
+    assert [item["id"] for item in renumbered] == ["kref_1", "kref_2", "kref_3"]
+    assert len({item["id"] for item in renumbered}) == 3
+
+
+def test_globalize_citations_renumbers_across_frames_and_drops_duplicates() -> None:
+    """各任务帧各自从 kref_1 起编号，全局化后不能撞 id，也不能跳号。"""
+    from app.core.harness_v2_engine import _globalize_citations
+    from app.core.task_request_compiler import TaskExecutionResult
+
+    shared_excerpt = "年客流 2000 万人次。"
+    first = TaskExecutionResult(
+        task_frame_id="task-1",
+        status="completed",
+        citations=[
+            {
+                "id": "kref_1",
+                "label": "[1]",
+                "kind": "evidence",
+                "document_id": "kdoc_project",
+                "section_path": "PDF 文档 / 第 4 页",
+                "chunk_id": "kchunk_a",
+                "excerpt": shared_excerpt,
+            }
+        ],
+    )
+    second = TaskExecutionResult(
+        task_frame_id="task-2",
+        status="completed",
+        citations=[
+            {
+                "id": "kref_1",
+                "label": "[1]",
+                "kind": "evidence",
+                "document_id": "kdoc_project",
+                "section_path": "PDF 文档 / 第 4 页",
+                "chunk_id": "kchunk_b",
+                "excerpt": shared_excerpt,
+            },
+            {
+                "id": "kref_2",
+                "label": "[2]",
+                "kind": "evidence",
+                "document_id": "kdoc_project",
+                "section_path": "PDF 文档 / 第 5 页",
+                "chunk_id": "kchunk_c",
+                "excerpt": "乐园全年龄段适配。",
+            },
+        ],
+    )
+
+    citations = _globalize_citations([first, second])
+
+    assert [item["label"] for item in citations] == ["[1]", "[2]"]
+    assert [item["id"] for item in citations] == ["kref_1", "kref_2"]
+    # 第二帧里重复的那条被折叠，两帧共用同一条编号。
+    assert [item["label"] for item in first.citations] == ["[1]"]
+    assert [item["label"] for item in second.citations] == ["[1]", "[2]"]

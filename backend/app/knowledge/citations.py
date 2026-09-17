@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
 CITATION_EXCERPT_CHAR_LIMIT = 6000
 CITATION_SUMMARY_CHAR_LIMIT = 800
 CONCEPT_EXCERPT_CHAR_LIMIT = 2400
+# 内容指纹只取归一化后的前 N 个字符：同一条证据被不同 bucket/版本重复收录时，
+# chunk_id 不同但正文一致，靠它才能判定成同一条。
+CITATION_FINGERPRINT_CHAR_LIMIT = 400
 EMAIL_PATTERN = re.compile(
     r"(?<![\w.+-])[A-Z0-9._%+-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+(?![\w.-])",
     re.IGNORECASE,
@@ -75,6 +79,20 @@ def compact_knowledge_citation_labels(
     return compacted_content, compacted_citations
 
 
+def renumber_citations(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按给定顺序重排编号，保证 label 连续、id 唯一。
+
+    引用编号必须与卡片一一对应：跳号会让正文里的 ``[n]`` 找不到落点；id 重复
+    会让前端以 ``citation.id`` 作 React key 时复用同一张卡片。
+    """
+    renumbered: list[dict[str, Any]] = []
+    for index, citation in enumerate(citations, start=1):
+        if not isinstance(citation, dict):
+            continue
+        renumbered.append({**citation, "id": f"kref_{index}", "label": f"[{index}]"})
+    return renumbered
+
+
 def restore_truncated_atomic_references(content: str, citations: object) -> str:
     """Restore a uniquely identifiable email that the model abbreviated."""
     if not content or not isinstance(citations, list):
@@ -112,6 +130,92 @@ def _normalize_identity(value: str) -> str:
 
 def _semantic_identity(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def _first_text(citation: dict[str, Any], fields: tuple[str, ...]) -> str:
+    for field in fields:
+        value = str(citation.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _content_fingerprint(citation: dict[str, Any]) -> str:
+    text = _first_text(citation, ("content", "excerpt", "summary"))
+    normalized = _normalize_identity(text)[:CITATION_FINGERPRINT_CHAR_LIMIT]
+    if not normalized:
+        return ""
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+def _citation_locator(citation: dict[str, Any]) -> str:
+    """定位一段证据所在的「文档 + 位置」，缺文档信息时退回 chunk。"""
+    document = _first_text(
+        citation,
+        ("document_id", "source_path", "source_ref", "target", "path", "uri"),
+    )
+    section = _first_text(citation, ("section_path",))
+    chunk_id = _first_text(citation, ("chunk_id",))
+    if document:
+        return f"doc:{document}#{section}" if section else f"doc:{document}"
+    if chunk_id:
+        return f"chunk:{chunk_id}"
+    return f"section:{section}" if section else ""
+
+
+def citation_identity(citation: dict[str, Any]) -> str:
+    """「这算不算同一份证据」的权威身份，供所有去重路径共用。
+
+    带内容指纹：同一文档同一页被重复收录（bucket / 知识库版本不同、chunk_id
+    不同但正文一致）时判为同一条；同一页里的不同片段则仍是两条，由展示层
+    合并成一张卡并把编号全部列出。
+    """
+    if not isinstance(citation, dict):
+        return ""
+    concept_id = _first_text(citation, ("concept_id",))
+    if concept_id:
+        return f"concept:{concept_id}"
+    related_group_id = _first_text(citation, ("related_group_id",))
+    if related_group_id:
+        return f"related:{related_group_id}"
+    locator = _citation_locator(citation)
+    fingerprint = _content_fingerprint(citation)
+    if locator and fingerprint:
+        return f"{locator}|{fingerprint}"
+    if locator:
+        return locator
+    title = _first_text(citation, ("title",))
+    if title:
+        # 只有标题可依据时大小写不应影响判定（" Alpha " 与 "alpha" 是同一条）。
+        return f"title:{title.lower()}|{fingerprint}"
+    return fingerprint
+
+
+def citation_display_key(citation: dict[str, Any]) -> str:
+    """标题行的展示分组键：同一文档同一位置只占一张卡片。
+
+    与 :func:`citation_identity` 的差别是**不含内容指纹**——同一页切出的多个
+    片段应合成一张卡（片段留在详情里）。文档维度必须保留，否则不同 PDF 里
+    同名的「第 3 页」会被并成一条，这正是编号对不上正文的来源之一。
+    """
+    if not isinstance(citation, dict):
+        return ""
+    concept_id = _first_text(citation, ("concept_id",))
+    if concept_id:
+        return f"concept:{concept_id}"
+    related_group_id = _first_text(citation, ("related_group_id",))
+    if related_group_id:
+        return f"related:{related_group_id}"
+    document = _first_text(citation, ("document_id",))
+    if not document:
+        document = _first_text(citation, ("source_path",))
+    section = _first_text(citation, ("section_path", "title"))
+    if document:
+        return f"doc:{document}#{section}" if section else f"doc:{document}"
+    chunk_id = _first_text(citation, ("chunk_id",))
+    if chunk_id:
+        return f"chunk:{chunk_id}"
+    return f"title:{_first_text(citation, ('title',))}"
 
 
 def _display_title(value: str) -> str:
@@ -208,21 +312,16 @@ def _normalize_source_items(
         group_id = str(
             item.get("related_group_id") or metadata.get("related_group_id") or ""
         ).strip()
-        if kind == "evidence":
-            raw_identity = (
-                f"related:{group_id}"
-                if group_id
-                else source_id or section_path or source_path or content[:120]
-            )
-        elif kind == "okf":
-            raw_identity = f"{source_id}:{source_path or content[:120]}"
-        else:
-            raw_identity = source_id or source_path or content[:120]
-        identity = _semantic_identity(raw_identity)
-        if not identity or not content:
+        # OKF 引用要区分「同一概念的不同落点」，沿用 concept/chunk + 文档定位；
+        # 其余（含 evidence）统一走 citation_identity，避免多套身份规则打架。
+        identity = (
+            _semantic_identity(f"{source_id}:{source_path or content[:120]}")
+            if kind == "okf"
+            else ""
+        )
+        if not content:
             continue
-        candidate = {
-            "_identity": identity,
+        candidate: dict[str, Any] = {
             "kind": kind,
             "title": title,
             "source_path": source_path,
@@ -250,6 +349,12 @@ def _normalize_source_items(
             candidate["concept_id"] = str(item.get("concept_id") or item.get("id") or "")
             if kind == "concept":
                 candidate["concept_type"] = item.get("type")
+        if not identity:
+            identity = citation_identity(candidate)
+        if not identity:
+            continue
+        candidate["_identity"] = identity
+        candidate["display_key"] = citation_display_key(candidate)
         candidates.append(candidate)
     return candidates
 

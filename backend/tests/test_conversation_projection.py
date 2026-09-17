@@ -13,11 +13,12 @@ def test_dedupe_citations_preserves_first_four_and_relabels() -> None:
         {"title": "Epsilon"},
     ]
 
+    # 去重后重新编号：label 连续、id 唯一（前端拿 id 当 React key）。
     assert ConversationProjection.dedupe_knowledge_citations(citations) == [
-        {"title": " Alpha ", "label": "[1]"},
-        {"section_path": "Beta", "label": "[2]"},
-        {"summary": "Gamma", "label": "[3]"},
-        {"excerpt": "Delta", "label": "[4]"},
+        {"title": " Alpha ", "id": "kref_1", "label": "[1]"},
+        {"section_path": "Beta", "id": "kref_2", "label": "[2]"},
+        {"summary": "Gamma", "id": "kref_3", "label": "[3]"},
+        {"excerpt": "Delta", "id": "kref_4", "label": "[4]"},
     ]
 
 

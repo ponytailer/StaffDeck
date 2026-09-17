@@ -38,7 +38,7 @@ export default function KnowledgeCitationList({
             onClick={() => onOpen(citation)}
           >
             <span className={CHAT_CITATION_INDEX_CLASS} data-i18n-ignore>
-              {citation.label || citation.id}
+              {(citation.labels?.length ? citation.labels : [citation.label || citation.id]).join('')}
             </span>
             <span className={CHAT_CITATION_TITLE_CLASS} data-i18n-ignore>
               {citationDisplayTitle(citation)}
