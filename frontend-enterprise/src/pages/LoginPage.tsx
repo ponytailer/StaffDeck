@@ -77,7 +77,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       <main className="flex flex-1 flex-col items-center px-[32px]">
         <div className="flex flex-col items-center pt-[60px]">
           <h1 className="mt-[6px] text-center text-[54px] font-semibold leading-[80px] tracking-[1.08px] text-[#18181a]">
-            复星旅文
+            地中海度假集团
             <br />
             AI数字员工平台
           </h1>
