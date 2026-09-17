@@ -74,6 +74,8 @@ from app.db.models import (
     HarnessRunRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    KnowledgeChunk,
+    KnowledgeConcept,
     Message,
     ModelConfig,
     ScheduledTask,
@@ -86,6 +88,10 @@ from app.db.models import (
 from app.general_skills.schema import GeneralSkillRunResponse
 from app.harness.errors import HarnessExecutionError
 from app.knowledge.schema import KnowledgeSearchResponse
+from app.knowledge.search_payload import (
+    KNOWLEDGE_PAYLOAD_MAX_CHARS,
+    serialized_chars,
+)
 from app.observability.event_log import EventLog
 from app.scheduled_tasks.service import (
     _finish_task_schedule,
@@ -2571,19 +2577,25 @@ def test_mcp_app_descriptor_is_host_only_and_emitted_as_trace(
     assert trace_descriptor["initial_meta"] == {"ui": {"render": True}}
 
 
-def test_knowledge_search_large_json_result_uses_internal_sandbox_reference(
+def test_knowledge_search_small_result_is_inlined_without_sandbox_reference(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """知识检索结果直接内联进 tool result，不再落沙箱文件。
+
+    旧实现把整包 JSON（实测 80–160KB）落成文件、只给模型一个指针，模型读不全就换词
+    重搜。现在载荷在 app/knowledge/search_payload 里压到 24KB 以内直接内联。
+    """
+
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
-    large_payload = [
-        {"id": index, "content": "policy-" + ("x" * 80)}
+    inline_payload = [
+        {"concept_id": f"concept-{index}", "content": "policy-" + ("x" * 80)}
         for index in range(50)
     ]
     monkeypatch.setattr(
         "app.core.harness_capability_invoker.KnowledgeService.search",
         lambda *_args, **_kwargs: KnowledgeSearchResponse(
-            selected_concepts=large_payload,
+            selected_concepts=inline_payload,
         ),
     )
     engine = _test_engine()
@@ -2592,7 +2604,7 @@ def test_knowledge_search_large_json_result_uses_internal_sandbox_reference(
             db,
             tenant_id="tenant-demo",
             session=_chat_session(),
-            task_frame_id="task-large-knowledge",
+            task_frame_id="task-inline-knowledge",
             model_config=_model_config(),
             manifest=CapabilityManifest(available=[]),
             active_skill=None,
@@ -2602,7 +2614,58 @@ def test_knowledge_search_large_json_result_uses_internal_sandbox_reference(
         result = invoker._search_knowledge(
             {"allowed_knowledge_base_ids": ["kb-policy"]},
             {"query": "报销制度"},
-            call_id="hcall-knowledge",
+            call_id="hcall-knowledge-inline",
+        )
+        artifacts = invoker.discover_artifacts()
+        tool_result_dir = invoker.workspace_root / ".harness" / "tool-results"
+
+    assert result["success"] is True
+    data = result["data"]
+    assert isinstance(data, dict)
+    assert data.get("kind") != "sandbox_json_file"
+    assert serialized_chars(data) <= KNOWLEDGE_PAYLOAD_MAX_CHARS
+    assert len(data["selected_concepts"]) == 50
+    # 没落文件 → 不产生任何产物
+    assert artifacts == []
+    assert not tool_result_dir.exists()
+
+
+def test_knowledge_search_oversized_result_still_falls_back_to_sandbox_reference(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """精简后仍超过内联预算时，保留「落沙箱文件 + 引用」的兜底路径。"""
+
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    # 400 条概念即使按最低正文预算裁剪也远超 24KB（真实检索不会这么多，
+    # 这里只用于覆盖兜底路径本身）
+    huge_payload = [
+        {"concept_id": f"concept-{index}", "content": "policy-" + ("x" * 400)}
+        for index in range(400)
+    ]
+    monkeypatch.setattr(
+        "app.core.harness_capability_invoker.KnowledgeService.search",
+        lambda *_args, **_kwargs: KnowledgeSearchResponse(
+            selected_concepts=huge_payload,
+        ),
+    )
+    engine = _test_engine()
+    with Session(engine) as db:
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-huge-knowledge",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        result = invoker._search_knowledge(
+            {"allowed_knowledge_base_ids": ["kb-policy"]},
+            {"query": "报销制度"},
+            call_id="hcall-knowledge-huge",
         )
         reference = result["data"]
         read_result = invoker._invoke_file(
@@ -2615,10 +2678,122 @@ def test_knowledge_search_large_json_result_uses_internal_sandbox_reference(
     assert result["success"] is True
     assert reference["kind"] == "sandbox_json_file"
     assert reference["sandbox_path"] == (
-        "/workspace/.harness/tool-results/hcall-knowledge.json"
+        "/workspace/.harness/tool-results/hcall-knowledge-huge.json"
     )
-    assert json.loads(read_result["data"]["content"])["selected_concepts"] == large_payload
+    # 兜底文件保留精简后的完整载荷（超过 read_file 单次上限，需按页读）
+    assert read_result["success"] is True
+    assert read_result["data"]["truncated"] is True
+    assert read_result["data"]["continuation_token"]
+    assert "policy-" in read_result["data"]["content"]
     assert artifacts == []
+
+
+def test_read_knowledge_chunk_returns_full_text_within_authorized_bases(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """按 chunk_id 取原文：完整正文 + 授权边界。"""
+
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(
+            KnowledgeChunk(
+                id="kchunk-authorized",
+                tenant_id="tenant-demo",
+                knowledge_base_id="kb-policy",
+                document_id="kdoc-1",
+                bucket_id="kbucket-1",
+                chunk_index=1,
+                content="报销上限为 5000 元。" + ("补充条款。" * 80),
+                summary="报销上限",
+                source_ref="制度.pdf / 第 3 页",
+                metadata_json={
+                    "section_path": "制度.pdf / 第 3 页",
+                    "section_title": "第 3 页",
+                    "bucket_title": "制度",
+                },
+            )
+        )
+        db.add(
+            KnowledgeChunk(
+                id="kchunk-other-base",
+                tenant_id="tenant-demo",
+                knowledge_base_id="kb-other",
+                document_id="kdoc-2",
+                bucket_id="kbucket-2",
+                chunk_index=1,
+                content="不该被读到的内容",
+                metadata_json={},
+            )
+        )
+        db.add(
+            KnowledgeConcept(
+                id="kconcept-authorized",
+                tenant_id="tenant-demo",
+                knowledge_base_id="kb-policy",
+                concept_id="concept-reimburse",
+                concept_type="Policy",
+                title="报销制度",
+                content_md="---\nowner: hr\n---\n差旅报销按职级分档。",
+                status="active",
+            )
+        )
+        db.commit()
+        invoker = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-read-knowledge",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(
+                available=[
+                    CapabilityDescriptor(
+                        capability_id="knowledge.search",
+                        name="knowledge_search",
+                        kind="knowledge",
+                        metadata={"allowed_knowledge_base_ids": ["kb-policy"]},
+                    )
+                ]
+            ),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )
+        read = invoker._invoke_internal(
+            "read_knowledge_chunk",
+            {
+                "chunk_ids": ["kchunk-authorized", "kchunk-other-base", "kchunk-missing"],
+                "concept_ids": ["concept-reimburse"],
+            },
+        )
+        denied = HarnessCapabilityInvoker(
+            db,
+            tenant_id="tenant-demo",
+            session=_chat_session(),
+            task_frame_id="task-read-knowledge-denied",
+            model_config=_model_config(),
+            manifest=CapabilityManifest(available=[]),
+            active_skill=None,
+            active_step_id=None,
+            agent_id=None,
+        )._invoke_internal("read_knowledge_chunk", {"chunk_ids": ["kchunk-authorized"]})
+
+    assert read["success"] is True
+    sources = read["data"]["sources"]
+    assert [item["kind"] for item in sources] == ["chunk", "concept"]
+    chunk_source = sources[0]
+    assert chunk_source["chunk_id"] == "kchunk-authorized"
+    assert chunk_source["content"].startswith("报销上限为 5000 元。")
+    assert chunk_source["truncated"] is False
+    assert chunk_source["section_path"] == "制度.pdf / 第 3 页"
+    assert sources[1]["concept_id"] == "concept-reimburse"
+    assert sources[1]["content"].startswith("---")
+    # 未授权知识库 / 不存在的 id 都只是 missing，不泄漏内容
+    assert read["data"]["missing"] == ["kchunk-other-base", "kchunk-missing"]
+    # 没有知识授权的 TaskFrame 拿不到该内部能力
+    assert denied["success"] is False
+    assert denied["error"]["code"] == "KNOWLEDGE_NOT_AVAILABLE"
 
 
 def test_external_idempotency_key_is_stable_per_task_not_entire_session(

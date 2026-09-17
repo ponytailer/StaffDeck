@@ -27,6 +27,10 @@ from app.session.slot_policy import strip_router_generated_message_slots
 
 PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "harness_agent_prompt.md"
 MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK = 2
+# 模型可见 tool result 的字符预算。知识检索走内联（≤24KB 的精简载荷），
+# 必须给它留出对应额度，否则会被截成半截 JSON 的 preview。
+_CAPABILITY_RESULT_TRANSCRIPT_MAX_CHARS = 12_000
+_KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS = 25_000
 ToolInvoker = Callable[[str, dict[str, Any]], dict[str, Any]]
 TraceSink = Callable[[str, dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
@@ -931,12 +935,27 @@ def _step_timeout_result(
     )
 
 
+def _capability_result_transcript_budget(tool_name: str) -> int:
+    """Model-visible tool result budget per capability.
+
+    ``knowledge_search`` 的结果已由 app/knowledge/search_payload 压到 24KB 以内并内联
+    （见 KNOWLEDGE_PAYLOAD_MAX_CHARS）；这里必须留出同样量级的预算，否则会被截成一个
+    半截 JSON 的 ``preview``——比原来落沙箱文件更难用。其他能力沿用 12K 口径不变。
+    """
+
+    if tool_name == "knowledge_search":
+        return _KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS
+    return _CAPABILITY_RESULT_TRANSCRIPT_MAX_CHARS
+
+
 def _bounded_capability_result(
     tool_name: str,
     result: dict[str, Any],
     *,
-    max_chars: int = 12_000,
+    max_chars: int | None = None,
 ) -> dict[str, Any]:
+    if max_chars is None:
+        max_chars = _capability_result_transcript_budget(tool_name)
     payload = {
         "tool_name": tool_name,
         "success": bool(result.get("success")),

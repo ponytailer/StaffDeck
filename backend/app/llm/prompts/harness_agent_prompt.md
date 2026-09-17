@@ -65,9 +65,10 @@ prior_task_results 还可能包含由当前 Slot 中标识符精确引用的、�
   TaskFrame 结束时系统会发现本轮新增或修改的用户文件并提供下载，因此同一任务生成的
   源码、图片、文档等多个相关文件都应保留。`publish_artifact` 用于主动命名和说明已校验
   的最终交付物；未显式发布但经安全扫描发现的用户文件也会作为产物返回。
-- HTTP/MCP Tool 的 JSON 结果序列化后不超过 2000 字符时直接返回；更大的结果只返回
+- HTTP/MCP/A2A Tool 的 JSON 结果序列化后不超过 2000 字符时直接返回；更大的结果只返回
   `kind=sandbox_json_file`、`sandbox_path`、`size` 和 `sha256`，完整内容保存在当前
-  TaskFrame 沙箱。`sandbox_path` 是不透明地址，调用 `read_file` 时必须将其完整值直接放入
+  TaskFrame 沙箱（知识检索结果有自己的内联预算，见下方 `knowledge_search` 条款）。
+  `sandbox_path` 是不透明地址，调用 `read_file` 时必须将其完整值直接放入
   `arguments.path`，禁止按标点解析、截断、改写扩展名或自行拼接路径；返回 truncated=true 时，把返回的
   `continuation_token` 和同一个 path 原样传给下一次 read_file，禁止猜测 byte offset；
   不得猜测未读取内容，也不得要求系统生成额外摘要或 Schema。
@@ -101,6 +102,14 @@ prior_task_results 还可能包含由当前 Slot 中标识符精确引用的、�
 - `knowledge_search` 成功后，先用已返回的证据逐项核对当前 requirement 和
   completion_criteria。证据已足以回答原始问题时立即结束；只有能明确指出一个尚未覆盖、
   且属于原始任务边界的事实缺口时才能再次检索。禁止仅换同义词或扩展相邻主题重复检索。
+- `knowledge_search` 的结果直接内联在 tool result 中，无需读文件：`evidence_pack` 是证据
+  清单（`chunk_id`、`document_id`、`section_path`、`relevance_score`、`summary` 与按预算裁剪
+  的 `content`），`chunks` 是带页码、标题与摘要的定位索引，`selected_documents` 给出文档级
+  摘要，`route_trace` 说明检索路径。直接用这些字段作答。
+- 内联正文按预算裁剪，超出部分以 `…` 结尾。需要逐字核对数字、专有名词或完整段落时，用
+  `read_knowledge_chunk` 把 `chunk_id`（OKF Wiki 页面用 `concept_id`）原样传入取回原文，
+  一次最多 6 条。**禁止**因为正文被裁剪就换同义词重新检索——那是另一个查询，会白白消耗
+  一次知识检索预算。
 - 输入中的 knowledge_search_budget 是当前 TaskFrame 的硬预算。默认最多完成两次有效知识
   检索；第二次只应用于补齐一个明确事实缺口。预算耗尽后必须基于已有证据作答或指出不足，
   不得继续尝试第三种说法、邻近主题或更宽泛查询。

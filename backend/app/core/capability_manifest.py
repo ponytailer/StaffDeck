@@ -43,6 +43,7 @@ RESERVED_HARNESS_CAPABILITY_NAMES = {
     "exec_command",
     "run_skill_script",
     "knowledge_search",
+    "read_knowledge_chunk",
 }
 
 
@@ -291,6 +292,9 @@ class CapabilityManifestBuilder:
                     },
                 )
             )
+            # 检索结果内联后正文按预算裁剪；需要逐字核对时按 id 取原文。
+            # 只在真有知识库授权时出现（与 knowledge_search 同授权、同生命周期）。
+            available.append(_knowledge_chunk_read_descriptor())
 
         unavailable.extend(
             self._unavailable_explicit_refs(
@@ -351,6 +355,55 @@ class CapabilityManifestBuilder:
                     )
                 )
         return unavailable
+
+
+def _knowledge_chunk_read_descriptor() -> CapabilityDescriptor:
+    """按 chunk_id / concept_id 取知识原文的窄接口。
+
+    ``knowledge_search`` 的内联载荷按预算裁剪正文（见 app/knowledge/search_payload.py）。
+    需要逐字引用原文时，模型按返回的 ``chunk_id`` 取回完整正文，而不是去读整包 JSON
+    或猜测未读到的内容。授权范围与 ``knowledge_search`` 完全一致。
+    """
+
+    return CapabilityDescriptor(
+        capability_id="builtin.knowledge.read",
+        name="read_knowledge_chunk",
+        kind="internal",
+        description=(
+            "Read the full text of knowledge chunks (or OKF Wiki pages) by id. Use it "
+            "when knowledge_search returned a trimmed excerpt and the exact wording, "
+            "number or surrounding paragraph is required. Pass the chunk_id values "
+            "from knowledge_search results verbatim."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "chunk_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "maxItems": 6,
+                    "uniqueItems": True,
+                    "description": "chunk_id values copied from knowledge_search results.",
+                },
+                "concept_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "maxItems": 6,
+                    "uniqueItems": True,
+                    "description": "concept_id values for OKF Wiki pages.",
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 200,
+                    "maximum": 12_000,
+                    "default": 4_000,
+                    "description": "Per-source character budget.",
+                },
+            },
+            "additionalProperties": False,
+        },
+        metadata={"provider": "harness", "side_effect": "read"},
+    )
 
 
 def _internal_capability_descriptors() -> list[CapabilityDescriptor]:

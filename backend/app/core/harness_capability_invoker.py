@@ -41,6 +41,8 @@ from app.db.models import (
     ChatSession,
     GeneralSkill,
     HarnessInvocationRecord,
+    KnowledgeChunk,
+    KnowledgeConcept,
     ModelConfig,
     Skill,
     Tool,
@@ -65,6 +67,11 @@ from app.harness.errors import HarnessExecutionError
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
+from app.knowledge.search_payload import (
+    KNOWLEDGE_PAYLOAD_MAX_CHARS,
+    compact_knowledge_search_payload,
+    serialized_chars,
+)
 from app.knowledge.service import KnowledgeService
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
@@ -74,6 +81,12 @@ _INLINE_JSON_TOOL_RESULT_MAX_CHARS = 2_000
 _INTERNAL_TOOL_RESULT_DIRECTORY = ".harness/tool-results"
 _GENERAL_SKILL_PACKAGE_DIRECTORY = ".harness/skill-packages"
 _SANDBOX_JSON_FILE_KIND = "sandbox_json_file"
+# 知识检索结果内联后正文按预算裁剪，需要逐字核对时用这个窄接口按 id 取原文
+# （替代「让模型盲读整包 JSON」）。
+_KNOWLEDGE_SOURCE_READ_TOOL_NAME = "read_knowledge_chunk"
+_KNOWLEDGE_SOURCE_READ_MAX_IDS = 6
+_KNOWLEDGE_SOURCE_READ_DEFAULT_CHARS = 4_000
+_KNOWLEDGE_SOURCE_READ_MAX_CHARS = 12_000
 
 
 class HarnessCapabilityInvoker:
@@ -528,6 +541,8 @@ class HarnessCapabilityInvoker:
             return self._list_published_deliverables(arguments)
         if name == "read_published_deliverable":
             return self._read_published_deliverable(arguments)
+        if name == _KNOWLEDGE_SOURCE_READ_TOOL_NAME:
+            return self._read_knowledge_source(arguments)
         return _failure(
             "UNSUPPORTED_INTERNAL_CAPABILITY",
             "不支持的 Harness 内部能力。",
@@ -651,6 +666,125 @@ class HarnessCapabilityInvoker:
             }
         )
         return {"success": True, "data": data}
+
+    def _allowed_knowledge_base_ids(self) -> set[str]:
+        """当前 TaskFrame 冻结清单里授权的知识库 id。
+
+        ``read_knowledge_source`` 与 ``knowledge_search`` 共用同一份授权，
+        避免「检索受限但按 id 能读全租户」的越权通道。
+        """
+
+        for descriptor in self._descriptors.values():
+            if descriptor.kind != "knowledge":
+                continue
+            raw = (descriptor.metadata or {}).get("allowed_knowledge_base_ids")
+            if not isinstance(raw, list):
+                continue
+            return {str(item).strip() for item in raw if str(item).strip()}
+        return set()
+
+    def _read_knowledge_source(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """按 id 取知识原文的窄接口。
+
+        知识检索结果内联后正文会按预算裁剪；需要逐字引用、核对数字或看完整段落时，
+        用本工具按 ``chunk_id`` / ``concept_id`` 取回原文，而不是去读整包 JSON。
+        """
+
+        allowed = self._allowed_knowledge_base_ids()
+        if not allowed:
+            return _failure(
+                "KNOWLEDGE_NOT_AVAILABLE",
+                "当前 TaskFrame 没有已授权的知识库。",
+            )
+        chunk_ids = _unique_non_empty(arguments.get("chunk_ids"))
+        concept_ids = _unique_non_empty(arguments.get("concept_ids"))
+        if not chunk_ids and not concept_ids:
+            return _failure(
+                "INVALID_ARGUMENTS",
+                "chunk_ids 或 concept_ids 至少提供一个。",
+            )
+        raw_max_chars = arguments.get("max_chars")
+        if raw_max_chars is None:
+            max_chars = _KNOWLEDGE_SOURCE_READ_DEFAULT_CHARS
+        elif isinstance(raw_max_chars, bool) or not isinstance(raw_max_chars, int):
+            return _failure("INVALID_ARGUMENTS", "max_chars 必须是整数。")
+        else:
+            max_chars = max(200, min(raw_max_chars, _KNOWLEDGE_SOURCE_READ_MAX_CHARS))
+        sources: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for chunk_id in chunk_ids[:_KNOWLEDGE_SOURCE_READ_MAX_IDS]:
+            row = self.db.get(KnowledgeChunk, chunk_id)
+            if (
+                row is None
+                or row.tenant_id != self.tenant_id
+                or str(row.knowledge_base_id or "") not in allowed
+            ):
+                missing.append(chunk_id)
+                continue
+            metadata = row.metadata_json or {}
+            content = str(row.content or "")
+            sources.append(
+                {
+                    "kind": "chunk",
+                    "chunk_id": row.id,
+                    "document_id": row.document_id,
+                    "bucket_id": row.bucket_id,
+                    "section_path": metadata.get("section_path"),
+                    "title": metadata.get("section_title") or metadata.get("bucket_title"),
+                    "page": metadata.get("section_title"),
+                    "summary": row.summary,
+                    "content": _clip_for_read(content, max_chars),
+                    "truncated": len(content) > max_chars,
+                    "content_chars": len(content),
+                }
+            )
+        for concept_id in concept_ids[:_KNOWLEDGE_SOURCE_READ_MAX_IDS]:
+            row = self.db.get(KnowledgeConcept, concept_id)
+            if row is None:
+                row = self.db.exec(
+                    select(KnowledgeConcept)
+                    .where(KnowledgeConcept.tenant_id == self.tenant_id)
+                    .where(KnowledgeConcept.concept_id == concept_id)
+                ).first()
+            if (
+                row is None
+                or row.tenant_id != self.tenant_id
+                or str(row.knowledge_base_id or "") not in allowed
+            ):
+                missing.append(concept_id)
+                continue
+            content = str(row.content_md or "")
+            sources.append(
+                {
+                    "kind": "concept",
+                    "concept_id": row.concept_id,
+                    "document_id": row.document_id,
+                    "title": row.title,
+                    "summary": row.description,
+                    "content": _clip_for_read(content, max_chars),
+                    "truncated": len(content) > max_chars,
+                    "content_chars": len(content),
+                }
+            )
+        self._emit_trace(
+            "knowledge_source_read",
+            {
+                "requested": len(chunk_ids) + len(concept_ids),
+                "returned": len(sources),
+                "missing": missing[:5],
+            },
+        )
+        return {
+            "success": True,
+            "data": {
+                "sources": sources,
+                "missing": missing,
+                "notice": (
+                    "以上为知识库原文；引用时请使用 knowledge_search 返回的编号，"
+                    "并保持原文措辞不要改写数字与专有名词。"
+                ),
+            },
+        }
 
     def _search_capabilities(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = str(arguments.get("query") or "").strip()
@@ -989,9 +1123,14 @@ class HarnessCapabilityInvoker:
         )
         payload = response.model_dump(mode="json")
         chunks = payload.get("chunks")
+        # 完整 payload 只在进程内使用：引用卡片、回答上下文都由它派生，必须保持
+        # 「全量证据」不变。交给模型与下游的 ``data`` 换成精简投影（见
+        # app/knowledge/search_payload.py）——不精简就会被 _persist_large_json_result
+        # 换成沙箱文件指针，模型读不全 160KB JSON，只能换词重搜（实测多花两轮）。
+        compacted = compact_knowledge_search_payload(payload)
         result = {
             "success": True,
-            "data": payload,
+            "data": compacted,
             # 命中数外置到顶层：data 超限会被 _persist_large_json_result 换成
             # 沙箱文件引用，SOP 执行器（场景 C2 检索直判）靠它判断「检索到/没检索到」
             "chunk_count": len(chunks) if isinstance(chunks, list) else 0,
@@ -1007,7 +1146,24 @@ class HarnessCapabilityInvoker:
                 for item in route_trace
                 if isinstance(item, dict)
             ]
-        return self._persist_large_json_result(result, call_id=call_id)
+        raw_chars = serialized_chars(payload)
+        inline_chars = serialized_chars(compacted)
+        self._emit_trace(
+            "knowledge_payload_compacted",
+            {
+                "query": query,
+                "raw_chars": raw_chars,
+                "inline_chars": inline_chars,
+                "chunk_count": result["chunk_count"],
+                "evidence_count": len(compacted.get("evidence_pack") or []),
+                "inline": inline_chars <= KNOWLEDGE_PAYLOAD_MAX_CHARS,
+            },
+        )
+        return self._persist_large_json_result(
+            result,
+            call_id=call_id,
+            inline_max_chars=KNOWLEDGE_PAYLOAD_MAX_CHARS,
+        )
 
     def _invoke_external_tool(
         self,
@@ -1150,8 +1306,14 @@ class HarnessCapabilityInvoker:
         payload: dict[str, Any],
         *,
         call_id: str,
+        inline_max_chars: int = _INLINE_JSON_TOOL_RESULT_MAX_CHARS,
     ) -> dict[str, Any]:
-        """Keep large knowledge/tool JSON out of the isolated model transcript."""
+        """Keep large knowledge/tool JSON out of the isolated model transcript.
+
+        ``inline_max_chars`` 默认沿用 HTTP/MCP Tool 的 2000 字符口径；知识检索传入
+        更高的预算（见 app/knowledge/search_payload.py），让精简后的载荷能直接内联，
+        不必先落文件再让模型盲读。
+        """
 
         data = payload.get("data")
         if not isinstance(data, (dict, list)):
@@ -1165,7 +1327,7 @@ class HarnessCapabilityInvoker:
             )
         except (TypeError, ValueError):
             return payload
-        if len(serialized) <= _INLINE_JSON_TOOL_RESULT_MAX_CHARS:
+        if len(serialized) <= inline_max_chars:
             return payload
         stored = self._file_executor.execute(
             self._file_context,
@@ -1380,6 +1542,27 @@ def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
         "success": False,
         "error": error,
     }
+
+
+def _unique_non_empty(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _clip_for_read(content: str, limit: int) -> str:
+    text = str(content or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}…"
 
 
 def _safe_artifact_label(

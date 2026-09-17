@@ -4,6 +4,9 @@
 
 ## 2026-09-17
 
+- **性能：知识检索结果内联（不再让模型盲读 160KB JSON）** — `knowledge_search` 结果在 `app/knowledge/search_payload.py` 里精简投影后直接进 tool result：去掉桶 metadata 里的整桶原文、evidence 的 `excerpt` 副本、与 `route_trace` 重复的 `trace`、下游无人读的 `expanded_sections`，正文按预算裁剪。实测 90KB → 22.5KB，**引用与回答上下文逐字节不变**（引用由完整 payload 派生）。模型不再需要「读文件→读不全→换词重搜」两轮，预计 35s 问答降到 18–22s。
+  - 新增窄接口 `read_knowledge_chunk`：按 `chunk_id`/`concept_id` 取原文（授权范围与 `knowledge_search` 一致），需要逐字核对时用它而不是读整包 JSON
+  - 精简后仍超 24KB 时保留原「落沙箱文件 + 引用」兜底路径
 - **修复：引用编号跳号（正文 `[n]` 与卡片列表对不上）**
   - 前端：同来源卡片合并时保留组内**全部**编号（chip 显示 `[2][3]`）；正文没有内联 `[n]` 时按卡片顺序重排连续的 1..N
 
