@@ -76,10 +76,17 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
       <main className="flex flex-1 flex-col items-center px-[32px]">
         <div className="flex flex-col items-center pt-[60px]">
-          <h1 className="mt-[6px] text-center text-[54px] font-semibold leading-[80px] tracking-[1.08px] text-[#18181a]">
-            地中海度假集团
-            <br />
-            AI数字员工平台
+          {/* 两行做层级化排版：公司名作眼眉（小号、宽字距、弱色）承接品牌，
+              产品名作主标题。原先两行同为 54px/80px 行高，7 字公司名会顶出一整块
+              方正的粗体，压迫感过强，故整体收敛到 40px。 */}
+          <h1 className="mt-[6px] flex flex-col items-center text-center">
+            <span className="mr-[-4px] text-[20px] font-medium leading-[30px] tracking-[4px] text-[#757f9c]">
+              地中海度假集团
+            </span>
+            {' '}
+            <span className="mt-[10px] text-[40px] font-semibold leading-[52px] tracking-[0.8px] text-[#18181a]">
+              AI 数字员工平台
+            </span>
           </h1>
 
           {!showForm ? (

@@ -70,6 +70,16 @@ describe('LoginPage', () => {
     expect(screen.getByLabelText('密码')).toBeTruthy();
   });
 
+  it('renders the hero title as one heading holding the brand and product lines', () => {
+    renderLogin();
+
+    const heading = screen.getByRole('heading', { level: 1 });
+    // 两行拆成 span 后，空白文本节点在 flex 列布局里不参与渲染，但仍应留在
+    // 无障碍名称里，避免读屏把「公司名 + 产品名」连读成一个词。
+    expect(heading.textContent).toBe('地中海度假集团 AI 数字员工平台');
+    expect(heading.childElementCount).toBe(2);
+  });
+
   it('toggles the password between hidden and visible text', async () => {
     const user = userEvent.setup();
     renderLogin();
