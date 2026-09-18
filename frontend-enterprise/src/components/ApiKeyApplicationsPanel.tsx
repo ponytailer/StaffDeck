@@ -14,6 +14,7 @@ import {
 import { notify } from '@/components/ui/app-toast';
 import { StatusBadge } from '@/pages/scheduled-tasks/StatusBadge';
 import { api, ApiError, TENANT_ID } from '../api/client';
+import { copyTextToClipboard } from '../lib/clipboard';
 import { cn } from '@/lib/utils';
 import { type EnterpriseAuthUser } from '../auth';
 
@@ -176,11 +177,19 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
     }
   }
 
-  function copy(text: string, label: string) {
-    void navigator.clipboard
-      .writeText(text)
-      .then(() => notify.success(`${label}已复制`))
-      .catch(() => notify.error('复制失败，请手动选择复制'));
+  async function copy(text: string | null | undefined, label: string) {
+    if (!text) {
+      notify.error(`暂无${label}可复制`);
+      return;
+    }
+    // 必须走封装：非安全上下文（HTTP 非 localhost / 受限 webview）下
+    // navigator.clipboard 为 undefined，裸调会同步抛错，.catch 接不住。
+    try {
+      await copyTextToClipboard(text);
+      notify.success(`${label}已复制`);
+    } catch {
+      notify.error('复制失败，请手动选择复制');
+    }
   }
 
   const mineTab = (
@@ -299,7 +308,7 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                               <button
                                 type="button"
                                 aria-label="复制网关地址"
-                                onClick={() => item.api_url && copy(item.api_url, '网关地址')}
+                                onClick={() => void copy(item.api_url, '网关地址')}
                                 className="grid size-[30px] shrink-0 place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-[#757f9c] transition-colors hover:bg-black/5 hover:text-[#18181a]"
                               >
                                 <Copy className="size-[14px]" />
