@@ -18,6 +18,7 @@ from app.api.general_skills import (
     _files_from_zip,
     _general_skill_package_archive,
     _list_my_general_skills,
+    _preview_package_response,
     archive_general_skill,
     delete_general_skill,
     download_general_skill_package,
@@ -26,6 +27,7 @@ from app.api.general_skills import (
     import_general_skill,
     import_general_skill_package,
     list_general_skills,
+    preview_general_skill_package,
     publish_general_skill,
     publish_general_skill_to_gallery,
     run_general_skill,
@@ -853,6 +855,67 @@ def test_import_general_skill_package_upload_treats_single_markdown_as_skill_md(
 
         assert row.slug == "single-file-skill"
         assert [file.path for file in row.skill_files] == ["SKILL.md"]
+
+
+def test_preview_general_skill_package_returns_editor_payload_without_creating_row() -> None:
+    """预览接口解析 zip 并返回可填入编辑器的全部内容，但不创建技能、不占用 slug。"""
+    package = BytesIO()
+    with ZipFile(package, "w") as archive:
+        archive.writestr(
+            "nuwa-skill-main/skill/SKILL.md",
+            "---\nname: Nuwa Skill\nslug: nuwa-skill\ndescription: 预览解析\n---\n\n# Nuwa Skill\n",
+        )
+        archive.writestr("nuwa-skill-main/skill/scripts/run.py", "print('nuwa')\n")
+
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        before = db.exec(select(GeneralSkill)).all()
+        payload = preview_general_skill_package(
+            GeneralSkillPackageUploadRequest(
+                tenant_id="tenant_demo",
+                filename="nuwa-skill.zip",
+                content_base64=base64.b64encode(package.getvalue()).decode("ascii"),
+            )
+        )
+
+        # 不落库
+        assert db.exec(select(GeneralSkill)).all() == before
+        # 解析结果与导入同源：名称 / 描述 / markdown / 文件都来自包内 SKILL.md
+        assert payload.name == "Nuwa Skill"
+        assert payload.slug == "nuwa-skill"
+        assert payload.description == "预览解析"
+        assert payload.markdown.startswith("---\nname: Nuwa Skill")
+        assert [file.path for file in payload.files] == ["SKILL.md", "scripts/run.py"]
+        assert payload.files[0].content.startswith("---\nname: Nuwa Skill")
+
+
+def test_preview_general_skill_package_supports_single_markdown() -> None:
+    markdown = "---\nname: 单文件技能\nslug: single-file-skill\n---\n\n# 单文件技能\n"
+    payload = preview_general_skill_package(
+        GeneralSkillPackageUploadRequest(
+            tenant_id="tenant_demo",
+            filename="readme.md",
+            content_base64=base64.b64encode(markdown.encode("utf-8")).decode("ascii"),
+        )
+    )
+
+    assert payload.name == "单文件技能"
+    assert [file.path for file in payload.files] == ["SKILL.md"]
+
+
+def test_preview_package_response_shared_by_multipart_entry() -> None:
+    """_preview_package_response 是 JSON / multipart 两个入口共用的解析核：zip 同构。"""
+    package = BytesIO()
+    with ZipFile(package, "w") as archive:
+        archive.writestr(
+            "tool-skill/SKILL.md",
+            "---\nname: Tool Skill\nslug: tool-skill\n---\n\n# Tool Skill\n",
+        )
+
+    payload = _preview_package_response("tool-skill.zip", package.getvalue())
+
+    assert payload.name == "Tool Skill"
+    assert [file.path for file in payload.files] == ["SKILL.md"]
 
 
 def test_import_clawhub_skill_reads_github_directory_package(monkeypatch) -> None:
@@ -2479,3 +2542,87 @@ def test_download_general_skill_package_hides_invisible_skill() -> None:
             download_general_skill_package("no-such-skill", "tenant_demo", None, db)
         assert missing.value.status_code == 404
         assert "not found" in str(missing.value.detail)
+
+
+def test_list_general_skills_include_files_false_strips_package_but_keeps_metadata() -> None:
+    """广场列表传 include_files=0：只裁文件包，元信息与可见性一条都不能少。
+
+    这是性能回归的守卫 —— skill_files_json 单租户就有 MB 级体量，广场卡片只用元信息。
+    """
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="天气技能",
+                slug="weather-zh",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            _admin_user(),
+        )
+
+        full = list_general_skills("tenant_demo", db)
+        slim = list_general_skills("tenant_demo", db, include_files=False)
+
+        # 行数 / 顺序 / id / 名称 / 描述必须完全一致：裁剪只能动文件包
+        assert [row.id for row in slim] == [row.id for row in full] == [imported.id]
+        assert [row.name for row in slim] == [row.name for row in full]
+        assert [row.slug for row in slim] == [row.slug for row in full]
+        assert slim[0].skill_markdown == full[0].skill_markdown
+
+        # 文件包被裁掉，全量路径仍在
+        assert slim[0].skill_files == []
+        assert slim[0].skill_directories == []
+        assert full[0].skill_files
+
+
+def test_list_general_skills_include_files_false_also_applies_on_agent_scoped_path() -> None:
+    """按 agent_id 走（非 overall 的员工作用域）时也必须尊重 include_files=0。
+
+    回归点：这条分支早期漏传了 include_files，导致「传了裁剪参数仍把 MB 级文件包拉回来」。
+    """
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_worker", tenant_id="tenant_demo", name="员工", is_overall=False
+            )
+        )
+        db.commit()
+
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="天气技能",
+                slug="weather-zh",
+                markdown=WEATHER_SKILL_MD,
+                agent_id="agent_worker",
+            ),
+            db,
+            _admin_user(),
+        )
+
+        full = list_general_skills("tenant_demo", db, agent_id="agent_worker")
+        slim = list_general_skills(
+            "tenant_demo", db, agent_id="agent_worker", include_files=False
+        )
+
+        assert [row.id for row in full] == [imported.id]
+        assert [row.id for row in slim] == [imported.id]
+        assert full[0].skill_files
+        assert slim[0].skill_files == []
+        assert slim[0].skill_directories == []
+

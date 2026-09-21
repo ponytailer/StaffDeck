@@ -217,6 +217,9 @@ export default function TeamDetailPage({
   const [promotingEntryId, setPromotingEntryId] = useState<string | null>(null);
   // 归档是破坏性动作，走统一 ConfirmDialog；原生 window.confirm 与整体设计语言不符
   const [archiveTarget, setArchiveTarget] = useState<TeamBlackboardEntryRead | null>(null);
+  // 移除成员同样是破坏性动作，与归档黑板条目保持一致：走 ConfirmDialog + 在途守卫。
+  const [removeMemberTarget, setRemoveMemberTarget] = useState<TeamMemberRead | null>(null);
+  const [removingMember, setRemovingMember] = useState(false);
   const [archivingEntry, setArchivingEntry] = useState(false);
   const openedTaskParamRef = useRef<string | null>(null);
   const memberScrollRef = useRef<HTMLDivElement | null>(null);
@@ -384,13 +387,17 @@ export default function TeamDetailPage({
     }
   }
 
-  async function removeMember(agentId: string) {
+  async function removeMember(agentId: string, agentName?: string | null) {
+    if (removingMember) return;
+    setRemovingMember(true);
     try {
       await api.delete(`/api/enterprise/teams/${teamId}/members/${agentId}?tenant_id=${TENANT_ID}`);
-      notify.success('成员已移除');
+      notify.success(agentName ? `已移除成员「${agentName}」` : '成员已移除');
       await loadTeam();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '移除成员失败');
+    } finally {
+      setRemovingMember(false);
     }
   }
 
@@ -896,7 +903,7 @@ export default function TeamDetailPage({
                       <button
                         type="button"
                         aria-label={`移除成员 ${member.agent_name || member.agent_id}`}
-                        onClick={() => void removeMember(member.agent_id)}
+                        onClick={() => setRemoveMemberTarget(member)}
                         className="shrink-0 whitespace-nowrap rounded-[8px] px-[6px] py-[4px] text-[12px] text-[#858b9c] transition-colors hover:bg-[#fce7e7] hover:text-[#f5483b]"
                       >
                         移除
@@ -1570,6 +1577,24 @@ export default function TeamDetailPage({
           </div>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(removeMemberTarget)}
+        onOpenChange={(open) => {
+          if (!open) setRemoveMemberTarget(null);
+        }}
+        loading={removingMember}
+        title={`移除成员「${removeMemberTarget?.agent_name || removeMemberTarget?.agent_id || ''}」？`}
+        description="移除后该数字员工不再参与本团队的任务分派与协作。"
+        confirmText="移除"
+        onConfirm={() => {
+          const target = removeMemberTarget;
+          if (!target) return;
+          void removeMember(target.agent_id, target.agent_name).then(() =>
+            setRemoveMemberTarget(null),
+          );
+        }}
+      />
 
       <ConfirmDialog
         open={Boolean(archiveTarget)}

@@ -134,6 +134,20 @@ describe('OpenPlatformPage 懒加载', () => {
     expect(paths.some((url) => url.includes('agent_id=agent_tenant_demo_overall'))).toBe(true);
   });
 
+  it('技能广场只要元信息，不带 MB 级的技能文件包', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubPlatformFetch();
+    renderPlatform();
+
+    await screen.findByText('小艾');
+    await user.click(screen.getByRole('tab', { name: /技能广场/ }));
+
+    const paths = requestedPaths(fetchMock);
+    const skillRequest = paths.find((url) => url.includes('/api/enterprise/general-skills'));
+    expect(skillRequest).toBeTruthy();
+    expect(skillRequest).toContain('include_files=0');
+  });
+
   it('来回切 tab 不会重复请求已加载过的模块', async () => {
     const user = userEvent.setup();
     const fetchMock = stubPlatformFetch();
@@ -151,13 +165,13 @@ describe('OpenPlatformPage 懒加载', () => {
     expect(paths.filter((url) => url.includes('/api/enterprise/knowledge-bases'))).toHaveLength(1);
   });
 
-  it('未访问过的模块不显示数量角标，加载完成后才出现', async () => {
+  it('聚合计数接口失败时不显示假角标，加载完成后才出现本地数量', async () => {
     const user = userEvent.setup();
-    stubPlatformFetch();
+    stubPlatformFetch(); // gallery/counts 未拦截 -> 静默失败，无假角标
     renderPlatform();
 
     await screen.findByText('小艾');
-    // 数字员工 tab 已加载 -> 角标 1；其余模块未知 -> 不显示
+    // 数字员工 tab 已加载 -> 本地角标 1；工具未访问且聚合计数不可用 -> 不显示
     expect(screen.getByRole('tab', { name: /数字员工广场/ }).textContent).toContain('1');
     expect(screen.getByRole('tab', { name: /工具广场/ }).textContent).not.toContain('0');
 
@@ -165,6 +179,31 @@ describe('OpenPlatformPage 懒加载', () => {
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /工具广场/ }).textContent).toContain('0');
     });
+  });
+
+  it('聚合计数接口一次填满所有 tab 角标，无需懒加载各模块', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/gallery/counts')) {
+        return jsonResponse({ agents: 3, knowledge: 2, general_skills: 5, skills: 4, tools: 6 });
+      }
+      if (url.includes('/api/enterprise/agents/') && url.includes('/skills')) return jsonResponse([]);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([overallAgent, galleryAgent]);
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPlatform();
+
+    await screen.findByText('小艾');
+    // 未访问的模块也直接显示聚合计数
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /工具广场/ }).textContent).toContain('6');
+    });
+    expect(
+      screen.getByRole('tab', { name: /技能广场/ }).textContent,
+    ).toContain('5');
+    expect(screen.getByRole('tab', { name: /SOP 广场/ }).textContent).toContain('4');
   });
 
   it('深链到某个模块时只拉它自己', async () => {

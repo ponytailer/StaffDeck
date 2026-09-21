@@ -136,9 +136,6 @@ logger = logging.getLogger(__name__)
 
 INTENT_CACHE_TTL_SECONDS = 600
 
-# conversation 帧（标准路径兜底时）的动作预算上限：问答/闲聊类帧不需要
-# 完整 32 轮工具循环，6 轮足够收敛，避免「正在思考 43s」式的预算空转。
-CONVERSATION_FRAME_MAX_ACTIONS = 6
 
 
 def _intent_cache_key(
@@ -1187,10 +1184,9 @@ class HarnessV2Engine:
         max_actions: int,
         lightweight_model_config: Any = None,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
-        # conversation 帧动作预算降档：此类帧（问答/闲聊）无需 32 轮工具循环，
-        # 4~6 轮足够。降档只影响本轮预算，不改变标准路径行为结构。
-        if frame.kind == "conversation":
-            max_actions = min(max_actions, CONVERSATION_FRAME_MAX_ACTIONS)
+        # 动作预算一律走配置（agent.harness_max_actions / UIConfig.agent_loop_max_actions，
+        # 调用方按 remaining_turn_actions 逐帧递减传入），不按帧类型降档——
+        # conversation 帧硬编码 6 轮会让租户配 32 只生效 6，与配置语义不符。
         self.store.mark_running(row)
         agent_loop = self.store.ensure_agent_loop(row)
         loop_checkpoint = dict(agent_loop.checkpoint_json or {})

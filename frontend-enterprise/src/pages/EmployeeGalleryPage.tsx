@@ -2,6 +2,7 @@ import { UnderlineTabs, type UnderlineTabItem } from '@/components/ui';
 import { notify } from '@/components/ui/app-toast';
 
 import IconSearch from '../assets/icons/search.svg?react';
+import { SearchEmptyState } from '@/components/SearchEmptyState';
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -392,19 +393,5 @@ function EmployeeGalleryEmptyState({
   title: string;
   description: string;
 }) {
-  return (
-    <div className="flex h-[262px] w-full items-center justify-center rounded-[20px] border border-dashed border-[#e4e9f2] bg-[#fbfcfe] px-[24px] text-center">
-      <div className="flex max-w-[210px] flex-col items-center">
-        <span className="grid size-[34px] place-items-center rounded-[12px] bg-white text-[#98a2b3] shadow-[0_1px_8px_rgba(70,76,94,0.06)] ring-1 ring-[#edf1f6]">
-          <IconSearch className="size-[16px] shrink-0" />
-        </span>
-        <p className="mt-[12px] text-[14px] font-medium leading-[20px] text-[#7f879a]">
-          {title}
-        </p>
-        <p className="mt-[4px] text-[11px] leading-[17px] text-[#a7adbb]">
-          {description}
-        </p>
-      </div>
-    </div>
-  );
+  return <SearchEmptyState title={title} description={description} />;
 }

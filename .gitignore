@@ -64,3 +64,4 @@ db-export/
 # 弹窗被撑成整屏宽、间距/配色丢失），且不报任何错。
 *.log
 logs/
+.codewhale

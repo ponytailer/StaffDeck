@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatClientDateTime, parseBackendDateTime } from './timezone';
+import { formatClientDate, formatClientDateTime, parseBackendDateTime } from './timezone';
 
 describe('parseBackendDateTime', () => {
   it('treats naive ISO timestamps as UTC instead of local time', () => {
@@ -37,5 +37,37 @@ describe('formatClientDateTime', () => {
   it('falls back to the empty text for missing values', () => {
     expect(formatClientDateTime(undefined)).toBe('-');
     expect(formatClientDateTime('bad', '')).toBe('');
+  });
+});
+
+describe('formatClientDate', () => {
+  it('renders a naive UTC timestamp as the date in the client timezone', () => {
+    const expected = new Date(Date.UTC(2026, 7, 11, 9, 0, 0)).toLocaleDateString('zh-CN', {
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
+    expect(formatClientDate('2026-08-11T09:00:00')).toBe(expected);
+  });
+
+  it('does not push a date-only value to the previous day', () => {
+    // 纯日期串没有时刻信息，任何客户端时区下都必须原样显示，不能变成 08-10
+    expect(formatClientDate('2026-08-11')).toBe('2026/8/11');
+    expect(formatClientDate('2026-01-01')).toBe('2026/1/1');
+  });
+
+  it('agrees with the sliced date only when the client timezone is UTC', () => {
+    // 回归：以前各页直接 `updated_at.slice(0, 10)`，本地凌晨的时间戳会显示成前一天
+    const raw = '2026-09-22T18:00:00';
+    const clientTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const expected = new Date(Date.UTC(2026, 8, 22, 18, 0, 0)).toLocaleDateString('zh-CN', {
+      timeZone: clientTz,
+    });
+    expect(formatClientDate(raw)).toBe(expected);
+    if (clientTz === 'UTC') expect(formatClientDate(raw)).toBe('2026/9/22');
+    else expect(formatClientDate(raw)).toBe('2026/9/23');
+  });
+
+  it('falls back to the empty text for missing values', () => {
+    expect(formatClientDate(undefined)).toBe('-');
+    expect(formatClientDate('bad', '')).toBe('');
   });
 });

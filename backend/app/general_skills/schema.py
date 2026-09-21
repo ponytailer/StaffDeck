@@ -58,6 +58,24 @@ class GeneralSkillPackageUploadRequest(BaseModel):
     allow_missing_references: bool = False
 
 
+class GeneralSkillPackagePreviewFile(BaseModel):
+    path: str
+    size: Optional[int] = None
+    mime_type: Optional[str] = None
+    content: str
+
+
+class GeneralSkillPackagePreviewResponse(BaseModel):
+    filename: str
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    description: Optional[str] = None
+    homepage: Optional[str] = None
+    markdown: str
+    files: list[GeneralSkillPackagePreviewFile] = Field(default_factory=list)
+    directories: list[str] = Field(default_factory=list)
+
+
 class GeneralSkillRead(BaseModel):
     id: str
     tenant_id: str

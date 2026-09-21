@@ -60,9 +60,11 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
     renameTitle,
     setRenameTitle,
     saveRename,
+    savingRename,
     pendingDelete,
     setPendingDelete,
     confirmDeleteSession,
+    deletingSession,
     tenantId,
     canConfigureModels,
     modelSetupOpen,
@@ -273,10 +275,11 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
               取消
             </Button>
             <Button
-              className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] py-[8px] text-[14px] font-normal text-white hover:bg-[#303030]"
+              className="h-[32px] w-[80px] rounded-[10px] bg-[#18181a] px-[12px] py-[8px] text-[14px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
+              disabled={savingRename}
               onClick={() => void saveRename()}
             >
-              保存
+              {savingRename ? '保存中…' : '保存'}
             </Button>
           </div>
         </DialogContent>
@@ -287,6 +290,7 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
         onOpenChange={(open) => !open && setPendingDelete(null)}
         title="删除会话"
         description="删除后无法恢复该会话及其消息记录，确定继续吗？"
+        loading={deletingSession}
         onConfirm={() => void confirmDeleteSession()}
       />
     </>

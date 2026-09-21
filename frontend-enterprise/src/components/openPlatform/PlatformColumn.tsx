@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 import IconChevronDown from '../../assets/icons/chevron-down.svg?react';
+import { PlatformColumnSkeleton } from './PlatformSkeletons';
 
 export type PlatformColumnProps = {
   /** Small 14px glyph shown before the title. */
@@ -126,18 +127,5 @@ export default function PlatformColumn({
         </>
       )}
     </section>
-  );
-}
-
-function PlatformColumnSkeleton() {
-  return (
-    <div className="flex w-full flex-col gap-[16px]">
-      {[0, 1, 2].map((index) => (
-        <div
-          key={index}
-          className="h-[112px] w-full shrink-0 animate-pulse rounded-[20px] border-[0.5px] border-[#f0f1f5] bg-[#f6f6f6]"
-        />
-      ))}
-    </div>
   );
 }

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.db import get_session
+from app.db.bulk_delete import bulk_delete_where
 from app.db.models import AgentProfile, ChatSession, MemoryRecord, User
 from app.memory.service import memory_agent_id, memory_matches_agent, memory_read, memory_rows_for_read
 from app.security.auth import get_current_user, require_current_tenant
@@ -63,23 +64,32 @@ def clear_my_memories(
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     ensure_tenant(db, tenant_id)
-    rows = list(
-        db.exec(
-            select(MemoryRecord)
-            .where(
-                MemoryRecord.tenant_id == tenant_id,
-                MemoryRecord.user_id == current_user.id,
-                MemoryRecord.kind != "conversation",
-            )
-            .order_by(MemoryRecord.updated_at.desc())
-        ).all()
-    )
-    session_agents = _session_agent_map(db, rows) if agent_id else {}
     if agent_id:
+        rows = list(
+            db.exec(
+                select(MemoryRecord)
+                .where(
+                    MemoryRecord.tenant_id == tenant_id,
+                    MemoryRecord.user_id == current_user.id,
+                    MemoryRecord.kind != "conversation",
+                )
+                .order_by(MemoryRecord.updated_at.desc())
+            ).all()
+        )
+        session_agents = _session_agent_map(db, rows)
         rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
-    deleted = len(rows)
-    for row in rows:
-        db.delete(row)
+        deleted = len(rows)
+        for row in rows:
+            db.delete(row)
+    else:
+        # 不需要按 agent 过滤时，直接把记忆删掉即可 —— 没必要先把正文读进内存。
+        deleted = bulk_delete_where(
+            db,
+            MemoryRecord,
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.user_id == current_user.id,
+            MemoryRecord.kind != "conversation",
+        )
     db.commit()
     return {"deleted": deleted}
 

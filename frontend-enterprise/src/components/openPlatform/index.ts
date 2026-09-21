@@ -11,3 +11,10 @@ export type { PlatformResourceCardProps, PlatformResourceAccent } from './Platfo
 export { platformResourceAccentStyles } from './PlatformResourceCard';
 export { default as PlatformResourceDrawer } from './PlatformResourceDrawer';
 export type { PlatformResourceDrawerProps } from './PlatformResourceDrawer';
+export {
+  PLATFORM_SKELETON_CARD_CLASS,
+  PlatformCardSkeleton,
+  PlatformColumnSkeleton,
+  PlatformGridSkeleton,
+  platformCardSkeletonHeight,
+} from './PlatformSkeletons';

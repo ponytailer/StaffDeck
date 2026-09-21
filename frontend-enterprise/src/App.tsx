@@ -52,6 +52,7 @@ import GeneralSkillsPage, {
 import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import ShareChatPage from "./pages/ShareChatPage";
+import ShareSkillPage from "./pages/ShareSkillPage";
 import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
 import ApiKeyApprovalsPage from "./pages/ApiKeyApprovalsPage";
@@ -1120,6 +1121,8 @@ export default function App() {
         <Routes>
           {/* 数字员工分享：访客免登录进入对话窗，不经过登录守卫 */}
           <Route path="/share/:token" element={<ShareChatPage />} />
+          {/* 技能分享：免登录查看描述 + 下载技能包 */}
+          <Route path="/share/skill/:token" element={<ShareSkillPage />} />
           <Route
             path="/*"
             element={

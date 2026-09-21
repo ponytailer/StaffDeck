@@ -2,6 +2,8 @@ from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner, Ge
 from app.general_skills.schema import (
     GeneralSkillClawHubImportRequest,
     GeneralSkillImportRequest,
+    GeneralSkillPackagePreviewFile,
+    GeneralSkillPackagePreviewResponse,
     GeneralSkillPackageUploadRequest,
     GeneralSkillRead,
     GeneralSkillRunRequest,
@@ -11,6 +13,8 @@ from app.general_skills.schema import (
 __all__ = [
     "GeneralSkillClawHubImportRequest",
     "GeneralSkillImportRequest",
+    "GeneralSkillPackagePreviewFile",
+    "GeneralSkillPackagePreviewResponse",
     "GeneralSkillPackageUploadRequest",
     "GeneralSkillRead",
     "GeneralSkillRunRequest",

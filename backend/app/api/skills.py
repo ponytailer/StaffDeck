@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
+from app.db.bulk_delete import bulk_delete_matching
+
 from app.agents.branching import (
     branch_versions,
     ensure_agent_skill_branch,
@@ -683,31 +685,11 @@ def delete_skill(
 
     require_overall_agent(db, tenant_id, agent_id)
     ensure_open_gallery_admin(tenant_id, current_user)
-    feedback_rows = db.exec(
-        select(SkillFeedback).where(
-            SkillFeedback.tenant_id == tenant_id,
-            SkillFeedback.skill_id == skill_id,
-        )
-    ).all()
-    for feedback in feedback_rows:
-        db.delete(feedback)
-    version_rows = db.exec(
-        select(SkillVersion).where(
-            SkillVersion.tenant_id == tenant_id, SkillVersion.skill_id == skill_id
-        )
-    ).all()
-    for version_row in version_rows:
-        db.delete(version_row)
+    # 批量 DELETE：SkillVersion.content_json 是大字段，没必要读进 ORM 再逐行丢。
     # 边条件编译产物随技能一起清理：技能没了，指纹表里的行不会被任何运行时
     # 查询命中，留着只是垃圾。
-    edge_condition_rows = db.exec(
-        select(SkillEdgeCondition).where(
-            SkillEdgeCondition.tenant_id == tenant_id,
-            SkillEdgeCondition.skill_id == skill_id,
-        )
-    ).all()
-    for edge_condition_row in edge_condition_rows:
-        db.delete(edge_condition_row)
+    for model in (SkillFeedback, SkillVersion, SkillEdgeCondition):
+        bulk_delete_matching(db, model, tenant_id=tenant_id, skill_id=skill_id)
     db.delete(row)
     db.commit()
     return {"status": "deleted"}

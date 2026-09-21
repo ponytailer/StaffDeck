@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 import { Sheet, SheetContent } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import { XIcon } from 'lucide-react';
+import { Download, XIcon } from 'lucide-react';
 
 import IconChevronDown from '../../assets/icons/chevron-down.svg?react';
 import IconTrash from '../../assets/icons/trash.svg?react';
@@ -22,6 +22,11 @@ export type PlatformResourceDrawerProps = {
   useLabel: string;
   canManage?: boolean;
   deleting?: boolean;
+  /** 提供后底部出现「下载」按钮（目前仅技能广场资源支持）。 */
+  onDownload?: () => void;
+  downloading?: boolean;
+  /** 下载进行中的真实进度；存在且非空时在下载按钮行上方显示进度条（弹窗内可见）。 */
+  downloadProgress?: { percent: number | null; receivedBytes?: number } | null;
   hasPrev?: boolean;
   hasNext?: boolean;
   onClose: () => void;
@@ -83,6 +88,9 @@ export default function PlatformResourceDrawer({
   useLabel,
   canManage = false,
   deleting = false,
+  onDownload,
+  downloading = false,
+  downloadProgress = null,
   hasPrev = false,
   hasNext = false,
   onClose,
@@ -164,7 +172,48 @@ export default function PlatformResourceDrawer({
 
         <DrawerDivider />
 
+        <DrawerDivider />
+
+        {downloading && downloadProgress && (
+          <div aria-live="polite" className="mb-[12px] shrink-0">
+            <div
+              role="progressbar"
+              aria-label="技能包下载进度"
+              aria-valuenow={downloadProgress.percent ?? undefined}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              className="h-[5px] w-full overflow-hidden rounded-full bg-[#eef1f7]"
+            >
+              <div
+                className={cn(
+                  'h-full rounded-full bg-[#18181a] transition-[width] duration-150',
+                  (downloadProgress.percent === null || downloadProgress.percent === 0) && 'w-1/3 animate-pulse',
+                )}
+                style={downloadProgress.percent !== null && downloadProgress.percent > 0 ? { width: `${downloadProgress.percent}%` } : undefined}
+              />
+            </div>
+            <p className="mt-[4px] text-[11px] text-[#858b9c]">
+              {downloadProgress.percent !== null && downloadProgress.percent > 0
+                ? `${downloadProgress.percent}%`
+                : downloadProgress.receivedBytes
+                  ? `已接收 ${(downloadProgress.receivedBytes / 1_048_576).toFixed(1)} MB`
+                  : '准备下载…'}
+            </p>
+          </div>
+        )}
+
         <div className="flex shrink-0 justify-end gap-[10px]">
+          {onDownload && (
+            <button
+              type="button"
+              disabled={downloading}
+              onClick={onDownload}
+              className="inline-flex h-[34px] w-[80px] items-center justify-center gap-[4px] rounded-[10px] border-[0.5px] border-[#dfe4ee] bg-white text-[12px] text-[#464c5e] transition-colors hover:bg-[#f4f6fa] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="size-[14px]" />
+              {downloading ? '下载中' : '下载'}
+            </button>
+          )}
           {canManage && onDelete && (
             <button
               type="button"

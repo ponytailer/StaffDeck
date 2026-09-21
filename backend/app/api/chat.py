@@ -12,7 +12,7 @@ from datetime import timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import and_, or_, update
 from sqlmodel import Session, select
@@ -867,11 +867,14 @@ def list_slash_commands(
         current_user,
     )
     skills = discoverable_sops(visible_published_skills(db, tenant_id, agent.id))
+    # light manifest：slash 命令清单只需要名称/描述（菜单补全用），不需要逐技能
+    # 计算 content_digest/package_digest（各 20MB 包是接口秒级延迟的元凶）。
     manifest = CapabilityManifestBuilder(db).build(
         tenant_id,
         agent.id,
         None,
         None,
+        light=True,
     )
     return slash_command_catalog(skills, manifest)
 
@@ -2653,6 +2656,134 @@ def _published_workspace_artifact(
             if normalized_stored_path == normalized_requested_path:
                 return dict(artifact)
     return None
+
+
+def _published_workspace_artifacts_for_frame(
+    db: Session,
+    *,
+    tenant_id: str,
+    session_id: str,
+    task_frame_id: str,
+) -> list[tuple[dict[str, object], str]]:
+    """某任务帧的全部已发布 workspace_file 产物（已按路径归一去重，保持发布顺序）。"""
+    rows = db.exec(
+        select(Message).where(
+            Message.tenant_id == tenant_id,
+            Message.session_id == session_id,
+            Message.role == "assistant",
+        )
+    ).all()
+    collected: dict[tuple[str, str], tuple[dict[str, object], str]] = {}
+    for row in rows:
+        artifacts = (row.metadata_json or {}).get("harness_artifacts")
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict) or artifact.get("type") != "workspace_file":
+                continue
+            if str(artifact.get("task_frame_id") or "") != task_frame_id:
+                continue
+            stored_path = artifact.get("path")
+            if not isinstance(stored_path, str):
+                continue
+            try:
+                normalized = normalize_harness_artifact_path(stored_path)
+            except HarnessArtifactAccessError:
+                continue
+            key = f"{row.id}:{normalized}"
+            collected.setdefault(key, (dict(artifact), normalized))
+    return list(collected.values())
+
+
+@router.get("/sessions/{session_id}/artifacts/{task_frame_id}/zip")
+def download_harness_task_artifacts_zip(
+    session_id: str,
+    task_frame_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> Response:
+    """把一个 Harness 任务帧的全部产出打包成 zip 下载。
+
+    多文件交付物不再是 N 次单文件下载；zip 里的路径就是产物在工作区里的相对
+    路径（final.csv / references/xxx.md 天然成目录结构）。逐文件核验 sha256/size
+    后才写入包内，与单文件端点的完整性口径一致。
+    """
+    import io
+    import zipfile
+
+    _ensure_request_tenant(tenant_id, current_user)
+    _get_readable_chat_session(db, tenant_id, current_user, session_id)
+    frame = db.exec(
+        select(HarnessTaskFrameRecord).where(
+            HarnessTaskFrameRecord.tenant_id == tenant_id,
+            HarnessTaskFrameRecord.session_id == session_id,
+            HarnessTaskFrameRecord.task_id == task_frame_id,
+        )
+    ).first()
+    if frame is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    published = _published_workspace_artifacts_for_frame(
+        db,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        task_frame_id=task_frame_id,
+    )
+    if not published:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    workspace_root = harness_task_workspace_path(
+        tenant_id=tenant_id,
+        session_id=session_id,
+        task_frame_id=task_frame_id,
+        db=db,
+    )
+    buffer = io.BytesIO()
+    packed_paths: set[str] = set()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for artifact, normalized_path in published:
+            if normalized_path in packed_paths:
+                continue
+            try:
+                opened = open_harness_artifact(workspace_root, normalized_path)
+            except (HarnessArtifactAccessError, OSError):
+                continue
+            try:
+                digest = opened.sha256()
+                expected_digest = str(artifact.get("sha256") or "").strip().lower()
+                expected_size = artifact.get("size")
+                if (
+                    (expected_digest and expected_digest != digest.lower())
+                    or (isinstance(expected_size, int) and expected_size != opened.size)
+                ):
+                    # 与单文件下载同口径：产物与登记的不一致就不打包（防半写文件）
+                    continue
+                # 小文件 JIT 读入内存：产物总量 MB 级；iter_bytes 流式到 ZipInfo 更复杂，
+                # 先逐文件 read_bytes（单文件上限有 published 登记的 size 兼控），
+                # 未计入访问尺寸的逐读共用同一 descriptor（sha256 已 lseek 回 0 头）。
+                blocks = list(opened.iter_bytes())
+            finally:
+                opened.close()
+            name_in_zip = str(artifact.get("display_name") or normalized_path) or normalized_path
+            archive.writestr(_safe_artifact_download_name(name_in_zip), b"".join(blocks))
+            packed_paths.add(normalized_path)
+    if not packed_paths:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    data = buffer.getvalue()
+    filename = f"task-{task_frame_id[:24]}.zip"
+    fallback = "task-artifacts.zip"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": (
+                f'attachment; filename="{fallback}"; filename*=UTF-8''{quote(filename, safe="")}'
+            ),
+        },
+    )
 
 
 def _safe_artifact_download_name(filename: str) -> str:

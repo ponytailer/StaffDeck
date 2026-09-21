@@ -36,6 +36,7 @@ import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { UnderlineTabs } from '@/components/ui/underline-tabs';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
+import { formatDateTime } from '@/lib/enterprise-ui';
 import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -199,11 +200,10 @@ type TabValue = 'pending' | 'issued' | 'history' | 'quota' | 'groups';
 // Helpers
 // ---------------------------------------------------------------------------
 
+// 曾经自己 new Date(value)：后端时间戳是 naive UTC（无 Z），直接解析会当成本地时间，
+// 在东八区显示上整体偏 8 小时；locale 也被写死成 zh-CN。统一走 lib 里的规范实现。
 function formatTime(value: string | null): string {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(value ?? undefined);
 }
 
 type AliyunSyncCounts = { created: number; updated: number; removed: number };

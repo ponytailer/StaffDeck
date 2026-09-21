@@ -33,7 +33,6 @@ from app.db.models import (
 )
 from app.security.auth import get_current_user
 from app.security.encryption import (
-    decrypt_secret,
     encrypt_secret,
     mask_secret,
     try_decrypt_secret,

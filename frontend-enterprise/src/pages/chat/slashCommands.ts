@@ -1,6 +1,8 @@
 import type { ChatSlashCommand } from '@/types';
 
-const PREFIX_PATTERN = /^\/([^\s]*)(?:\s+([^\s]*))?$/i;
+// @ 与 / 等价：用户习惯用 @ 提及技能/SOP/工具（有补全菜单），底层统一归一成 / 指令；
+// 后端只认 / 语法，不做改动。
+const PREFIX_PATTERN = /^[@/]([^\s]*)(?:\s+([^\s]*))?$/i;
 const KINDS = new Set<ChatSlashCommand['kind']>(['sop', 'skill', 'tool']);
 
 export type SlashCommandQuery = {
@@ -12,6 +14,18 @@ export type SlashCommandMessage = {
   command: ChatSlashCommand;
   requestText: string;
 };
+
+const KIND_ALIASES: Record<string, ChatSlashCommand['kind']> = {
+  流程: 'sop',
+  技能: 'skill',
+  工具: 'tool',
+};
+
+/** 用户手敲的 @技能/流程/工具 归一成后端认识的 /sop|/skill|/tool。 */
+export function normalizeSlashInput(input: string): string {
+  const text = input.trim().replace(/^@/u, '/');
+  return text.replace(/\/\s*(流程|技能|工具)(?=\s|$)/u, (_all, alias: string) => `/${KIND_ALIASES[alias]}`);
+}
 
 export function slashCommandQuery(input: string): SlashCommandQuery | null {
   const match = PREFIX_PATTERN.exec(input);
@@ -34,6 +48,9 @@ export function matchingSlashCommands(
   const query = slashCommandQuery(input);
   if (!query) return [];
   return commands
+    // 补全菜单只列 SOP 与技能：工具由 SOP 捆绑调用，不应被用户单独选择
+    // （/tool 语法保留可发，只是菜单不再列出）。
+    .filter((item) => item.kind !== 'tool')
     .filter((item) => !query.kind || item.kind === query.kind)
     .filter((item) => {
       if (!query.search) return true;
@@ -64,7 +81,11 @@ export function slashCommandMessage(
   input: string,
   commands: ChatSlashCommand[],
 ): SlashCommandMessage | null {
-  const match = /^\/(sop|skill|tool)\s+([^\s]+)(?:\s+([\s\S]*))?$/iu.exec(input.trim());
+  // @ 深层兼容：手敲 @skill 天气 等价 /skill 天气（归一后再解析）；
+  // 中文别名（@技能）在下面 KINDS 别名表一并处理。
+  const normalized = normalizeSlashInput(input);
+  // 归一后剥掉前缀：kind/target/prompt 对应第 1/2/3 组（(?:...) 非捕获不计组）
+  const match = /^\/(sop|skill|tool)\s+([^\s]+)(?:\s+([\s\S]*))?$/iu.exec(normalized.trim());
   if (!match) return null;
   const kind = match[1].toLocaleLowerCase() as ChatSlashCommand['kind'];
   const target = match[2];

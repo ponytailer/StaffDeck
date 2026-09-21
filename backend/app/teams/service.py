@@ -6,7 +6,10 @@ from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import load_only
 from sqlmodel import Session, select
+
+from app.db.bulk_delete import bulk_delete_matching
 
 from app.db.models import (
     AgentProfile,
@@ -378,22 +381,32 @@ def create_team(
 
 
 def delete_team(db: Session, team: Team) -> None:
-    """删除团队并级联清理成员/运行/任务/竞标/审计/唤醒事件/黑板/团队会话。"""
-    members = list_team_members(db, team.id)
-    runs = list(db.exec(select(TeamRun).where(TeamRun.team_id == team.id)).all())
-    tasks = list(db.exec(select(TeamTask).where(TeamTask.team_id == team.id)).all())
-    bids = list(db.exec(select(TeamTaskBid).where(TeamTaskBid.team_id == team.id)).all())
-    events = list(db.exec(select(TeamTaskEvent).where(TeamTaskEvent.team_id == team.id)).all())
-    wakes = list(db.exec(select(TeamWakeEvent).where(TeamWakeEvent.team_id == team.id)).all())
-    entries = list(
-        db.exec(select(TeamBlackboardEntry).where(TeamBlackboardEntry.team_id == team.id)).all()
-    )
+    """删除团队并级联清理成员/运行/任务/竞标/审计/唤醒事件/黑板/团队会话。
+
+    子表一律走 ``DELETE ... WHERE team_id = ?``：这些表（``TeamTaskEvent`` /
+    ``TeamWakeEvent`` / ``TeamTask``）带 payload_json / report_json 这类大字段，
+    原先「全量读进 ORM 再逐行 db.delete(row)」会把它们整份搬进内存只为丢掉，
+    在远端 PG 上随子行数线性放大。只有 sessions 仍需读出来（要拿 tenant_id 清工作区，
+    且 purge 需要 ORM 对象），并已用 load_only 裁掉大 JSON 列。
+    """
     sessions = list(
-        db.exec(select(ChatSession).where(ChatSession.team_id == team.id)).all()
+        db.exec(
+            select(ChatSession)
+            .where(ChatSession.team_id == team.id)
+            .options(load_only(ChatSession.id, ChatSession.tenant_id))
+        ).all()
     )
     workspace_keys = [(session.tenant_id, session.id) for session in sessions]
-    for row in [*members, *runs, *tasks, *bids, *events, *wakes, *entries]:
-        db.delete(row)
+    for model in (
+        TeamMember,
+        TeamRun,
+        TeamTask,
+        TeamTaskBid,
+        TeamTaskEvent,
+        TeamWakeEvent,
+        TeamBlackboardEntry,
+    ):
+        bulk_delete_matching(db, model, team_id=team.id)
     for session in sessions:
         purge_chat_session_records(db, session)
     db.delete(team)

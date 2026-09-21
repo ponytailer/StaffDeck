@@ -60,25 +60,62 @@ function jsonResponse(body: unknown): Response {
 }
 
 /**
- * 用全局 fetch 桩驱动页面（与 MyCreatedSkillsPanel.test.tsx 同款手法）。
- * 列表走 JSON，技能包下载走 blob——断言点就是「有没有打到 /package 这个 URL」。
+ * 下载现在走 api.blobWithProgress（XHR blob，带下载进度）。
+ * 这里桩 XMLHttpRequest：记录请求 URL，触发两次 onprogress + onload(blob)。
  */
+function stubPackageDownloadXhr() {
+  const requestedUrls: string[] = [];
+  const progressEvents: number[] = [];
+  let failWithStatus = 0;
+  class FakeXHR {
+    status = 0;
+    response: Blob | null = null;
+    responseText = '';
+    onprogress: ((event: ProgressEvent) => void) | null = null;
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    open(method: string, url: string) {
+      requestedUrls.push(url);
+      expect(method).toBe('GET');
+    }
+    setRequestHeader() {}
+    addEventListener() {}
+    send() {
+      window.setTimeout(() => {
+        this.onprogress?.({ lengthComputable: true, loaded: 50, total: 100 } as ProgressEvent);
+        progressEvents.push(50);
+        // 响应延后一个 tick：给 UI 一帧渲染进度浮层，避免同批 flush 直接完成
+        window.setTimeout(() => {
+          if (failWithStatus) {
+            this.status = failWithStatus;
+            this.responseText = '';
+          } else {
+            this.status = 200;
+            this.response = new Blob(['zip-bytes'], { type: 'application/zip' });
+          }
+          this.onload?.();
+        }, 30);
+      }, 0);
+    }
+  }
+  const xhrStub = {
+    requested: requestedUrls,
+    progressEvents,
+    failWith(status: number) { failWithStatus = status; return this; },
+  };
+  vi.stubGlobal('XMLHttpRequest', FakeXHR as unknown as typeof XMLHttpRequest);
+  return xhrStub;
+}
+
 function renderPage(skills: GeneralSkillRead[], user: EnterpriseAuthUser) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes('/api/enterprise/agents')) return jsonResponse([overallAgent]);
-    if (url.includes('/api/enterprise/general-skills') && url.includes('/package')) {
-      return {
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        blob: async () => new Blob(['zip-bytes'], { type: 'application/zip' }),
-      } as unknown as Response;
-    }
     if (url.includes('/api/enterprise/general-skills')) return jsonResponse(skills);
     return jsonResponse({});
   });
   vi.stubGlobal('fetch', fetchMock);
+  const xhrStub = stubPackageDownloadXhr();
 
   render(
     <I18nProvider>
@@ -88,18 +125,21 @@ function renderPage(skills: GeneralSkillRead[], user: EnterpriseAuthUser) {
     </I18nProvider>,
   );
 
-  return fetchMock;
+  return { fetchMock, xhrStub };
 }
 
-/** 等列表渲染完，再打开第 index 行的操作菜单。 */
+/**
+ * 等列表渲染完，再打开第 index 行的操作菜单。
+ *
+ * 这里的等待要覆盖「取数 → 建表 → 渲染操作列」整条链路，是全用例里最慢的一步；
+ * testing-library 默认只有 1s，整套用例并行跑（import 阶段可到分钟级）时会被拖爆，
+ * 出现「单独跑通过、全量跑超时」的假失败，所以显式放宽。
+ */
 async function openMenu(index = 0) {
-  const triggers = await screen.findAllByLabelText('技能操作');
+  const triggers = await screen.findAllByLabelText('技能操作', undefined, { timeout: 5000 });
   fireEvent.keyDown(triggers[index], { key: 'Enter' });
 }
 
-function packageCalls(fetchMock: ReturnType<typeof vi.fn>) {
-  return fetchMock.mock.calls.filter((call) => String(call[0]).includes('/package'));
-}
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -160,29 +200,44 @@ describe('GeneralSkillsPage 技能包下载', () => {
     expect(screen.getByRole('menuitem', { name: '编辑' })).toBeTruthy();
   });
 
-  it('点「下载」请求技能包端点，广场作用域不带 agent_id', async () => {
-    const fetchMock = renderPage([makeSkill('weather-zh', 'someone_else')], member);
+  it('点「下载」请求技能包端点，广场作用域不带 agent_id，且展示下载进度', async () => {
+    const { fetchMock, xhrStub } = renderPage([makeSkill('weather-zh', 'someone_else')], member);
 
     await openMenu();
     fireEvent.click(await screen.findByRole('menuitem', { name: '下载' }));
 
-    await waitFor(() => expect(packageCalls(fetchMock).length).toBe(1));
-    const url = String(packageCalls(fetchMock)[0][0]);
+    await waitFor(() => expect(xhrStub.requested.length).toBe(1));
+    const url = String(xhrStub.requested[0]);
     expect(url).toContain('/api/enterprise/general-skills/weather-zh/package');
     expect(url).toContain('tenant_id=');
     expect(url).not.toContain('agent_id=');
+    // XHR onprogress 至少上报过一次真实百分比
+    expect(xhrStub.progressEvents.length).toBeGreaterThan(0);
+    // 下载完成后浮层消失
+    await waitFor(() => {
+      expect(screen.queryByRole('progressbar', { name: '技能包下载进度' })).toBeNull();
+    });
+  });
+
+  it('下载过程中显示进度浮层', async () => {
+    const { xhrStub } = renderPage([makeSkill('weather-zh', 'someone_else')], member);
+
+    await openMenu();
+    fireEvent.click(await screen.findByRole('menuitem', { name: '下载' }));
+
+    await waitFor(() => expect(xhrStub.requested.length).toBe(1));
+    expect(screen.getByRole('progressbar', { name: '技能包下载进度' })).toBeTruthy();
+    expect(document.body.textContent).toContain('正在下载技能包 weather-zh.zip…');
   });
 
   it('下载失败时只提示错误，不抛出未捕获异常', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/enterprise/agents')) return jsonResponse([overallAgent]);
-      if (url.includes('/package')) {
-        return { ok: false, status: 500, statusText: 'Server Error', text: async () => '' } as Response;
-      }
       return jsonResponse([makeSkill('weather-zh', 'someone_else')]);
     });
     vi.stubGlobal('fetch', fetchMock);
+    const xhrStub = stubPackageDownloadXhr().failWith(500);
 
     render(
       <I18nProvider>
@@ -195,8 +250,11 @@ describe('GeneralSkillsPage 技能包下载', () => {
     await openMenu();
     fireEvent.click(await screen.findByRole('menuitem', { name: '下载' }));
 
-    await waitFor(() => expect(packageCalls(fetchMock).length).toBe(1));
-    // 页面仍在，说明异常被 catch 住了而不是冒泡炸掉组件树
-    expect(screen.getAllByLabelText('技能操作').length).toBeGreaterThan(0);
+    await waitFor(() => expect(xhrStub.requested.length).toBe(1));
+    await waitFor(() => {
+      // 失败后浮层收起、页面仍在：异常被 catch 住了而不是冒泡炸掉组件树
+      expect(screen.queryByRole('progressbar', { name: '技能包下载进度' })).toBeNull();
+      expect(screen.getAllByLabelText('技能操作').length).toBeGreaterThan(0);
+    });
   });
 });

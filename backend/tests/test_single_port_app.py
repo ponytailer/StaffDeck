@@ -2,6 +2,10 @@ import mimetypes
 from pathlib import Path
 
 import httpx
+
+from fastapi.responses import FileResponse
+
+import single_port_app as single_port_app
 import pytest
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -295,3 +299,16 @@ def test_root_redirects_to_the_open_platform() -> None:
 
     assert response.status_code == 307
     assert response.headers["location"] == "/enterprise/platform"
+
+
+def test_share_route_serves_spa_index(monkeypatch, tmp_path: Path) -> None:
+    """数字员工分享落地页：/share/{token} 必须回 SPA，否则访客拿到 {"detail":"Not Found"}。"""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><html></html>", encoding="utf-8")
+    monkeypatch.setattr(single_port_app, "ENTERPRISE_DIST", dist)
+
+    html = single_port_app.share_app("tMAY")
+    assert isinstance(html, FileResponse)
+    assert html.path.name == "index.html"
+    assert single_port_app.share_app("") is not None

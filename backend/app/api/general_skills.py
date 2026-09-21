@@ -16,11 +16,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
+from sqlalchemy import or_, type_coerce
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import load_only
 from sqlmodel import Session, select
 
 from app.agents.branching import (
+    build_binding_visibility_prefetch,
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
     get_agent,
@@ -60,7 +64,11 @@ from app.general_skills import (
     GeneralSkillRunResponse,
 )
 from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner
-from app.general_skills.schema import GeneralSkillFile
+from app.general_skills.schema import (
+    GeneralSkillFile,
+    GeneralSkillPackagePreviewFile,
+    GeneralSkillPackagePreviewResponse,
+)
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.security.auth import get_current_user
 from app.security.permissions import (
@@ -103,7 +111,14 @@ def _agent_id_or_none(agent_id: object | None) -> str | None:
     return agent_id if isinstance(agent_id, str) and agent_id else None
 
 
-def general_skill_read(row: GeneralSkill, status_override: str | None = None) -> GeneralSkillRead:
+def general_skill_read(
+    row: GeneralSkill,
+    status_override: str | None = None,
+    *,
+    include_files: bool = True,
+) -> GeneralSkillRead:
+    # 广场等只需列表元信息的调用方可以关掉文件包内容：skill_files_json 单租户就有 MB 级体量
+    # （本租户 12 条实测 6.5MB，整表查询 9.8s），而卡片只用到名称/描述/标签。
     return GeneralSkillRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -112,10 +127,13 @@ def general_skill_read(row: GeneralSkill, status_override: str | None = None) ->
         description=row.description,
         homepage=row.homepage,
         skill_markdown=row.skill_markdown,
-        skill_files=[
-            GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)
-        ],
-        skill_directories=_skill_directories(row),
+        skill_files=(
+            [GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)]
+            if include_files
+            else []
+        ),
+        # 目录索引依赖文件包内容，裁剪时不参与计算
+        skill_directories=_skill_directories(row) if include_files else [],
         metadata=dict(row.metadata_json or {}),
         status=status_override or row.status,
         capability_scope=normalize_capability_scope(row.capability_scope),
@@ -124,6 +142,25 @@ def general_skill_read(row: GeneralSkill, status_override: str | None = None) ->
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
+
+
+# 裁剪模式下显式指定要加载的列，避免 ORM 把 skill_files_json 一起取回来。
+_GENERAL_SKILL_SLIM_COLUMNS = (
+    "id",
+    "tenant_id",
+    "slug",
+    "name",
+    "description",
+    "homepage",
+    "skill_markdown",
+    "metadata_json",
+    "status",
+    "capability_scope",
+    "permissions_json",
+    "runtime_config_json",
+    "created_at",
+    "updated_at",
+)
 
 
 @router.post("/import", response_model=GeneralSkillRead)
@@ -367,6 +404,87 @@ def import_clawhub_skill(
     return import_skillhub_skill(request, db, current_user)
 
 
+def _preview_package_response(filename: str, data: bytes) -> GeneralSkillPackagePreviewResponse:
+    """zip / Markdown 内容 → 编辑器预览响应。JSON 与 multipart 入口共用。"""
+    if filename.lower().endswith(".zip"):
+        raw_files = _files_from_zip(data)
+    elif filename.lower().endswith((".md", ".markdown", ".txt")):
+        text = _decode_text(data)
+        raw_files = [
+            GeneralSkillFile(
+                path="SKILL.md",
+                content=text,
+                size=len(data),
+                mime_type=_guess_mime_type(filename),
+            )
+        ]
+    else:
+        raise HTTPException(
+            status_code=400, detail="Uploaded skill package must be a .zip or Markdown file"
+        )
+    files = _normalize_skill_files(raw_files, None)
+    markdown = _skill_markdown_from_files(files)
+    metadata = _parse_skill_metadata(markdown)
+    return GeneralSkillPackagePreviewResponse(
+        filename=filename,
+        name=_metadata_text(metadata, "name", "title") or _source_name(f"upload:{filename}"),
+        slug=_metadata_text(metadata, "slug", "id"),
+        description=_metadata_text(metadata, "description", "summary"),
+        homepage=_metadata_text(metadata, "homepage", "url", "source"),
+        markdown=markdown,
+        files=[
+            GeneralSkillPackagePreviewFile(
+                path=file.path,
+                size=file.size,
+                mime_type=file.mime_type,
+                content=file.content,
+            )
+            for file in files
+        ],
+        directories=_skill_directories_from_values(
+            [value for value in metadata.get("skill_directories", []) if isinstance(value, str)]
+            if isinstance(metadata.get("skill_directories"), list)
+            else [],
+            files,
+        ),
+    )
+
+
+@router.post("/import-package/preview", response_model=GeneralSkillPackagePreviewResponse)
+def preview_general_skill_package(
+    request: GeneralSkillPackageUploadRequest,
+) -> GeneralSkillPackagePreviewResponse:
+    """解析上传的技能包（zip / Markdown），返回将填入编辑器的全部内容，但不落库。
+
+    与 /import-package 的差别：这里不创建技能、不消耗 slug，前端拿到响应后把
+    name/slug/description/homepage/markdown/files/directories 填进新建表单，
+    由用户继续编辑、预览 zip 内文件后再手动保存。解析规则与导入保持同源
+    （_files_from_zip / _parse_skill_metadata），避免「预览看到的」和「实际导入的」不一致。
+    """
+    filename = _clean_source_filename(request.filename)
+    data = _decode_base64_payload(request.content_base64)
+    return _preview_package_response(filename, data)
+
+
+@router.post("/import-package/preview-multipart")
+def preview_general_skill_package_multipart(
+    tenant_id: str = Query(...),
+    file: UploadFile = File(...),
+) -> GeneralSkillPackagePreviewResponse:
+    """multipart 直传版预览：省掉 27MB 级 base64-JSON 的编解码与字符串驻留。
+
+    网关限制 50MB，调用方（前端）已真正按字节流上传；这里只做大小上限与
+    统一解析。大小上限与 JSON 版 _decode_base64_payload 同源（96MB）。
+    """
+    filename = _clean_source_filename(file.filename or "")
+    data = file.file.read(MAX_CLAWHUB_PACKAGE_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded skill package is empty")
+    if len(data) > MAX_CLAWHUB_PACKAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Uploaded skill package is too large")
+    return _preview_package_response(filename, data)
+
+
 @router.post("/import-package", response_model=GeneralSkillRead)
 def import_general_skill_package(
     request: GeneralSkillPackageUploadRequest,
@@ -506,13 +624,6 @@ def _create_imported_general_skill(
     return general_skill_read(row)
 
 
-def _general_skill_created_by(row: GeneralSkill, user_id: str | None) -> bool:
-    if not user_id:
-        return False
-    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
-    return user_id in {metadata.get("owner_user_id"), metadata.get("created_by_user_id")}
-
-
 def _list_my_general_skills(
     db: Session, tenant_id: str, current_user: User
 ) -> list[GeneralSkillRead]:
@@ -520,13 +631,28 @@ def _list_my_general_skills(
 
     技能广场解耦数字员工后，成员在广场里创建的技能不再挂在任何数字员工下，
     该口径给创建者一个维护入口（编辑 / 启停 / 删除），不随当前作用域变化。
+
+    性能：创建者过滤下沉到 SQL（metadata_json 的 owner 键，SQLite 走
+    json_extract、PG 走 ->>），并把 skill_files_json 投影掉——单租户技能包
+    有 MB 级体量（12 条实测 6.5MB，远程 PG 整表拉取再 Python 过滤要 9.8s），
+    而维护列表只用到元信息和状态。编辑页会重新拉单条详情，不依赖本接口返回文件。
     """
+    # metadata_json 声明为 JSON 列：SQLAlchemy 的 astext 只长在 postgresql.JSONB
+    # 比较器上，所以用 type_coerce 把列类型临时 coerce 成 JSONB 再取 [key].astext，
+    # 编译为 metadata_json ->> 'key'（PG 原生；SQLite >= 3.38 也支持 ->> 取文本，
+    # 两端通用）。键不存在时表达式为 NULL，比较为假，与旧的 Python 侧「metadata
+    # 里没有键就过滤掉」语义一致。
+    metadata_column = type_coerce(GeneralSkill.metadata_json, JSONB)
+    owner_keys = metadata_column["owner_user_id"].astext
+    creator_keys = metadata_column["created_by_user_id"].astext
     rows = db.exec(
-        select(GeneralSkill)
-        .where(GeneralSkill.tenant_id == tenant_id)
-        .order_by(GeneralSkill.updated_at.desc())
+        _general_skill_list_statement(
+            tenant_id,
+            include_files=False,
+            extra_where=(or_(owner_keys == current_user.id, creator_keys == current_user.id),),
+        )
     ).all()
-    owned = [row for row in rows if _general_skill_created_by(row, current_user.id)]
+    owned = list(rows)
     if not owned:
         return []
     overall = get_overall_agent(db, tenant_id)
@@ -558,14 +684,14 @@ def _list_my_general_skills(
             # 否则会变成一条删不掉的幽灵行。
             if binding_status.get((overall_id, row.id)) == "deleted":
                 continue
-            result.append(general_skill_read(row))
+            result.append(general_skill_read(row, include_files=False))
             continue
         status = binding_status.get((owner_agent_id, row.id))
         if status == "deleted":
             # 已从宿主员工移除的技能不再出现在维护列表里
             continue
         if status is None:
-            result.append(general_skill_read(row))
+            result.append(general_skill_read(row, include_files=False))
             continue
         result.append(
             general_skill_read(
@@ -573,6 +699,7 @@ def _list_my_general_skills(
                 status_override=(
                     "published" if status == "active" and row.status == "published" else "archived"
                 ),
+                include_files=False,
             )
         )
     return result
@@ -591,6 +718,9 @@ def list_general_skills(
     # 分支），Depends() 哨兵没有 .id（AttributeError）。裸默认值在直接调用时是真正的
     # False；FastAPI 对「标量 + 裸默认值」同样按 query 参数解析，HTTP 行为与 Query(False) 一致。
     mine: bool = False,
+    # 同上：标量 + 裸默认值，直接函数调用时拿到真正的 True，HTTP 下按 query 参数解析。
+    # 广场列表只需要元信息，传 include_files=0 可省掉 MB 级的文件包内容。
+    include_files: bool = True,
     current_user: User | None = Depends(get_current_user),
 ) -> list[GeneralSkillRead]:
     ensure_tenant(db, tenant_id)
@@ -616,19 +746,23 @@ def list_general_skills(
         rows_by_id = {
             row.id: row
             for row in db.exec(
-                select(GeneralSkill).where(
-                    GeneralSkill.tenant_id == tenant_id,
-                    GeneralSkill.id.in_([binding.resource_id for binding in bindings]),
+                _general_skill_list_statement(
+                    tenant_id,
+                    include_files,
+                    extra_where=(GeneralSkill.id.in_([binding.resource_id for binding in bindings]),),
                 )
             ).all()
         }
+        # 逐绑定判定每行要打 get_overall_agent + overall 绑定查询（远程 PG ~35ms/次），
+        # 这里一次预取该作用域绑定集合的外部行，判定退化为内存查找。
+        prefetch = build_binding_visibility_prefetch(db, tenant_id, bindings)
         visible_rows: list[GeneralSkillRead] = []
         for binding in bindings:
             row = rows_by_id.get(binding.resource_id)
             if not row:
                 continue
             if not is_bound_resource_visible_for_agent(
-                db, tenant_id, "general_skill", row, binding
+                db, tenant_id, "general_skill", row, binding, prefetch=prefetch
             ):
                 continue
             visible_rows.append(
@@ -639,16 +773,33 @@ def list_general_skills(
                         if binding.status == "active" and row.status == "published"
                         else "archived"
                     ),
+                    include_files=include_files,
                 )
             )
         return visible_rows
     rows = db.exec(
-        select(GeneralSkill)
-        .where(GeneralSkill.tenant_id == tenant_id)
-        .order_by(GeneralSkill.updated_at.desc())
+        _general_skill_list_statement(tenant_id, include_files)
     ).all()
     rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "general_skill", row)]
-    return [general_skill_read(row) for row in rows]
+    return [general_skill_read(row, include_files=include_files) for row in rows]
+
+
+def _general_skill_list_statement(
+    tenant_id: str,
+    include_files: bool,
+    extra_where: tuple = (),
+):
+    """按 include_files 决定是否投影掉 skill_files_json；extra_where 供按绑定 id 取行的分支复用。"""
+    statement = (
+        select(GeneralSkill)
+        .where(GeneralSkill.tenant_id == tenant_id, *extra_where)
+        .order_by(GeneralSkill.updated_at.desc())
+    )
+    if include_files:
+        return statement
+    return statement.options(
+        load_only(*(getattr(GeneralSkill, name) for name in _GENERAL_SKILL_SLIM_COLUMNS))
+    )
 
 
 @router.get(
@@ -659,10 +810,13 @@ def get_general_skill(
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
     agent_id: str | None = Query(None),
+    # 编辑器两段加载：include_files=0 时只返回元信息 + SKILL.md（markdown 在 slim 列里，
+    # 表单可立即渲染）；skill_files/skill_directories 置空，由调用方随后拉完整详情补齐。
+    include_files: bool = Query(True),
 ) -> GeneralSkillRead:
     row = _get_general_skill(db, tenant_id, slug)
     _ensure_general_skill_visible(db, tenant_id, row, agent_id)
-    return general_skill_read(row)
+    return general_skill_read(row, include_files=include_files)
 
 
 @router.get("/{slug}/package", dependencies=[Depends(require_agent_scope_viewer)])
@@ -810,7 +964,7 @@ def delete_general_skill(
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     agent_id = _agent_id_or_none(agent_id)
-    row = _get_general_skill(db, tenant_id, slug)
+    row = _get_general_skill_slim(db, tenant_id, slug)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
         binding = _ensure_general_skill_binding(db, tenant_id, agent.id, row.id)
@@ -1112,6 +1266,25 @@ def _get_general_skill(db: Session, tenant_id: str, slug: str) -> GeneralSkill:
     ensure_tenant(db, tenant_id)
     row = db.exec(
         select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id, GeneralSkill.slug == slug)
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="General skill not found")
+    return row
+
+
+def _get_general_skill_slim(db: Session, tenant_id: str, slug: str) -> GeneralSkill:
+    """_get_general_skill 的裁剪版：投影掉 skill_files_json。
+
+    供不需要文件内容的操作（删除）使用——单行文件包有 MB 级体量，TOAST 解压
+    是删除接口延迟的大头；metadata / status 等元信息在 slim 列里都保留。
+    """
+    ensure_tenant(db, tenant_id)
+    row = db.exec(
+        _general_skill_list_statement(
+            tenant_id,
+            include_files=False,
+            extra_where=(GeneralSkill.slug == slug,),
+        )
     ).first()
     if not row:
         raise HTTPException(status_code=404, detail="General skill not found")

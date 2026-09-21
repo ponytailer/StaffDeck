@@ -10,6 +10,9 @@ from app.api.agents import delete_agent
 from app.core.harness_session_cleanup import harness_session_workspace_path
 from app.db.models import (
     AgentProfile,
+    AgentResourceBinding,
+    ChannelBinding,
+    ChannelBindingAgent,
     ChatSession,
     HumanHandoffRequest,
     Message,
@@ -154,3 +157,93 @@ def test_delete_agent_purges_sessions_membership_tasks_and_handoffs(
             ).all()
         }
         assert handoff_statuses == {"cancelled", "answered"}
+
+
+def test_delete_agent_keeps_already_loaded_rows_usable() -> None:
+    """批量删除绕过 ORM：已加载的子表对象必须在删除前后都能安全读数。
+
+    `delete_agent` 改用批量 DELETE/UPDATE 后，若不先把命中对象 expunge 出身份映射，
+    `commit()` 会让它们 expire，之后任何属性读取都会去 refresh 一行已被删掉的数据
+    → `ObjectDeletedError`。这里刻意先把子表行读进会话，作为该回归的防线。
+    """
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_gone", tenant_id="tenant_demo", name="已删员工"))
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_gone",
+                resource_type="skill",
+                resource_id="skill_1",
+            )
+        )
+        team = Team(
+            tenant_id="tenant_demo",
+            name="增长团队",
+            owner_user_id="user_admin",
+            status="active",
+        )
+        db.add(team)
+        db.add(TeamMember(team_id=team.id, agent_id="agent_gone", role="leader"))
+        db.add(
+            ScheduledTask(
+                tenant_id="tenant_demo",
+                agent_id="agent_gone",
+                created_by_user_id="user_admin",
+                title="已删员工任务",
+                prompt="汇总",
+            )
+        )
+        db.commit()
+
+        binding = db.exec(select(AgentResourceBinding)).one()
+        member = db.exec(select(TeamMember)).one()
+        task = db.exec(select(ScheduledTask)).one()
+
+        assert delete_agent("agent_gone", tenant_id="tenant_demo", db=db, current_user=_admin_user())
+
+        # 对象已被摘出会话，但已加载值仍可读（不会被刷新成已删除的行）
+        assert binding.resource_id == "skill_1"
+        assert member.role == "leader"
+        assert task.title == "已删员工任务"
+        assert db.exec(select(AgentResourceBinding)).all() == []
+        assert db.exec(select(TeamMember)).all() == []
+
+
+def test_delete_agent_promotes_remaining_channel_mount() -> None:
+    """被删员工是渠道默认挂载时，渠道要落到剩余挂载上而不是留下悬空指针。"""
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_gone", tenant_id="tenant_demo", name="已删员工"))
+        db.add(AgentProfile(id="agent_keep", tenant_id="tenant_demo", name="保留员工"))
+        db.add(
+            ChannelBinding(
+                id="chan_1", tenant_id="tenant_demo", agent_id="agent_gone", status="active"
+            )
+        )
+        db.add(
+            ChannelBindingAgent(
+                tenant_id="tenant_demo",
+                binding_id="chan_1",
+                agent_id="agent_gone",
+                is_default=True,
+            )
+        )
+        db.add(
+            ChannelBindingAgent(
+                tenant_id="tenant_demo",
+                binding_id="chan_1",
+                agent_id="agent_keep",
+                sort_order=1,
+            )
+        )
+        db.commit()
+
+        delete_agent("agent_gone", tenant_id="tenant_demo", db=db, current_user=_admin_user())
+
+        mounts = db.exec(
+            select(ChannelBindingAgent).where(ChannelBindingAgent.binding_id == "chan_1")
+        ).all()
+        assert [mount.agent_id for mount in mounts] == ["agent_keep"]
+        assert mounts[0].is_default is True
+        assert db.get(ChannelBinding, "chan_1").agent_id == "agent_keep"

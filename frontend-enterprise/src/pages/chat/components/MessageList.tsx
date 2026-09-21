@@ -56,6 +56,7 @@ export default function MessageList({
     handleChatMessagesScroll,
     SHOW_DEBUG,
     lastTurn,
+    hideKnowledgeCitations = false,
   } = chat;
   const renderMessages = placeQueuedMessagesLast(displayedMessages);
   const teamCollaborations = useTeamCollaborations(chat.displayedTeam);
@@ -131,7 +132,9 @@ export default function MessageList({
             item.role === 'assistant' ? stripTrailingCitationSummary(item.content) : item.content,
           );
           const visibleContent = normalizeMessageText(rawVisibleContent) ? rawVisibleContent : '';
-          const citations = item.role === 'assistant' ? knowledgeCitations(item, visibleContent) : [];
+          const citations = item.role === 'assistant' && !hideKnowledgeCitations
+            ? knowledgeCitations(item, visibleContent)
+            : [];
           const scheduledTaskPrompt = isScheduledTaskPrompt(item);
           const scheduledDraft = item.role === 'assistant' && !dismissedDraftMessageIds.includes(item.id)
             ? scheduledDraftForMessage(item)

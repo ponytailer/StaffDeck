@@ -30,6 +30,7 @@ import {
   MENU_ITEM_DANGER_CLASS,
   MOBILE_CARD_CLASS,
   SELECT_TRIGGER_CLASS,
+  formatDate,
 } from '@/lib/enterprise-ui';
 import { DetailField } from '@/components/DetailField';
 import { ResourceImportDialog } from '@/components/ResourceImportDialog';
@@ -1107,7 +1108,7 @@ function VersionsDialog({
     { key: 'calls', title: '调用次数', width: 100, render: (row) => `${row.call_count || 0} 次` },
     { key: 'pos', title: '好评率', width: 90, render: (row) => percent(row.positive_rate) },
     { key: 'neg', title: '差评率', width: 90, render: (row) => percent(row.negative_rate) },
-    { key: 'updated', title: '更新时间', width: 120, render: (row) => row.updated_at.slice(0, 10) },
+    { key: 'updated', title: '更新时间', width: 120, render: (row) => formatDate(row.updated_at) },
     {
       key: 'actions',
       title: '操作',
@@ -1203,7 +1204,7 @@ function VersionDetailDialog({
               <DetailField label="调用次数">{detail.call_count || 0} 次</DetailField>
               <DetailField label="好评率">{percent(detail.positive_rate)}</DetailField>
               <DetailField label="差评率">{percent(detail.negative_rate)}</DetailField>
-              <DetailField label="更新时间">{detail.updated_at.slice(0, 10)}</DetailField>
+              <DetailField label="更新时间">{formatDate(detail.updated_at)}</DetailField>
             </div>
             <pre className="overflow-x-auto rounded-[12px] bg-[#f6f6f6] p-[14px] text-[12px] leading-[1.7] text-[#464c5e] wrap-anywhere whitespace-pre-wrap">
               {skillSourceText(detail)}

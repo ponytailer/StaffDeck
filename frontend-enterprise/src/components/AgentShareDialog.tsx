@@ -14,6 +14,7 @@ import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { api, TENANT_ID } from '@/api/client';
 import { employeeDisplayName } from '@/employee';
 import { copyTextToClipboard } from '@/lib/clipboard';
+import { shareHostFromEnv, shareUrlForToken } from '@/lib/share-host';
 import type { AgentProfileRead, ModelConfigRead } from '@/types';
 
 type ShareTtl = '30m' | '2h' | 'forever';
@@ -55,7 +56,8 @@ export default function AgentShareDialog({
   const [copied, setCopied] = useState(false);
 
   const displayName = useMemo(() => (agent ? employeeDisplayName(agent) : '数字员工'), [agent]);
-  const shareUrl = created ? `${window.location.origin}/share/${created.token}` : '';
+  // 优先用 VITE_SHARE_HOST 配置的对外域名，未配置回落当前访问 origin。
+  const shareUrl = created ? shareUrlForToken(created.token, shareHostFromEnv(import.meta.env, window.location.origin)) : '';
 
   useEffect(() => {
     if (!open) return;

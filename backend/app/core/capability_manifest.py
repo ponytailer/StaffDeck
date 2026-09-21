@@ -4,6 +4,7 @@ import hashlib
 import json
 from typing import Any
 
+from sqlalchemy.orm import load_only
 from sqlmodel import Session, select
 
 from app.agents.branching import (
@@ -61,6 +62,12 @@ class CapabilityManifestBuilder:
         agent_id: str | None,
         skill: Skill | None,
         step_id: str | None,
+        *,
+        # light=True：给 slash-commands 这类「只用 name/slug/描述做展示」的读路径。
+        # 跳过 content_digest/package_digest 计算（它们语义上需要完整文件包，
+        # 20MB 包逐条 json 序列化 + sha256 是清单接口秒级耗时的大头）。light 模式
+        # 不做 digest 字段，能力锁定执行时 invoker 仍会用完整 build 重新校验，语义不受影响。
+        light: bool = False,
     ) -> CapabilityManifest:
         if agent_id and get_agent(self.db, tenant_id, agent_id) is None:
             raise CapabilityAuthorizationError("当前员工不存在、已归档或不属于该租户。")
@@ -152,13 +159,15 @@ class CapabilityManifestBuilder:
                     metadata={
                         "slug": row.slug,
                         "display_name": row.name,
-                        "content_digest": general_skill_snapshot_digest(row),
-                        "package_digest": package_from_row(row).digest,
                         "execution_policy": "instructions_only",
                         "script_execution": "use_harness_tools",
                         "permissions": dict(row.permissions_json or {}),
                         "runtime_config": dict(row.runtime_config_json or {}),
                         "sop_explicitly_allowed": explicitly_allowed,
+                        **({} if light else {
+                            "content_digest": general_skill_snapshot_digest(row),
+                            "package_digest": package_from_row(row).digest,
+                        }),
                     },
                 )
             )
@@ -594,11 +603,33 @@ def _visible_general_skills(
     db: Session, tenant_id: str, agent_id: str | None
 ) -> list[GeneralSkill]:
     agent = get_agent(db, tenant_id, agent_id)
+    # slim 投影（exclude skill_files_json）：manifest/catalog 只需要 name/slug/描述等
+    # 元信息，MB 级文件包整表拉取曾把 slash-commands 等清单接口拖到十几秒。
+    # load_only 列表与 app/api/general_skills._GENERAL_SKILL_SLIM_COLUMNS 保持一致
+    # （在 core 层内联定义，避免 core→api 的循环导入）。
+    slim_columns = (
+        GeneralSkill.id,
+        GeneralSkill.tenant_id,
+        GeneralSkill.slug,
+        GeneralSkill.name,
+        GeneralSkill.description,
+        GeneralSkill.homepage,
+        GeneralSkill.skill_markdown,
+        GeneralSkill.metadata_json,
+        GeneralSkill.status,
+        GeneralSkill.capability_scope,
+        GeneralSkill.permissions_json,
+        GeneralSkill.runtime_config_json,
+        GeneralSkill.created_at,
+        GeneralSkill.updated_at,
+    )
     rows = db.exec(
-        select(GeneralSkill).where(
+        select(GeneralSkill)
+        .where(
             GeneralSkill.tenant_id == tenant_id,
             GeneralSkill.status == "published",
         )
+        .options(load_only(*slim_columns))
     ).all()
     if agent_id and not agent:
         return []

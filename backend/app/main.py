@@ -14,7 +14,9 @@ from app.api import (
     chat,
     evolution,
     feedback,
+    general_skill_shares,
     general_skills,
+    gallery,
     knowledge,
     knowledge_bases,
     api_key_applications,
@@ -161,6 +163,8 @@ app.include_router(auth.router)
 app.include_router(agents.scope_router)
 app.include_router(agents.enterprise_router)
 app.include_router(general_skills.router)
+app.include_router(general_skill_shares.router)
+app.include_router(general_skill_shares.public_router)
 app.include_router(knowledge_bases.router)
 app.include_router(knowledge.router)
 app.include_router(skills.router)
@@ -180,6 +184,7 @@ app.include_router(teams.router)
 app.include_router(teams.threads_router)
 app.include_router(tools.router)
 app.include_router(tools.mcp_router)
+app.include_router(gallery.router)
 app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)

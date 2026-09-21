@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.capability_scope import normalize_capability_scope
 from app.db import get_session
+from app.db.bulk_delete import bulk_delete_matching
 from app.agents.branching import (
     ensure_agent_private_knowledge_branch,
     ensure_knowledge_base_version,
@@ -621,6 +622,9 @@ def delete_knowledge_base(
         invalidate_knowledge_base(tenant_id, row.id)
         return {"status": "hidden"}
     ensure_open_gallery_admin(tenant_id, current_user)
+    # 子表一律批量 DELETE：KnowledgeChunk.content / KnowledgeConcept.content_md /
+    # KnowledgeDiscoverySuggestion.payload_json 都可能是 MB 级，一个大库有数千 chunk，
+    # 原先「全量读进 ORM 再逐行 db.delete」纯粹是把这些字节搬进内存丢掉。
     for model in (
         KnowledgeDiscoverySuggestion,
         KnowledgeIngestJob,
@@ -631,23 +635,16 @@ def delete_knowledge_base(
         KnowledgeBaseVersion,
         AgentKnowledgeBranch,
     ):
-        children = db.exec(
-            select(model).where(
-                model.tenant_id == tenant_id,
-                model.knowledge_base_id == row.id,
-            )
-        ).all()
-        for child in children:
-            db.delete(child)
-    bindings = db.exec(
-        select(AgentResourceBinding).where(
-            AgentResourceBinding.tenant_id == tenant_id,
-            AgentResourceBinding.resource_type == "knowledge_base",
-            AgentResourceBinding.resource_id == row.id,
+        bulk_delete_matching(
+            db, model, tenant_id=tenant_id, knowledge_base_id=row.id
         )
-    ).all()
-    for binding in bindings:
-        db.delete(binding)
+    bulk_delete_matching(
+        db,
+        AgentResourceBinding,
+        tenant_id=tenant_id,
+        resource_type="knowledge_base",
+        resource_id=row.id,
+    )
     db.delete(row)
     db.commit()
     invalidate_knowledge_base(tenant_id, row.id)

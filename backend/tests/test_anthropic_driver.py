@@ -239,7 +239,7 @@ def test_llm_client_builds_anthropic_sdk(monkeypatch) -> None:
         captured.update(kwargs)
         return SimpleNamespace(messages=_Messages())
 
-    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", lambda _value: "secret")
     monkeypatch.setattr("app.llm.client.Anthropic", fake_anthropic)
     config = SimpleNamespace(
         api_protocol="anthropic_messages",
@@ -267,7 +267,7 @@ def test_llm_client_adapts_anthropic_v1_api_root_for_sdk(monkeypatch) -> None:
         captured.update(kwargs)
         return SimpleNamespace(messages=_Messages())
 
-    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", lambda _value: "secret")
     monkeypatch.setattr("app.llm.client.Anthropic", fake_anthropic)
     config = SimpleNamespace(
         api_protocol="anthropic_messages",
@@ -293,7 +293,7 @@ def test_llm_client_adapts_anthropic_full_messages_endpoint(monkeypatch) -> None
         captured.update(kwargs)
         return SimpleNamespace(messages=_Messages())
 
-    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", lambda _value: "secret")
     monkeypatch.setattr("app.llm.client.Anthropic", fake_anthropic)
     config = SimpleNamespace(
         api_protocol="anthropic_messages",

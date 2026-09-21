@@ -630,6 +630,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const [textDiffs, setTextDiffs] = useState<TextDiffAnimation[]>([]);
   const [pendingChange, setPendingChange] = useState<PendingChange | null>(null);
   const [saveReviewOpen, setSaveReviewOpen] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [saveDraftSnapshot, setSaveDraftSnapshot] = useState<SkillCard | null>(null);
   const [saveName, setSaveName] = useState('');
   const [saveDomain, setSaveDomain] = useState('');
@@ -870,7 +871,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     const [toolResult, skillResult, knowledgeResult, sopResult] = await Promise.allSettled([
       api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentQuery}`),
       api.get<GeneralSkillRead[]>(
-        `/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentQuery}`,
+        `/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentQuery}&include_files=0`,
       ),
       api.get<KnowledgeBaseRead[]>(
         `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentQuery}`,
@@ -1253,11 +1254,14 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   }
 
   async function saveDraft() {
-    if (!saveReviewDraft) return;
+    // 在途守卫：新建 SOP 走 POST /skills，连点两次时第二次会命中 409，而 409 分支
+    // 会 uniqueDraftSkillId() 后**再 POST 一次** —— 结果库里多出一条同名 SOP。
+    if (!saveReviewDraft || savingDraft) return;
     if (!hasSkillContentChanges(saveReviewDraft, lastSavedDraft)) {
       notify.info('当前没有内容变化，无需保存草稿。');
       return;
     }
+    setSavingDraft(true);
     let finalDraft: SkillCard = canonicalizeSkillCapabilityRefs(
       normalizeSubflowNodes(lockSkillIdForDraft(saveReviewDraft, lockedSkillId)),
     );
@@ -1309,6 +1313,8 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       }
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setSavingDraft(false);
     }
   }
 
@@ -2757,7 +2763,9 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
         footer={
           <div className="flex flex-wrap justify-end gap-[8px]">
             <UIButton variant="outline" onClick={closeSaveReview}>取消</UIButton>
-            <UIButton disabled={!saveReviewHasContentChanges} onClick={() => void saveDraft()}>保存</UIButton>
+            <UIButton disabled={!saveReviewHasContentChanges || savingDraft} onClick={() => void saveDraft()}>
+              {savingDraft ? '保存中…' : '保存'}
+            </UIButton>
           </div>
         }
       >

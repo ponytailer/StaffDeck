@@ -11,6 +11,7 @@ import type { ComponentType, ReactNode, SVGProps } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
+import { downloadGeneralSkillPackage } from '../lib/skill-package';
 import { isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import IconAgents from '../assets/icons/nav-agents.svg?react';
@@ -40,8 +41,10 @@ import { cn } from '@/lib/utils';
 import {
   PlatformEmployeeCard,
   PlatformEmployeeDrawer,
+  PlatformGridSkeleton,
   PlatformResourceCard,
   PlatformResourceDrawer,
+  type PlatformDetailKind,
   type PlatformResourceAccent,
   type PlatformStat,
 } from '@/components/openPlatform';
@@ -49,7 +52,9 @@ import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
-type PlatformKind = 'agents' | 'knowledge' | 'general-skills' | 'skills' | 'tools';
+// 广场模块标识只保留一处定义（PlatformKindDetailView 里那份），这里只是本页的别名，
+// 避免两处字面量联合类型各自漂移。
+type PlatformKind = PlatformDetailKind;
 
 /** 每个广场模块各自的数据加载状态：进页面只拉当前 tab 用到的接口。 */
 type KindLoadState = 'idle' | 'loading' | 'ready' | 'error';
@@ -184,20 +189,7 @@ function resourceDrawerBadge(kind: PlatformKind, item: PlatformItem): string {
 }
 
 function DetailSkeleton({ kind }: { kind: PlatformKind }) {
-  const cardHeight = kind === 'agents' ? 'h-[140px]' : 'h-[112px]';
-  return (
-    <div className="grid grid-cols-1 gap-[16px] sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-      {Array.from({ length: 8 }, (_, index) => (
-        <div
-          key={index}
-          className={cn(
-            'w-full animate-pulse rounded-[20px] border-[0.5px] border-[#f0f1f5] bg-[#f6f6f6]',
-            cardHeight,
-          )}
-        />
-      ))}
-    </div>
-  );
+  return <PlatformGridSkeleton kind={kind} />;
 }
 
 export default function OpenPlatformPage({
@@ -213,16 +205,24 @@ export default function OpenPlatformPage({
   const { kind } = useParams<{ kind?: PlatformKind }>();
   const initialKind = kind && PLATFORM_BY_KIND.has(kind) ? kind : 'agents';
   const [activeKind, setActiveKind] = useState<PlatformKind>(initialKind);
-  const [searchText, setSearchText] = useState('');
+  // 支持 ?q= 深链（技能分享页「去技能广场查看」带上技能名）：进页面即预填搜索词，
+  // 广场自动过滤出目标技能；用户可随时清空改查。
+  const [searchText, setSearchText] = useState(() => new URLSearchParams(window.location.search).get('q') || '');
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
   const [skills, setSkills] = useState<SkillRead[]>([]);
   const [tools, setTools] = useState<ToolRead[]>([]);
   const [kindStates, setKindStates] = useState<Partial<Record<PlatformKind, KindLoadState>>>({});
+  // 首页角标：各模块可见资源数量来自聚合接口，一次请求即可填满 5 个 tab，不必等懒加载列表。
+  const [galleryCounts, setGalleryCounts] = useState<Record<PlatformKind, number> | null>(null);
   const [deletingItemKey, setDeletingItemKey] = useState('');
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [detailItem, setDetailItem] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
+  // 下载中的技能 slug（'' = 空闲）；drawer 的 downloading 收窄成 Boolean
+  const [downloadingSkill, setDownloadingSkill] = useState('');
+  // 大包下载进度浮层，与技能广场/档案页同一套交互
+  const [transfer, setTransfer] = useState<{ label: string; percent: number | null; receivedBytes?: number } | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
 
   // 已加载过的模块不重复拉；同一模块并发只发一次请求（ref 与 state 同步写，保证守卫是同步准确的）。
@@ -240,7 +240,14 @@ export default function OpenPlatformPage({
     }
   }, [kind]);
 
+  // 切 tab 时清空上一 tab 的搜索词；首轮挂载跳过——q= 深链在 useState 初始化时
+  // 预填了分享页带来的搜索词，这里立刻清空就退化了（点击去技能广场检索不生效的根因）。
+  const isFirstKindEffect = useRef(true);
   useEffect(() => {
+    if (isFirstKindEffect.current) {
+      isFirstKindEffect.current = false;
+      return;
+    }
     setSearchText('');
   }, [activeKind]);
 
@@ -253,13 +260,45 @@ export default function OpenPlatformPage({
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, []);
 
+  // 角标数量：独立轻接口，一次请求填满 5 个 tab。随 fetchAgents（enterprise/agents）同步
+  // 触发；挂载时也提前拼一次（兜底深链直进页面的时序）。
+  const galleryCountsFetchedRef = useRef(false);
+  const fetchGalleryCounts = useCallback(() => {
+    if (galleryCountsFetchedRef.current) return Promise.resolve();
+    galleryCountsFetchedRef.current = true;
+    // 后端 snake_case（general_skills），前端模块 key 是 'general-skills'，这里归一化。
+    return api
+      .get<Partial<Record<'agents' | 'knowledge' | 'general_skills' | 'skills' | 'tools', number>>>(
+        `/api/enterprise/gallery/counts?tenant_id=${TENANT_ID}`,
+      )
+      .then((rows) => {
+        // 字段缺失（旧后端）时保留 undefined，让 tab 回落到原有懒加载本地计数，而不是假 0。
+        setGalleryCounts({
+          agents: rows.agents,
+          knowledge: rows.knowledge,
+          'general-skills': rows.general_skills,
+          skills: rows.skills,
+          tools: rows.tools,
+        } as Record<PlatformKind, number>);
+      })
+      .catch((error: unknown) => {
+        // 允许重试：旧后端还没重启（404）时不至于永远没数字；下次 fetchAgents 时再拼。
+        galleryCountsFetchedRef.current = false;
+        if (import.meta.env.DEV) {
+          console.warn('[gallery] counts request failed; badges fall back to local counts', error);
+        }
+      });
+  }, []);
+
   const fetchAgents = useCallback(async (): Promise<AgentProfileRead[]> => {
     if (agentsCacheRef.current) return agentsCacheRef.current;
     const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
     agentsCacheRef.current = rows;
     setAgents(rows);
+    // 角标数量随 agents 列表一起取：与模块列表同周期，依次闹一次（成功后不再重复拉）。
+    void fetchGalleryCounts();
     return rows;
-  }, []);
+  }, [fetchGalleryCounts]);
 
   /**
    * 加载某个广场模块的数据。
@@ -281,7 +320,8 @@ export default function OpenPlatformPage({
       if (target === 'knowledge') {
         setKnowledgeBases(await api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}`));
       } else if (target === 'general-skills') {
-        setGeneralSkills(await api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}`));
+        // include_files=0：广场只要元信息，文件包内容单租户就有 MB 级体量
+        setGeneralSkills(await api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}&include_files=0`));
       } else if (target === 'skills') {
         const overall = agentRows.find((item) => item.is_overall);
         setSkills(overall
@@ -298,7 +338,7 @@ export default function OpenPlatformPage({
     } finally {
       inFlightKindsRef.current.delete(target);
     }
-  }, [fetchAgents, setKindState]);
+  }, [fetchAgents, fetchGalleryCounts, setKindState]);
 
   useEffect(() => {
     void loadKindData(activeKind);
@@ -394,10 +434,16 @@ export default function OpenPlatformPage({
       PLATFORM_CONFIGS.map((config) => ({
         value: config.kind,
         label: config.title,
-        // 懒加载下未访问过的模块还不知道数量，先不显示角标，避免假 0
-        count: kindStates[config.kind] === 'ready' ? platformItems[config.kind].length : undefined,
+        // 模块自身加载就绪时用本地列表长度（最准且随增删变化）；
+        // 否则用聚合计数接口的数字填满未访问模块的角标；两者都不可用则不显示。
+        count:
+          kindStates[config.kind] === 'ready'
+            ? platformItems[config.kind].length
+            : galleryCounts && galleryCounts[config.kind] !== undefined
+              ? galleryCounts[config.kind]
+              : undefined,
       })),
-    [kindStates, platformItems],
+    [galleryCounts, kindStates, platformItems],
   );
 
   function ensureTargetEmployee(): boolean {
@@ -434,6 +480,32 @@ export default function OpenPlatformPage({
     window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
     window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: agent.id } }));
     setAgentId(agent.id);
+  }
+
+  async function downloadPlazaSkillPackage(item: PlatformItem) {
+    // general-skills 分支的 deleteKey 就是技能 slug（见 platformItems 构造）
+    const slug = item.deleteKey || item.id;
+    setDownloadingSkill(item.deleteKey || item.id);
+    setTransfer({ label: `正在下载技能包 ${slug}.zip…`, percent: 0, receivedBytes: undefined });
+    try {
+      await downloadGeneralSkillPackage({
+        slug,
+        // 真实下载进度：XHR onprogress，无 Content-Length 时退化为已接收体积
+        onProgress: ({ percent, receivedBytes, totalBytes }) => {
+          setTransfer((current) => (current
+            ? percent >= 0 || totalBytes > 0
+              ? { ...current, percent: percent >= 0 ? percent : 0, receivedBytes }
+              : { ...current, percent: null, receivedBytes }
+            : current));
+        },
+      });
+      notify.success(`已下载技能包：${slug}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '技能包下载失败');
+    } finally {
+      setDownloadingSkill('');
+      setTransfer(null);
+    }
   }
 
   async function usePlatformItem(platformKind: PlatformKind, itemId?: string) {
@@ -586,6 +658,17 @@ export default function OpenPlatformPage({
         onPrev={() => navigateDetailItem(-1)}
         onNext={() => navigateDetailItem(1)}
         onDelete={() => setConfirmTarget({ kind: detailItem.kind, item })}
+        onDownload={
+          detailItem.kind === 'general-skills'
+            ? () => void downloadPlazaSkillPackage(item)
+            : undefined
+        }
+        downloading={Boolean(downloadingSkill) && detailItem.item.deleteKey === downloadingSkill}
+        downloadProgress={downloadingSkill && detailItem.item.deleteKey === downloadingSkill
+          ? transfer
+            ? { percent: transfer.percent, receivedBytes: transfer.receivedBytes }
+            : { percent: null }
+          : null}
         onUse={() => {
           setDetailItem(null);
           void usePlatformItem(detailItem.kind, item.id);
@@ -779,6 +862,37 @@ export default function OpenPlatformPage({
 
       {renderItemDrawer()}
       {renderConfirm()}
+
+      {transfer && (
+        <div aria-live="polite" className="fixed bottom-[24px] right-[24px] z-[60] w-[300px] rounded-[14px] border border-[#e4e9f2] bg-white/95 p-[14px] shadow-[0_8px_24px_rgba(0,0,0,0.12)]">
+          <p className="mb-[8px] flex items-center justify-between gap-[8px] text-[12px] text-[#464C5E]">
+            <span className="truncate">{transfer.label}</span>
+            <span className="tabular-nums text-[#757F9C]">
+              {transfer.percent !== null && transfer.percent > 0
+                ? `${transfer.percent}%`
+                : transfer.receivedBytes
+                  ? `已接收 ${(transfer.receivedBytes / 1_048_576).toFixed(1)} MB`
+                  : ''}
+            </span>
+          </p>
+          <div
+            role="progressbar"
+            aria-label="技能包下载进度"
+            aria-valuenow={transfer.percent ?? undefined}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            className="h-[6px] w-full overflow-hidden rounded-full bg-[#eef1f7]"
+          >
+            <div
+              className={cn(
+                'h-full rounded-full bg-[#18181a] transition-[width] duration-150',
+                (transfer.percent === null || transfer.percent === 0) && 'w-1/3 animate-pulse',
+              )}
+              style={transfer.percent !== null && transfer.percent > 0 ? { width: `${transfer.percent}%` } : undefined}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

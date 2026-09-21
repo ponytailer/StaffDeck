@@ -162,7 +162,7 @@ def test_gemini_driver_maps_http_errors_and_cancellation() -> None:
 
 def test_llm_client_builds_gemini_driver(monkeypatch) -> None:
     http_client = httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(200)))
-    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", lambda _value: "secret")
     monkeypatch.setattr("app.llm.client.httpx.Client", lambda **_kwargs: http_client)
     config = SimpleNamespace(
         api_protocol="gemini_generate_content",

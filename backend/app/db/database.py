@@ -61,16 +61,16 @@ _CAPABILITY_SCOPE_TABLES = (
 def init_db() -> None:
     import app.db.models  # noqa: F401
 
-    _configure_sqlite_runtime()
+    # _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
-    _migrate_sqlite_skill_schema()
-    _migrate_pg_api_key_schema()
-    _migrate_user_ldap_schema()
-    _migrate_user_department_manual()
-    _migrate_tenant_seed_fingerprint()
-    _migrate_model_custom_headers_schema()
-    _migrate_agent_usage_count()
-    _purge_orphaned_chat_sessions()
+    # _migrate_sqlite_skill_schema()
+    # _migrate_pg_api_key_schema()
+    # _migrate_user_ldap_schema()
+    # _migrate_user_department_manual()
+    # _migrate_tenant_seed_fingerprint()
+    # _migrate_model_custom_headers_schema()
+    # _migrate_agent_usage_count()
+    # _purge_orphaned_chat_sessions()
 
 
 def _purge_orphaned_chat_sessions() -> None:
@@ -575,6 +575,14 @@ def _migrate_sqlite_skill_schema() -> None:
 
         _migrate_knowledge_base_schema(conn, inspector, tables)
         _seed_default_agents(conn, tables)
+
+        if "general_skill_share_links" in tables:
+            share_columns = {column["name"] for column in inspector.get_columns("general_skill_share_links")}
+            if "files_json" not in share_columns:
+                conn.execute(text("ALTER TABLE general_skill_share_links ADD COLUMN files_json JSON"))
+                conn.execute(text("UPDATE general_skill_share_links SET files_json = '[]' WHERE files_json IS NULL"))
+            if "total_bytes" not in share_columns:
+                conn.execute(text("ALTER TABLE general_skill_share_links ADD COLUMN total_bytes INTEGER NOT NULL DEFAULT 0"))
 
         if legacy_table in tables and "skills" in tables:
             rows = conn.execute(text(f"SELECT * FROM {legacy_table}")).mappings().all()

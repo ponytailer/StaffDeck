@@ -358,7 +358,7 @@ def test_apply_and_admin_approve_flow():
         )
     assert approved.status == "approved"
     assert approved.api_key_masked
-    assert approved.api_url == "https://ai-gateway.folidaymall.com/v1/chat/completions"
+    assert approved.api_url == "https://ai-gateway.folidaymall.com/ailab/v1/chat/completions"
     assert approved.gateway_name == "主力网关"
     assert approved.quota_limit == 100000
     assert approved.quota_period == "month"
@@ -382,7 +382,7 @@ def test_apply_and_admin_approve_flow():
     mine_after = list_my_applications(tenant_id=TENANT, db=session, current_user=member)
     approved_mine = next(item for item in mine_after if item.status == "approved")
     assert approved_mine.api_key and approved_mine.api_key.startswith("sk-")
-    assert approved_mine.api_url == "https://ai-gateway.folidaymall.com/v1/chat/completions"
+    assert approved_mine.api_url == "https://ai-gateway.folidaymall.com/ailab/v1/chat/completions"
 
     # 7) approving a non-pending application fails
     already = False
@@ -528,7 +528,7 @@ def test_approve_mock_mode_success():
         current_user=admin,
     )
     assert approved.status == "approved"
-    assert approved.api_url == "https://ai-gateway.folidaymall.com/v1/chat/completions"
+    assert approved.api_url == "https://ai-gateway.folidaymall.com/ailab/v1/chat/completions"
     # 新流程：审批创建全新消费者（mock 分支返回 cs-mock-xxx 新 ID）
     assert approved.consumer_id.startswith("cs-mock-")
     assert approved.consumer_name == "demo-consumer"

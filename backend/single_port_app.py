@@ -502,3 +502,11 @@ def enterprise_app(path: str = "") -> FileResponse:
 @app.get("/workspace/{path:path}", include_in_schema=False)
 def chat_app(path: str = "") -> FileResponse:
     return spa_index_response(ENTERPRISE_DIST / "index.html")
+
+
+@app.get("/share", include_in_schema=False)
+@app.get("/share/{path:path}", include_in_schema=False)
+def share_app(path: str = "") -> FileResponse:
+    # 数字员工分享落地页：免登录 SPA 路由（App.tsx 的 /share/:token）。
+    # 没有这条路由的话，访客打开分享链接会拿到 FastAPI 的 {"detail":"Not Found"}。
+    return spa_index_response(ENTERPRISE_DIST / "index.html")

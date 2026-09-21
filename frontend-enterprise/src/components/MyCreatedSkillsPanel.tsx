@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Ban, CircleCheck } from 'lucide-react';
+import { Ban, CircleCheck, Download, Share2 } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -11,6 +11,8 @@ import {
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
+import { SkillShareDialog } from './SkillShareDialog';
+import { downloadGeneralSkillPackage } from '../lib/skill-package';
 import {
   announceEnterpriseCapabilityCatalogChange,
   subscribeEnterpriseCapabilityCatalogRefresh,
@@ -79,11 +81,13 @@ export default function MyCreatedSkillsPanel({
   const [loading, setLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<GeneralSkillRead | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 分享/下载与广场一致：published 才可分享，弹窗负责生成/复制公开链接
+  const [shareTarget, setShareTarget] = useState<GeneralSkillRead | null>(null);
 
   const load = () => {
     setLoading(true);
     return api
-      .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}&mine=1`)
+      .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}&mine=1&include_files=0`)
       .then(setRows)
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载我的技能失败'))
       .finally(() => setLoading(false));
@@ -120,7 +124,9 @@ export default function MyCreatedSkillsPanel({
 
   function editRouteFor(row: GeneralSkillRead): string {
     // 广场技能只能从广场进入编辑器，否则编辑器会按员工作用域解析、返回时掉出广场。
-    const scopeQuery = skillOwnerAgentId(row) ? '' : '?scope=gallery';
+    // return=employee_skills：明确告诉编辑器「我是从数字员工-技能管理进来的」——
+    // 返回按钮去技能管理 tab，而不是被 forceGalleryScope 拉到平台广场。
+    const scopeQuery = skillOwnerAgentId(row) ? '' : '?scope=gallery&return=employee_skills';
     return `/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit${scopeQuery}`;
   }
 
@@ -135,6 +141,19 @@ export default function MyCreatedSkillsPanel({
       announceEnterpriseCapabilityCatalogChange({ resourceType: 'skill', agentId: agentId || undefined });
     } catch (error) {
       notify.error(error instanceof Error ? error.message : published ? '启用失败' : '停用失败');
+    }
+  }
+
+  /** 广场/员工技能同一套 zip 下载（share 的 agentSuffix 只影响广场可见性口径）。 */
+  async function downloadSkillPackage(row: GeneralSkillRead) {
+    try {
+      await downloadGeneralSkillPackage({
+        slug: row.slug,
+        agentId: skillOwnerAgentId(row) || null,
+      });
+      notify.success(`已下载技能包：${row.slug}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '技能包下载失败');
     }
   }
 
@@ -170,6 +189,16 @@ export default function MyCreatedSkillsPanel({
           <IconMore className="size-3.5" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className={MENU_CONTENT_CLASS}>
+          <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void downloadSkillPackage(row)}>
+            <Download />
+            下载
+          </DropdownMenuItem>
+          {published && (
+            <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => setShareTarget(row)}>
+              <Share2 />
+              分享
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => navigate(editRouteFor(row))}>
             <IconEdit />
             编辑
@@ -349,6 +378,12 @@ export default function MyCreatedSkillsPanel({
         }
         confirmText={deleteTarget && skillOwnerAgentId(deleteTarget) ? '移除' : '删除'}
         onConfirm={() => void confirmDelete()}
+      />
+
+      <SkillShareDialog
+        skill={shareTarget}
+        open={Boolean(shareTarget)}
+        onClose={() => setShareTarget(null)}
       />
     </section>
   );

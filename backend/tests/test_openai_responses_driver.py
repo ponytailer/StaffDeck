@@ -167,7 +167,7 @@ def test_llm_client_selects_responses_driver(monkeypatch) -> None:
     responses = _Responses(response=response)
     fake_client = SimpleNamespace(responses=responses)
     captured = {}
-    monkeypatch.setattr("app.llm.client.decrypt_secret", lambda _value: "secret")
+    monkeypatch.setattr("app.llm.client.try_decrypt_secret", lambda _value: "secret")
     monkeypatch.setattr(
         "app.llm.client.OpenAI",
         lambda **kwargs: captured.update(kwargs) or fake_client,

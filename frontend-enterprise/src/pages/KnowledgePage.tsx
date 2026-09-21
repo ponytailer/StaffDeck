@@ -61,7 +61,7 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
-import { DIALOG_CANCEL_BUTTON_CLASS, DIALOG_FOOTER_CLASS, DIALOG_PRIMARY_BUTTON_CLASS, MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_ITEM_DANGER_CLASS, MOBILE_CARD_CLASS, OUTLINE_ACTION_BUTTON_CLASS, OUTLINE_ACTION_BUTTON_SM_CLASS, SEARCH_COMBO_BUTTON_CLASS, SEARCH_COMBO_CLASS, SEARCH_COMBO_INPUT_CLASS, SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
+import { DIALOG_CANCEL_BUTTON_CLASS, DIALOG_FOOTER_CLASS, DIALOG_PRIMARY_BUTTON_CLASS, MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_ITEM_DANGER_CLASS, MOBILE_CARD_CLASS, OUTLINE_ACTION_BUTTON_CLASS, OUTLINE_ACTION_BUTTON_SM_CLASS, SEARCH_COMBO_BUTTON_CLASS, SEARCH_COMBO_CLASS, SEARCH_COMBO_INPUT_CLASS, SELECT_TRIGGER_CLASS, formatDate } from '@/lib/enterprise-ui';
 import {
   clearSharedAgentScope,
   emitAgentScopeChange,
@@ -177,6 +177,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   const [documents, setDocuments] = useState<KnowledgeDocumentRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocumentRead | null>(null);
+  const [ingestPollTick, setIngestPollTick] = useState(0);
   const [buckets, setBuckets] = useState<KnowledgeBucketRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [agentId, setAgentId] = useState(readEmployeeScope);
@@ -329,16 +330,29 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   // 入库期间轮询文档进度：目录索引/知识图谱/引用来源三块产物都在入库**最后一步**
   // 才写库，此前接口只会返回 0。没有轮询时，用户对着 0/0/0 等 3~10 分钟，会判定
   // 「文档处理失败」并删库重传（2026-09-14 实测真实发生）。
-  // 依赖只取 id/status 两个原始值：状态转为 ready/failed 后本效果自然停止续期。
+  //
+  // 续期方式：每次轮询完成后无条件 +1 tick 触发本效果重跑。**不能**只依赖
+  // [id, status] 两个原始值 —— processing 阶段 status 长时间不变，效果不会重跑，
+  // 轮询在第一次刷新后就永久停摆（0/0/0 卡死），这正是这次修掉的回归。
+  // 终态由上面的状态白名单兜住：转成 ready/failed 后效果直接不再续期。
+  const selectedDocumentRef = useRef<KnowledgeDocumentRead | null>(selectedDocument);
+  selectedDocumentRef.current = selectedDocument;
+  const ingestPolling = Boolean(
+    selectedDocument
+      && ['queued', 'pending', 'processing', 'cancel_requested'].includes(
+        String(selectedDocument.status || ''),
+      ),
+  );
   useEffect(() => {
-    const target = selectedDocument;
-    if (!target) return;
-    if (!['queued', 'pending', 'processing', 'cancel_requested'].includes(String(target.status || ''))) {
-      return;
-    }
-    const timer = window.setTimeout(() => void refreshDocumentProgress(target), INGEST_POLL_INTERVAL_MS);
+    if (!ingestPolling) return;
+    const timer = window.setTimeout(async () => {
+      const latest = selectedDocumentRef.current;
+      if (!latest) return;
+      await refreshDocumentProgress(latest);
+      setIngestPollTick((tick) => tick + 1);
+    }, INGEST_POLL_INTERVAL_MS);
     return () => window.clearTimeout(timer);
-  }, [selectedDocument?.id, selectedDocument?.status]);
+  }, [ingestPolling, selectedDocument?.id, ingestPollTick]);
 
   useEffect(() => {
     if (searchParams.get('add') !== 'plaza') return;
@@ -1585,7 +1599,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
             { key: 'name', title: '名称', render: (row) => row.name },
             { key: 'status', title: '状态', render: (row) => statusTag(String(row.status)) },
             { key: 'is_head', title: 'Head', render: (row) => (row.is_head ? <KTag color="green">当前</KTag> : null) },
-            { key: 'updated_at', title: '更新时间', render: (row) => String(row.updated_at).slice(0, 10) },
+            { key: 'updated_at', title: '更新时间', render: (row) => formatDate(row.updated_at) },
             {
               key: 'actions',
               title: '操作',

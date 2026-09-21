@@ -293,9 +293,12 @@ export default function ModelsPage({
 
   useEffect(() => {
     void load();
+    // 这两个都是「锦上添花」的次级请求：失败时保留组件内已有的默认选项即可，
+    // 但不能没有 catch —— 否则会变成 unhandled rejection。两个请求保持一致。
     void api
       .get<{ protocols: ModelForm['api_protocol'][] }>(`/api/enterprise/model-configs/protocols?tenant_id=${TENANT_ID}`)
-      .then((result) => setAvailableProtocols(result.protocols));
+      .then((result) => setAvailableProtocols(result.protocols))
+      .catch(() => {});
     void api
       .get<{ models: string[] }>(`/api/enterprise/model-configs/presets?tenant_id=${TENANT_ID}`)
       .then((result) => setAvailableModels(result.models))

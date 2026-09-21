@@ -22,6 +22,7 @@ import type { AgentProfileRead } from '../../types';
 
 import PlatformEmployeeCard, { type PlatformStat } from './PlatformEmployeeCard';
 import PlatformResourceCard, { type PlatformResourceAccent } from './PlatformResourceCard';
+import { PlatformGridSkeleton } from './PlatformSkeletons';
 
 export type PlatformDetailKind = 'agents' | 'knowledge' | 'general-skills' | 'skills' | 'tools';
 
@@ -70,20 +71,7 @@ export type PlatformKindDetailViewProps = {
 };
 
 function DetailSkeleton({ kind }: { kind: PlatformDetailKind }) {
-  const cardHeight = kind === 'agents' ? 'h-[140px]' : 'h-[112px]';
-  return (
-    <div className="grid grid-cols-1 gap-[16px] sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-      {Array.from({ length: 8 }, (_, index) => (
-        <div
-          key={index}
-          className={cn(
-            'w-full animate-pulse rounded-[20px] border-[0.5px] border-[#f0f1f5] bg-[#f6f6f6]',
-            cardHeight,
-          )}
-        />
-      ))}
-    </div>
-  );
+  return <PlatformGridSkeleton kind={kind} />;
 }
 
 /**

@@ -8,7 +8,10 @@ from fastapi import HTTPException
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.api.chat import download_harness_artifact
+from app.api.chat import (
+    download_harness_artifact,
+    download_harness_task_artifacts_zip,
+)
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.db.models import (
     ChatSession,
@@ -372,3 +375,72 @@ def test_secure_open_rejects_file_and_parent_symlinks(
     with pytest.raises(HarnessArtifactAccessError):
         open_harness_artifact(workspace, "linked-directory/secret.txt")
     assert (external / "secret.txt").read_text(encoding="utf-8") == "outside"
+
+
+def test_zip_download_packs_all_published_files_from_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    import zipfile
+
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        user = _seed_artifact(db)
+        workspace = harness_task_workspace_path(
+            tenant_id="tenant_demo",
+            session_id="session_demo",
+            task_frame_id="task_demo",
+        )
+        (workspace / "reports").mkdir(parents=True)
+        (workspace / "reports" / "result.txt").write_text("artifact body", encoding="utf-8")
+        (workspace / "final.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+        published = publish_harness_artifacts(
+            workspace,
+            "task_demo",
+            [{"path": "reports/result.txt"}, {"path": "final.csv"}],
+            operation="general_skill",
+        )
+        assistant = db.get(Message, "msg_assistant")
+        assert assistant is not None
+        assistant.metadata_json = {"harness_artifacts": published}
+        db.add(assistant)
+        db.commit()
+
+        response = download_harness_task_artifacts_zip(
+            "session_demo",
+            "task_demo",
+            tenant_id="tenant_demo",
+            current_user=user,
+            db=db,
+        )
+
+        assert response.media_type == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(bytes(response.body))) as archive:
+            names = archive.namelist()
+            # zip 内路径 = 工作区相对路径（保目录结构）；display_name 仅在登录后
+            # 单文件下载头里用，打包保持真实路径避免两个文件同名互相覆盖
+            assert "reports/result.txt" in names
+            assert "final.csv" in names
+            assert archive.read("reports/result.txt") == b"artifact body"
+            assert archive.read("final.csv") == b"a,b\n1,2\n"
+
+
+def test_zip_download_is_404_without_published_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        user = _seed_artifact(db)
+        with pytest.raises(HTTPException) as exc:
+            download_harness_task_artifacts_zip(
+                "session_demo",
+                "task_demo",
+                tenant_id="tenant_demo",
+                current_user=user,
+                db=db,
+            )
+        assert exc.value.status_code == 404

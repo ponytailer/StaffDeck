@@ -378,7 +378,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [lastTurn, setLastTurn] = useState<ChatTurnResponse | null>(null);
   const [renameSession, setRenameSession] = useState<ChatSession | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
+  const [savingRename, setSavingRename] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ChatSession | null>(null);
+  const [deletingSession, setDeletingSession] = useState(false);
   const [storeTick, setStoreTick] = useState(0);
   const [streamTick, setStreamTick] = useState(0);
   const [traceTick, setTraceTick] = useState(0);
@@ -626,8 +628,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     || null
   );
   // 模型管理已开放给所有成员：每个人管理自己的模型。
-  const canConfigureModels = Boolean(auth?.user);
-  const showModelSetupNotice = !modelConfigsLoading && !modelConfigsLoadError && !selectedModelConfig;
+  const canConfigureModels = Boolean(auth?.user) && !shareMode;
+  // 分享访客的模型在分享创建时已锁定（后端在对话链路强制注入），不应出现“配置模型”提示。
+  const showModelSetupNotice = !shareMode && !modelConfigsLoading && !modelConfigsLoadError && !selectedModelConfig;
   const modelSetupNoticeText = t('当前账号还没有可用模型，发送消息前请先完成模型配置。');
 
   useEffect(() => {
@@ -1304,11 +1307,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const handleMissingSession = useCallback((id: string) => {
     forgetMissingSession(id);
     loadSessions();
-    if (sessionId === id && !embedded) {
+    // 分享访客没有站内路由可回退，留在 /share/<token> 由分享 surface 兜底展示。
+    if (sessionId === id && !embedded && !shareMode) {
       pendingPromotedSessionIdRef.current = null;
       navigate('/workspace/gallery', { replace: true });
     }
-  }, [embedded, forgetMissingSession, loadSessions, navigate, sessionId]);
+  }, [embedded, forgetMissingSession, loadSessions, navigate, sessionId, shareMode]);
 
   const loadMessages = useCallback((id: string) => {
     const coalesceKey = `messages:${id}`;
@@ -1920,21 +1924,34 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, []);
 
   const saveRename = useCallback(async () => {
-    if (!renameSession) return;
+    if (!renameSession || savingRename) return;
     const title = renameTitle.trim();
     if (!title) {
       notify.warning('请输入会话名称');
       return;
     }
-    const updated = await api.put<ChatSession>(`/api/chat/sessions/${renameSession.id}`, {
-      tenant_id: tenantId,
-      title,
-    });
-    setSessions((items) => items.map((item) => (item.id === updated.id ? updated : item)));
-    setRenameSession(null);
-    setRenameTitle('');
-    notify.success('已重命名');
-  }, [renameSession, renameTitle, tenantId]);
+    // 之前这里没有 try/catch：接口失败会变成 unhandled rejection，弹窗不关也没有提示，
+    // 用户只会觉得「点了没反应」；同时 Enter 连按会重复发 PUT。两者一起修掉。
+    setSavingRename(true);
+    try {
+      const updated = await api.put<ChatSession>(`/api/chat/sessions/${renameSession.id}`, {
+        tenant_id: tenantId,
+        title,
+      });
+      setSessions((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      setRenameSession(null);
+      setRenameTitle('');
+      notify.success('已重命名');
+    } catch (error) {
+      if (isAuthError(error)) {
+        redirectToLogin();
+        return;
+      }
+      notify.error(error instanceof Error ? error.message : '重命名失败');
+    } finally {
+      setSavingRename(false);
+    }
+  }, [redirectToLogin, renameSession, renameTitle, savingRename, tenantId]);
 
   const requestDelete = useCallback((session: ChatSession) => {
     setPendingDelete(session);
@@ -1942,8 +1959,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
 
   const confirmDeleteSession = useCallback(async () => {
     const target = pendingDelete;
-    if (!target) return;
-    setPendingDelete(null);
+    if (!target || deletingSession) return;
+    setDeletingSession(true);
     const stream = getStreamSlot(target.id);
     stream.abortController?.abort();
     streamRef.current.delete(target.id);
@@ -1954,6 +1971,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       if (target.id === sessionId) {
         navigate(CHAT_BASE_PATH);
       }
+      // 成功才收弹窗：失败时把目标留在弹窗里，用户可以直接重试。
+      setPendingDelete(null);
       notify.success('已删除');
     } catch (error) {
       if (isAuthError(error)) {
@@ -1961,8 +1980,10 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         return;
       }
       notify.error(error instanceof Error ? error.message : '删除失败');
+    } finally {
+      setDeletingSession(false);
     }
-  }, [forgetMissingSession, getStreamSlot, navigate, pendingDelete, redirectToLogin, sessionId, tenantId]);
+  }, [deletingSession, forgetMissingSession, getStreamSlot, navigate, pendingDelete, redirectToLogin, sessionId, tenantId]);
 
   const abortStream = useCallback(() => {
     if (!activeConversationId) return;
@@ -3289,7 +3310,11 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       ));
       notifyStore();
       notifyStream();
-      navigate(chatSessionPath(nextSessionId), { replace: true });
+      // 分享访客的 URL 必须留在 /share/<token>：跳 /workspace/chat/<id> 会让访客
+      // 离开免登录 surface（也无权访问该路由）。分享页只沿内存中的 promoted id 走。
+      if (!shareMode) {
+        navigate(chatSessionPath(nextSessionId), { replace: true });
+      }
       loadSessions();
     };
 
@@ -3494,7 +3519,16 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       return;
     }
     const activeSession = sessionId ? sessions.find((item) => item.id === sessionId) || null : null;
-    if (!isDraftConversation && !activeSession && !optimisticSessionIdsRef.current.has(currentConversationId)) {
+    // 分享页面路由不携带 sessionId（URL 恒为 /share/<token>）；promoted 后的会话 id
+    // 只存在于内存。守卫用三种途径识别「对该会话有发言权」：路由能找到 activeSession、
+    // 乐观插入尚未被 loadSessions 确认、或 loadSessions 已确认过该会话存在
+    // （knownSessionIdsRef）——最后一种同时覆盖分享 promoted 会话与站内深链场景。
+    if (
+      !isDraftConversation
+      && !activeSession
+      && !optimisticSessionIdsRef.current.has(currentConversationId)
+      && !knownSessionIdsRef.current.has(currentConversationId)
+    ) {
       if (sessionsLoading || handoffsLoading) {
         notify.warning('任务信息还在加载，请稍后再发送');
       } else {
@@ -3716,8 +3750,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     auth,
     SHOW_DEBUG,
     lastTurn,
+    // 分享访客不展示「知识来源」引用卡片：来源指向站内知识库，对外不可见
+    hideKnowledgeCitations: shareMode,
     // sessions + agents
-    sessions,
     sessionsLoading,
     visibleSidebarSessions,
     agents,
@@ -3812,10 +3847,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     renameTitle,
     setRenameTitle,
     saveRename,
+    savingRename,
     // delete dialog
     pendingDelete,
     setPendingDelete,
     confirmDeleteSession,
+    deletingSession,
     // handoff
     handoffs,
     handoffsLoading,

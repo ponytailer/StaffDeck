@@ -12,10 +12,11 @@ import {
 import type { ChangeEvent, DragEvent, HTMLAttributes, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Ban, ChevronRight, CircleCheck, Copy, Download, Eye, EyeOff, FilePlus2, FolderPlus, Users } from 'lucide-react';
+import { Ban, ChevronRight, CircleCheck, Copy, Download, Eye, EyeOff, FilePlus2, FolderPlus, Share2, Users } from 'lucide-react';
 import { ContextMenu } from 'radix-ui';
 
 import { api, streamPost, TENANT_ID } from '../api/client';
+import { downloadGeneralSkillPackage } from '../lib/skill-package';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
 import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
@@ -25,6 +26,7 @@ import {
   normalizeCapabilityScope,
 } from '@/components/CapabilityScopeControl';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { SkillShareDialog } from '@/components/SkillShareDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
 import { Paginator } from '@/components/Paginator';
@@ -290,18 +292,6 @@ function isSkillPackageArchive(file: File): boolean {
   return name.endsWith('.zip') || type === 'application/zip' || type === 'application/x-zip-compressed';
 }
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const value = String(reader.result || '');
-      resolve(value.includes(',') ? value.split(',', 2)[1] : value);
-    };
-    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
-    reader.readAsDataURL(file);
-  });
-}
-
 function RunCodePanel({
   title,
   code,
@@ -344,7 +334,11 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState<GeneralSkillRead[]>([]);
   const [loading, setLoading] = useState(false);
-  const [searchText, setSearchText] = useState('');
+  const [searchText, setSearchText] = useState(() => {
+    // 支持 ?q= 深链（如技能分享页「去技能广场查看」带上技能名）：进页面即预填搜索词，
+    // 广场自动过滤出目标技能；用户可随时清空改查。
+    return new URLSearchParams(window.location.search).get('q') || '';
+  });
   const [statusFilter, setStatusFilter] = useState<'all' | GeneralSkillRead['status']>('all');
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [isOverallAgent, setIsOverallAgent] = useState(true);
@@ -356,6 +350,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   const [agentImportOpen, setAgentImportOpen] = useState(false);
   const [agentImportMode, setAgentImportMode] = useState<GeneralSkillImportMode>('plaza');
   const [agentImportLoading, setAgentImportLoading] = useState(false);
+  const [agentImportProgress, setAgentImportProgress] = useState<{ done: number; total: number; current: string } | null>(null);
   const [agentImportAgents, setAgentImportAgents] = useState<AgentProfileRead[]>([]);
   const [agentImportSourceAgentId, setAgentImportSourceAgentId] = useState('');
   const [agentImportSourceSkills, setAgentImportSourceSkills] = useState<GeneralSkillRead[]>([]);
@@ -364,6 +359,12 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   const [deleteTarget, setDeleteTarget] = useState<GeneralSkillRead | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [missingRefsPrompt, setMissingRefsPrompt] = useState<MissingReferencesPrompt | null>(null);
+  // 大包下载进度浮层（percent=null 且 receivedBytes>0 = 响应无 Content-Length）
+  const [transfer, setTransfer] = useState<{ label: string; percent: number | null; receivedBytes?: number } | null>(null);
+  // 技能分享：当前分享的目标技能 + 已生成的 token（弹窗内展示/复制链接）
+  const [shareDialogRow, setShareDialogRow] = useState<GeneralSkillRead | null>(null);
+  const [shareToken, setShareToken] = useState('');
+  const [shareCreating, setShareCreating] = useState(false);
 
   /** 命中「缺参考文件」的 400 时挂起二次确认；返回 true 表示已接管错误提示。 */
   function promptForMissingReferences(error: unknown, retry: () => void | Promise<void>): boolean {
@@ -398,7 +399,8 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
     setLoading(true);
     return api
-      .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentSuffix}`)
+      // include_files=0：列表只用元信息启停/跳转，文件包单租户 MB 级，拉全量根本不需要
+      .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentSuffix}&include_files=0`)
       .then(setRows)
       .catch((error) => notify.error(error.message))
       .finally(() => setLoading(false));
@@ -500,24 +502,39 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   }
 
   async function downloadSkillPackage(row: GeneralSkillRead) {
-    // 广场作用域（isOverallAgent）不带 agent_id —— 后端据此走「开放广场」可见性分支
-    const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    // 大包下载可能持续几十秒：显示真实下载进度条，不再「傻等」
+    setTransfer({ label: `正在下载技能包 ${row.slug}.zip…`, percent: 0 });
     try {
-      const blob = await api.blob(
-        `/api/enterprise/general-skills/${encodeURIComponent(row.slug)}/package?tenant_id=${TENANT_ID}${agentSuffix}`,
-      );
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${row.slug}.zip`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+      await downloadGeneralSkillPackage({
+        slug: row.slug,
+        // 广场作用域（isOverallAgent）不带 agent_id —— 后端据此走「开放广场」可见性分支
+        agentId: isOverallAgent ? null : agentId,
+        onProgress: ({ percent, receivedBytes, totalBytes }) => {
+          if (percent >= 0) {
+            setTransfer((current) => (current ? { ...current, percent } : current));
+          } else if (totalBytes === 0 && receivedBytes > 0) {
+            // 无 Content-Length：只展示已接收体积
+            setTransfer((current) => (current
+              ? { ...current, percent: null, receivedBytes }
+              : current));
+          }
+        },
+      });
       notify.success(`已下载技能包：${row.slug}`);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '技能包下载失败');
+    } finally {
+      setTransfer(null);
     }
+  }
+
+  /**
+   * 分享技能：请求后端拿 token，弹出复制链接。published 才可分享；
+   * 只有创建者/管理员能看到「分享」入口（菜单里已过滤），这里再拦一次权限错误。
+   */
+  async function requestSkillShare(row: GeneralSkillRead) {
+    setShareDialogRow(row);
+    setShareToken('');
   }
 
   async function confirmDeleteSkill() {
@@ -583,11 +600,16 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     if (!sourceAgentId) return [];
     try {
       const sourceRows = await api.get<GeneralSkillRead[]>(
-        `/api/enterprise/general-skills?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(sourceAgentId)}`,
+        `/api/enterprise/general-skills?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(sourceAgentId)}&include_files=0`,
       );
       const existingIds = new Set(rows.map((item) => item.id));
-      const publishedRows = sourceRows.filter((item) => item.status === 'published' && !existingIds.has(item.id));
-      setAgentImportSourceSkills(publishedRows);
+      // 已绑到当前员工的技能也要展示（disabled + 「已添加」标记）：全部静默过滤掉会
+      // 让「从广场复制」弹窗明明有技能力却一片空白，看起来像没有可用技能。
+      const publishedRows = sourceRows.filter((item) => item.status === 'published');
+      setAgentImportSourceSkills(publishedRows.map((item) => ({
+        ...item,
+        __is_bound: existingIds.has(item.id),
+      })));
       return publishedRows;
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载来源技能失败');
@@ -610,19 +632,39 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     }
     setAgentImportLoading(true);
     try {
-      await api.post(`/api/enterprise/agents/${encodeURIComponent(agentId)}/resources/import`, {
-        tenant_id: TENANT_ID,
-        source_agent_id: agentImportSourceAgentId,
-        resource_type: 'general_skill',
-        resource_ids: agentImportSelectedSkillIds,
-      });
-      notify.success(`已复制 ${agentImportSelectedSkillIds.length} 个技能`);
+      // 大包复制服务端耗时与单个技能包体积成正比，一批一 POST 无法展示真实进度。
+      // 改为逐个提交：每完成 1 个推进一格，进度是真实的；失败项不中断整批。
+      const done: string[] = [];
+      const failed: string[] = [];
+      for (const [index, resourceId] of agentImportSelectedSkillIds.entries()) {
+        const sourceSkill = agentImportSourceSkills.find((item) => item.id === resourceId);
+        setAgentImportProgress({ done: index, total: agentImportSelectedSkillIds.length, current: sourceSkill?.name || '' });
+        try {
+          await api.post(`/api/enterprise/agents/${encodeURIComponent(agentId)}/resources/import`, {
+            tenant_id: TENANT_ID,
+            source_agent_id: agentImportSourceAgentId,
+            resource_type: 'general_skill',
+            resource_ids: [resourceId],
+          });
+          done.push(resourceId);
+        } catch (error) {
+          console.warn('复制技能失败', sourceSkill?.name || resourceId, error);
+          failed.push(sourceSkill?.name || resourceId);
+        }
+      }
+      setAgentImportProgress({ done: agentImportSelectedSkillIds.length, total: agentImportSelectedSkillIds.length, current: '' });
+      if (failed.length) {
+        notify.error(`已复制 ${agentImportSelectedSkillIds.length - failed.length} 个，失败 ${failed.length} 个：${failed.slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}`);
+      } else {
+        notify.success(`已复制 ${done.length} 个技能`);
+      }
       setAgentImportOpen(false);
       await load();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '复制技能失败');
     } finally {
       setAgentImportLoading(false);
+      setAgentImportProgress(null);
     }
   }
 
@@ -688,6 +730,15 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
             <Download />
             下载
           </DropdownMenuItem>
+          {published && (
+            <DropdownMenuItem
+              className={MENU_ITEM_CLASS}
+              onSelect={() => void requestSkillShare(row)}
+            >
+              <Share2 />
+              分享
+            </DropdownMenuItem>
+          )}
           {canManage && (
             <>
               <DropdownMenuItem
@@ -833,10 +884,10 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
 
   return (
     <div className={embedded ? undefined : 'min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]'}>
-      {!embedded && (
-        <>
-          <AppHeader onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />
-          <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
+      {!embedded && <AppHeader onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />}
+      {/* embedded（数字员工档案页 skills tab）也要有添加/刷新入口：员工作用域下的
+          「从广场复制」就是“把已有技能绑到该员工身上”的唯一路径 */}
+      <div className={embedded ? 'mb-[16px] flex items-center justify-end gap-[12px]' : 'mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]'}>
             <UIButton
               variant="outline"
               onClick={() => void load()}
@@ -850,18 +901,20 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
               <DropdownMenu>
                 <DropdownMenuTrigger data-guide-target="skills-create" className="flex h-[34px] items-center gap-[4px] rounded-[10px] bg-[#18181a] px-[20px] text-[12px] font-normal text-white outline-none transition-colors hover:bg-[#303030]">
                   <IconAdd className="size-[14px]" />
-                  新增
+                  {isOverallAgent ? '新增' : '添加技能'}
                   <IconChevronDown className="size-[12px]" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className={MENU_CONTENT_CLASS}>
-                  <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => navigate('/enterprise/general-skills/new')}>
-                    <IconAdd />
-                    新建技能
-                  </DropdownMenuItem>
+                  {isOverallAgent && (
+                    <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => navigate('/enterprise/general-skills/new')}>
+                      <IconAdd />
+                      新建技能
+                    </DropdownMenuItem>
+                  )}
                   {!isOverallAgent && (
                     <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void requestAgentImport('plaza')}>
                       <Copy />
-                      从广场复制
+                      从广场添加已有技能
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => requestClawHubImport()}>
@@ -877,9 +930,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
-          </div>
-        </>
-      )}
+      </div>
 
       <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-[#FFF] p-[18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
         <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="技能统计">
@@ -975,6 +1026,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
       <ResourceImportDialog
         open={agentImportOpen}
         loading={agentImportLoading}
+        progress={agentImportProgress}
         icon={<IconSkill className="size-[14px] shrink-0" />}
         title={agentImportMode === 'plaza' ? '从广场复制技能' : '从数字员工复制技能'}
         sourcePlaceholder={agentImportMode === 'plaza' ? '选择开放广场' : '选择复制来源'}
@@ -986,6 +1038,8 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         itemsLabel="选择技能"
         items={agentImportSourceSkills.map((item) => ({
           id: item.id,
+          disabled: Boolean((item as { __is_bound?: boolean }).__is_bound),
+          disabledHint: '已添加到当前员工',
           label: (
             <>
               {item.name}
@@ -1015,6 +1069,12 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         onConfirm={confirmMissingReferences}
       />
 
+      <SkillShareDialog
+        skill={shareDialogRow}
+        open={Boolean(shareDialogRow)}
+        onClose={() => setShareDialogRow(null)}
+      />
+
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
@@ -1028,6 +1088,38 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         confirmText={isOverallAgent ? '删除' : '移除'}
         onConfirm={() => void confirmDeleteSkill()}
       />
+
+      {transfer && (
+        <div aria-live="polite" className="fixed bottom-[24px] right-[24px] z-50 w-[300px] rounded-[14px] border border-[#e4e9f2] bg-white/95 p-[14px] shadow-[0_8px_24px_rgba(0,0,0,0.12)]">
+          <p className="mb-[8px] flex items-center justify-between gap-[8px] text-[12px] text-[#464C5E]">
+            <span className="truncate">{transfer.label}</span>
+            <span className="tabular-nums text-[#757F9C]">
+              {transfer.percent !== null
+                ? `${transfer.percent}%`
+                : transfer.receivedBytes
+                  ? `已接收 ${(transfer.receivedBytes / 1_048_576).toFixed(1)} MB`
+                  : ''}
+            </span>
+          </p>
+          <div
+            role="progressbar"
+            aria-label="技能包下载进度"
+            aria-valuenow={transfer.percent ?? undefined}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            className="h-[6px] w-full overflow-hidden rounded-full bg-[#eef1f7]"
+          >
+            <div
+              className={cn(
+                'h-full rounded-full bg-[#18181a] transition-[width] duration-150',
+                // 无 Content-Length 时宽度未知：用流动条纹表达“进行中”
+                transfer.percent === null && 'w-1/3 animate-pulse',
+              )}
+              style={transfer.percent !== null ? { width: `${transfer.percent}%` } : undefined}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1565,6 +1657,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     () => window.localStorage.getItem(`${GENERAL_SKILL_RUN_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
   );
   const [loading, setLoading] = useState(false);
+  // 两段加载的第二段：完整文件包（MB 级）拉取中，文件树区显示骨架提示
+  const [filesLoading, setFilesLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [selectedFilePath, setSelectedFilePath] = useState('SKILL.md');
@@ -1573,9 +1667,14 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [clawhubModalOpen, setClawhubModalOpen] = useState(false);
   const [clawhubSource, setClawhubSource] = useState('');
   const [clawhubLoading, setClawhubLoading] = useState(false);
+  // zip / Markdown 包上传进度（0-100），仅在上传期间展示
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  // 双阶段：uploading = 字节上传中（0-95），parsing = 服务端解析中（96-100）
+  const [uploadStage, setUploadStage] = useState<'uploading' | 'parsing'>('uploading');
   const [agentImportOpen, setAgentImportOpen] = useState(false);
   const [agentImportMode, setAgentImportMode] = useState<GeneralSkillImportMode>('plaza');
   const [agentImportLoading, setAgentImportLoading] = useState(false);
+  const [agentImportProgress, setAgentImportProgress] = useState<{ done: number; total: number; current: string } | null>(null);
   const [agentImportAgents, setAgentImportAgents] = useState<AgentProfileRead[]>([]);
   const [agentImportSourceAgentId, setAgentImportSourceAgentId] = useState('');
   const [agentImportSourceSkills, setAgentImportSourceSkills] = useState<GeneralSkillRead[]>([]);
@@ -1626,10 +1725,15 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       ? canManageEmployeeAgent(currentAgent, currentUser)
       : isEnterpriseAdmin(currentUser);
   // 从开放广场「技能广场」进入（?scope=gallery）时，返回/新建都应回到广场列表，
-  // 而不是员工技能列表（enterprise/general-skills）。
-  const skillsLandingRoute = forceGalleryScope
-    ? '/enterprise/platform/general-skills'
-    : '/enterprise/general-skills';
+  // 而不是员工技能列表（enterprise/general-skills）。但 MyCreatedSkillsPanel
+  // （数字员工-技能管理）进来时会显式带上 return=employee_skills：那是广场技能
+  // 从员工技能 tab 编辑的入口，返回仍应去技能管理 tab，不被 scope 拉去平台广场。
+  const explicitReturn = editorSearchParams.get('return');
+  const skillsLandingRoute = explicitReturn === 'employee_skills'
+    ? '/enterprise/general-skills'
+    : forceGalleryScope
+      ? '/enterprise/platform/general-skills'
+      : '/enterprise/general-skills';
   const pageTitle = isNew ? '新建空白技能' : '编辑技能';
   const pageDescription = isOverallAgent
     ? (isNew
@@ -1639,22 +1743,61 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       ? '为当前数字员工创建技能，填写基本信息并编辑技能文件。'
       : '维护当前数字员工技能的定义、文件包和运行测试。');
 
+  const loadDetail = () => {
+    if (mode !== 'edit' || !routeSlug) return null;
+    const detailSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    // 两段加载：第一段 include_files=0（元信息 + SKILL.md，KB 级）秒出表单；
+    // 第二段完整详情补文件包，文件树区显示「加载文件中…」。大包编辑不再整个白屏等。
+    const editorQuery = new URLSearchParams({ tenant_id: TENANT_ID });
+    if (agentId && !isOverallAgent) editorQuery.set('agent_id', agentId);
+    const metaPromise = api
+      .get<GeneralSkillRead>(
+        `/api/enterprise/general-skills/${encodeURIComponent(routeSlug)}?${editorQuery.toString()}&include_files=0`,
+      )
+      .then((meta) => {
+        editSkill({ ...meta, skill_files: [], skill_directories: [] });
+        setFilesLoading(true);
+        // rows 里预填轻行；随后完整行到达后覆盖
+        setRows((current) =>
+          current.some((item) => item.id === meta.id)
+            ? current.map((item) => (item.id === meta.id ? meta : item))
+            : [...current, meta],
+        );
+        return api
+          .get<GeneralSkillRead>(
+            `/api/enterprise/general-skills/${encodeURIComponent(routeSlug)}?${editorQuery.toString()}`,
+          )
+          .then((full) => {
+            setFilesLoading(false);
+            // 只在用户还没动过表单时才用完整行覆盖，避免把用户已编辑的内容冲掉
+            if (!hasUnsavedEditingChanges()) {
+              editSkill(full);
+            }
+            setRows((current) =>
+              current.some((item) => item.id === full.id)
+                ? current.map((item) => (item.id === full.id ? full : item))
+                : [...current, full],
+            );
+          });
+      })
+      .catch((error) => {
+        setFilesLoading(false);
+        notify.error(error instanceof Error ? error.message : '加载技能失败');
+      });
+    return metaPromise;
+  };
+
   const load = () => {
     const agentSuffix = agentId && !isOverallAgent ? `&agent_id=${encodeURIComponent(agentId)}` : '';
-    return api
-      .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentSuffix}`)
+    // 列表只要元信息（include_files=0）：文件包单租户 MB 级，编辑详情由 loadDetail 单独拉
+    const listPromise = api
+      .get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentSuffix}&include_files=0`)
       .then((items) => {
         setRows(items);
-        if (mode === 'edit') {
-          const target = items.find((item) => item.slug === routeSlug);
-          if (target) {
-            editSkill(target);
-          } else if (routeSlug) {
-            notify.error('未找到要编辑的技能');
-          }
-        }
       })
       .catch((error) => notify.error(error.message));
+    const detailPromise = loadDetail();
+    return detailPromise || listPromise;
   };
 
   useEffect(() => {
@@ -2075,10 +2218,14 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     if (!sourceAgentId) return;
     try {
       const sourceRows = await api.get<GeneralSkillRead[]>(
-        `/api/enterprise/general-skills?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(sourceAgentId)}`,
+        `/api/enterprise/general-skills?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(sourceAgentId)}&include_files=0`,
       );
       const existingIds = new Set(rows.map((item) => item.id));
-      setAgentImportSourceSkills(sourceRows.filter((item) => item.status === 'published' && !existingIds.has(item.id)));
+      // 已绑到当前员工的技能也要展示（disabled + 「已添加」标记）：全部静默过滤掉会
+      // 让「从广场复制」弹窗明明有技能力却一片空白，看起来像没有可用技能。
+      setAgentImportSourceSkills(sourceRows
+        .filter((item) => item.status === 'published')
+        .map((item) => ({ ...item, __is_bound: existingIds.has(item.id) })));
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载来源技能失败');
     }
@@ -2099,19 +2246,39 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     }
     setAgentImportLoading(true);
     try {
-      await api.post(`/api/enterprise/agents/${encodeURIComponent(agentId)}/resources/import`, {
-        tenant_id: TENANT_ID,
-        source_agent_id: agentImportSourceAgentId,
-        resource_type: 'general_skill',
-        resource_ids: agentImportSelectedSkillIds,
-      });
-      notify.success(`已复制 ${agentImportSelectedSkillIds.length} 个技能`);
+      // 大包复制服务端耗时与单个技能包体积成正比，一批一 POST 无法展示真实进度。
+      // 改为逐个提交：每完成 1 个推进一格，进度是真实的；失败项不中断整批。
+      const done: string[] = [];
+      const failed: string[] = [];
+      for (const [index, resourceId] of agentImportSelectedSkillIds.entries()) {
+        const sourceSkill = agentImportSourceSkills.find((item) => item.id === resourceId);
+        setAgentImportProgress({ done: index, total: agentImportSelectedSkillIds.length, current: sourceSkill?.name || '' });
+        try {
+          await api.post(`/api/enterprise/agents/${encodeURIComponent(agentId)}/resources/import`, {
+            tenant_id: TENANT_ID,
+            source_agent_id: agentImportSourceAgentId,
+            resource_type: 'general_skill',
+            resource_ids: [resourceId],
+          });
+          done.push(resourceId);
+        } catch (error) {
+          console.warn('复制技能失败', sourceSkill?.name || resourceId, error);
+          failed.push(sourceSkill?.name || resourceId);
+        }
+      }
+      setAgentImportProgress({ done: agentImportSelectedSkillIds.length, total: agentImportSelectedSkillIds.length, current: '' });
+      if (failed.length) {
+        notify.error(`已复制 ${agentImportSelectedSkillIds.length - failed.length} 个，失败 ${failed.length} 个：${failed.slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}`);
+      } else {
+        notify.success(`已复制 ${done.length} 个技能`);
+      }
       setAgentImportOpen(false);
       await load();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '复制技能失败');
     } finally {
       setAgentImportLoading(false);
+      setAgentImportProgress(null);
     }
   }
 
@@ -2154,27 +2321,59 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   }
 
   async function importSkillPackageFile(file: File, allowMissingReferences = false) {
+    // zip / Markdown 导入不再直接调 /import-package 落库保存：先走 /preview 解析，
+    // 把解析出的元信息与文件树填进编辑器表单，用户确认内容、补齐引用后再手动保存。
+    // 只有无缺失引用时直接填表；缺引用时保持旧弹窗确认，确认后仍填表不落库。
+    // 大包走 multipart 直传（/preview-multipart）：省 27MB 级 base64-JSON 编解码，
+    // 字节上传有真实进度；双阶段语义见 uploadWithProgress（parsing = 服务端解析中）。
     const controller = new AbortController();
     clawhubAbortRef.current?.abort();
     clawhubAbortRef.current = controller;
     setClawhubLoading(true);
+    setUploadStage('uploading');
+    setUploadPercent(0);
     try {
-      const contentBase64 = await fileToBase64(file);
+      const agentSuffix = !isOverallAgent && agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+      const payload = await api.uploadWithProgress<{
+        filename: string;
+        name?: string | null;
+        slug?: string | null;
+        description?: string | null;
+        homepage?: string | null;
+        markdown: string;
+        files: { path: string; content: string; size?: number | null; mime_type?: string | null }[];
+        directories: string[];
+      }>(
+        '/api/enterprise/general-skills/import-package/preview-multipart',
+        file,
+        `tenant_id=${TENANT_ID}${agentSuffix}`,
+        (percent, stage) => {
+          setUploadStage(stage);
+          setUploadPercent(percent);
+        },
+        controller.signal,
+      );
       if (controller.signal.aborted) return;
-      const row = await api.postWithSignal<GeneralSkillRead>('/api/enterprise/general-skills/import-package', {
-        tenant_id: TENANT_ID,
-        agent_id: !isOverallAgent && agentId ? agentId : undefined,
-        filename: file.name,
-        content_base64: contentBase64,
-        status: 'published',
-        allow_missing_references: allowMissingReferences,
-      }, controller.signal);
-      if (controller.signal.aborted) return;
-      notify.success(`已上传 ${row.name}`);
-      setRows((current) => [row, ...current.filter((item) => item.id !== row.id && item.slug !== row.slug)]);
+      startImportedDraft();
+      setSkillFiles(payload.files.map((item) => ({
+        path: item.path,
+        content: item.content,
+        size: item.size ?? item.content.length,
+        mime_type: item.mime_type || undefined,
+      })));
+      setSkillDirectories(payload.directories || []);
+      setMarkdownPreviewOpen(false);
+      setSkillName(payload.name || '');
+      // slug 只作为表单预填（保存时后端仍会做唯一性兜底），保持与手动新建一致
+      setSkillSlug(payload.slug || '');
+      setSkillDescription(payload.description || '');
+      setSkillHomepage(payload.homepage || '');
+      setMarkdown(payload.markdown);
+      const skillFilePath = payload.files.find((item) => item.path.split('/').pop()?.toLowerCase() === 'skill.md')?.path;
+      setSelectedFilePath(skillFilePath || payload.files[0]?.path || 'SKILL.md');
+      setSelectedFolderPath(null);
+      notify.success(`已读取 ${payload.files.length} 个文件，可继续编辑后保存`);
       setClawhubModalOpen(false);
-      // 上传技能包＝创建了一个新技能，导入完成回技能广场列表看结果
-      navigate(skillsLandingRoute, { replace: true });
     } catch (error) {
       if (isAbortError(error)) {
         notify.info('已取消导入');
@@ -2721,6 +2920,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
             <div className="grid grid-cols-1 gap-[16px] md:grid-cols-2">
               <Field label="技能名称">
                 <Input
+                  aria-label="技能名称"
                   value={skillName}
                   onChange={(event) => setSkillName(event.target.value)}
                   disabled={!canManageCurrentScope}
@@ -2827,6 +3027,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
           >
             <input
               ref={fileInputRef}
+              data-testid="general-skill-package-input"
               className={HIDDEN_FILE_INPUT_CLASS}
               type="file"
               accept=".zip,.md,.markdown,.txt"
@@ -2852,12 +3053,49 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                 <span>释放以导入 SKILL.md、zip 技能包或完整技能文件夹</span>
               </div>
             )}
+            {clawhubLoading && uploadPercent !== null && (
+              <div aria-live="polite" className="absolute inset-x-0 top-[64px] z-10 mx-auto w-[280px] rounded-[14px] border border-[#e4e9f2] bg-white/95 p-[14px] shadow-[0_8px_24px_rgba(0,0,0,0.08)]">
+                <p className="mb-[8px] flex items-center justify-between text-[12px] text-[#464C5E]">
+                  <span>
+                    {uploadStage === 'parsing'
+                      ? '服务端解析中，大包可能需要十几秒…'
+                      : '正在上传技能包…'}
+                  </span>
+                  <span className="tabular-nums text-[#757F9C]">{uploadPercent}%</span>
+                </p>
+                <div
+                  role="progressbar"
+                  aria-label="技能包上传进度"
+                  aria-valuenow={uploadPercent}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  className="h-[6px] w-full overflow-hidden rounded-full bg-[#eef1f7]"
+                >
+                  <div
+                    className="h-full rounded-full bg-[#18181a] transition-[width] duration-150"
+                    style={{ width: `${uploadPercent}%` }}
+                  />
+                </div>
+              </div>
+            )}
             <div className={SKILL_FILE_EDITOR_CLASS}>
               <aside className={SKILL_FILE_TREE_CLASS}>
                 <div className={SKILL_FILE_TREE_HEADER_CLASS}>
                   <IconFolder className="size-[14px] shrink-0 text-[#757f9c]" />
                   <span>文件系统</span>
                 </div>
+                {filesLoading && (
+                  <div
+                    aria-live="polite"
+                    className="flex flex-1 flex-col items-center justify-center gap-[8px] px-[16px] text-center text-[12px] text-[#858b9c]"
+                  >
+                    <div className="size-[16px] animate-spin rounded-full border-2 border-[#e4e9f2] border-t-[#18181a]" />
+                    <p>正在加载技能文件……</p>
+                    <p className="text-[11px] leading-[16px] text-[#a7adbb]">大包文件较多，加载完成后即可查看/编辑全部文件；表单内容可先编辑。</p>
+                  </div>
+                )}
+                {!filesLoading && (
+                <>
                 <div className={SKILL_FILE_TREE_LIST_CLASS} role="tree" aria-label="技能文件系统">
                   {skillFileTree.map((node) => (
                     <SkillFileTreeEntry
@@ -2917,6 +3155,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                     删除
                   </UIButton>
                 </div>
+                </>
+                )}
               </aside>
               <section className={SKILL_FILE_PANE_CLASS}>
                 <div className={SKILL_FILE_TAB_CLASS}>
@@ -3103,6 +3343,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       <ResourceImportDialog
         open={agentImportOpen}
         loading={agentImportLoading}
+        progress={agentImportProgress}
         icon={<IconSkill className="size-[14px] shrink-0" />}
         title={agentImportMode === 'plaza' ? '从广场复制技能' : '从数字员工复制技能'}
         sourcePlaceholder={agentImportMode === 'plaza' ? '选择开放广场' : '选择复制来源'}
@@ -3114,6 +3355,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         itemsLabel="选择技能"
         items={agentImportSourceSkills.map((item) => ({
           id: item.id,
+          disabled: Boolean((item as { __is_bound?: boolean }).__is_bound),
+          disabledHint: '已添加到当前员工',
           label: (
             <>
               {item.name}

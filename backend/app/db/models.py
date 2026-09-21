@@ -1006,6 +1006,40 @@ class AgentShareLink(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class GeneralSkillShareLink(SQLModel, table=True):
+    """通用技能分享链接:站内生成,访客凭 token 免登录查看描述并下载技能包。
+
+    复用数字员工分享链接的口径：token 全局唯一、可撤销、可过期、有访问计数。
+    指向的技能必须仍是 published 状态，否则公开端点一律 404。
+    """
+
+    __tablename__ = "general_skill_share_links"
+    __table_args__ = (UniqueConstraint("token", name="uq_general_skill_share_token"),)
+
+    id: str = Field(default_factory=lambda: new_id("gsshare"), primary_key=True)
+    token: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    skill_id: str = Field(index=True)
+    skill_slug: str = Field(index=True)
+    created_by: str = Field(index=True)
+    # 空 = 永久有效
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    # 创建时缓存的文件清单（path/size）与总大小：公开信息页只读本行，
+    # 不再拉 MB 级的 general_skills.skill_files_json 大字段
+    files_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    total_bytes: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
+    access_count: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
+    last_access_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class AgentShareVisitor(SQLModel, table=True):
     """分享链接访客:一个浏览器 = 一个虚拟用户,承载独立的多轮上下文。
 

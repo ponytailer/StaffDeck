@@ -143,8 +143,19 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
       if (row.restart_scheduled) {
         setRestarting(true);
         notify.success('沙盒设置已保存，StaffDeck 正在重启');
-        await waitForApplicationRestart();
-        window.location.reload();
+        try {
+          await waitForApplicationRestart();
+          window.location.reload();
+        } catch (restartError) {
+          // 等不到重启也必须解锁按钮：否则 restarting 永久为 true，按钮卡在
+          // 「等待应用重启」，用户既不能再保存也不能重试。
+          setRestarting(false);
+          notify.error(
+            restartError instanceof Error
+              ? restartError.message
+              : '等待应用重启失败，请手动刷新页面',
+          );
+        }
         return;
       }
       notify.success('运行设置已保存');

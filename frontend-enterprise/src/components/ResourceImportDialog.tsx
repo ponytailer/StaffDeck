@@ -18,7 +18,10 @@ import { cn } from '@/lib/utils';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
 
 export type ImportSourceOption = { value: string; label: string };
-export type ImportChoiceItem = { id: string; label: ReactNode };
+export type ImportChoiceItem = { id: string; label: ReactNode; disabled?: boolean; disabledHint?: string };
+
+/** 复制进行中的真实进度（逐技能提交，每完成 1 个推进一格）。 */
+export type ImportProgressState = { done: number; total: number; current: string };
 
 export type ResourceImportDialogProps = {
   open: boolean;
@@ -45,6 +48,8 @@ export type ResourceImportDialogProps = {
   emptySourceText?: string;
   /** Explanatory footer note. */
   note: ReactNode;
+  /** 复制进行中的进度（逐技能提交时上报）；存在时按钮江区显示进度条。 */
+  progress?: ImportProgressState | null;
   submitText?: string;
   onTargetChange?: (value: string) => void;
   onSourceChange: (value: string) => void;
@@ -60,6 +65,7 @@ export type ResourceImportDialogProps = {
 export function ResourceImportDialog({
   open,
   loading,
+  progress,
   icon,
   title,
   targetPlaceholder,
@@ -160,14 +166,18 @@ export function ResourceImportDialog({
                 items.map((item) => (
                   <label
                     key={item.id}
-                    className="flex cursor-pointer items-center gap-[10px] rounded-[8px] px-[8px] py-[7px] hover:bg-[#f6f6f6]"
+                    className={item.disabled
+                      ? 'flex cursor-not-allowed items-center gap-[10px] rounded-[8px] px-[8px] py-[7px] opacity-60'
+                      : 'flex cursor-pointer items-center gap-[10px] rounded-[8px] px-[8px] py-[7px] hover:bg-[#f6f6f6]'}
                   >
                     <Checkbox
-                      checked={selectedIds.includes(item.id)}
+                      checked={item.disabled ? true : selectedIds.includes(item.id)}
+                      disabled={item.disabled}
                       onCheckedChange={(checked) => toggle(item.id, checked === true)}
                     />
                     <span className="min-w-0 flex-1 truncate text-[12px] text-[#18181a]">
                       {item.label}
+                      {item.disabled && <span className="ml-[6px] text-[11px] text-[#858b9c]">{item.disabledHint || '已添加'}</span>}
                     </span>
                   </label>
                 ))
@@ -179,6 +189,27 @@ export function ResourceImportDialog({
         </div>
 
         <div className="flex items-center justify-end gap-[8px] px-[12px]">
+          {progress && (
+            <div className="mr-auto flex min-w-0 flex-1 flex-col gap-[4px]" aria-live="polite">
+              <p className="flex items-center justify-between text-[11px] text-[#464C5E]">
+                <span className="truncate">{progress.current ? `正在复制「${progress.current}」…` : '复制完成'}</span>
+                <span className="tabular-nums text-[#858b9c]">{progress.done}/{progress.total}</span>
+              </p>
+              <div
+                role="progressbar"
+                aria-label="技能复制进度"
+                aria-valuenow={progress.done}
+                aria-valuemin={0}
+                aria-valuemax={Math.max(progress.total, 1)}
+                className="h-[5px] w-full overflow-hidden rounded-full bg-[#eef1f7]"
+              >
+                <div
+                  className="h-full rounded-full bg-[#18181a] transition-[width] duration-150"
+                  style={{ width: `${Math.round((progress.done / Math.max(progress.total, 1)) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
           <Button
             variant="outline"
             disabled={loading}

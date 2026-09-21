@@ -1,4 +1,4 @@
-import { formatClientDateTime } from './timezone';
+import { formatClientDate, formatClientDateTime } from './timezone';
 
 /**
  * Shared Tailwind class tokens for the enterprise list pages (SOP, 技能, 定时任务,
@@ -61,4 +61,9 @@ export const SEARCH_COMBO_BUTTON_CLASS =
 /** Format a backend timestamp in the active UI locale, or `-` when empty/invalid. */
 export function formatDateTime(value?: string): string {
   return formatClientDateTime(value, '-');
+}
+
+/** 只要日期部分（`YYYY/M/D`）；用于「更新时间」这类窄列，避免裸 `slice(0, 10)` 的跨时区错日。 */
+export function formatDate(value?: string): string {
+  return formatClientDate(value, '-');
 }

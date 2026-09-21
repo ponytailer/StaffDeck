@@ -15,6 +15,7 @@ from app.core.harness_session_cleanup import (
 )
 from app.db.models import (
     ChatSession,
+    HarnessAgentLoopRecord,
     HarnessInvocationRecord,
     HarnessRunRecord,
     HarnessSessionLeaseRecord,
@@ -43,7 +44,7 @@ def _add_harness_records(
     tenant_id: str,
     session_id: str,
     suffix: str,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     task_frame = HarnessTaskFrameRecord(
         id=f"htask_{suffix}",
         tenant_id=tenant_id,
@@ -69,7 +70,19 @@ def _add_harness_records(
         tool_name="read_file",
         request_digest=f"digest_{suffix}",
     )
-    db.add_all([task_frame, run, invocation])
+    # 曾经被漏删的表：会话删除后留下 active 孤儿 loop，这里纳入覆盖。
+    # loop_key 必须带 suffix：唯一约束是 (session_id, loop_key)，不含 tenant_id，
+    # 而本测试特意构造了「同 session_id 跨租户」的行。
+    agent_loop = HarnessAgentLoopRecord(
+        id=f"hloop_{suffix}",
+        tenant_id=tenant_id,
+        session_id=session_id,
+        loop_key=f"general:{suffix}",
+        kind="general",
+        status="active",
+        owner_task_frame_record_id=task_frame.id,
+    )
+    db.add_all([task_frame, run, invocation, agent_loop])
     db.add(
         HarnessTurnRecord(
             id=f"hturn_{suffix}",
@@ -90,7 +103,7 @@ def _add_harness_records(
             lease_expires_at=task_frame.created_at,
         )
     )
-    return invocation.id, run.id, task_frame.id
+    return invocation.id, run.id, task_frame.id, agent_loop.id
 
 
 def test_stage_harness_record_deletion_is_tenant_and_session_scoped() -> None:
@@ -128,13 +141,17 @@ def test_stage_harness_record_deletion_is_tenant_and_session_scoped() -> None:
         assert result.task_frame_count == 1
         assert result.turn_count == 1
         assert result.session_lease_count == 1
+        assert result.agent_loop_count == 1
         assert db.get(HarnessInvocationRecord, target_ids[0]) is None
         assert db.get(HarnessRunRecord, target_ids[1]) is None
         assert db.get(HarnessTaskFrameRecord, target_ids[2]) is None
+        # 回归点：harness_agent_loops 曾经完全不参与清理，会话删掉后留下 active 孤儿行。
+        assert db.get(HarnessAgentLoopRecord, target_ids[3]) is None
         for record_ids in (same_tenant_ids, same_session_ids):
             assert db.get(HarnessInvocationRecord, record_ids[0]) is not None
             assert db.get(HarnessRunRecord, record_ids[1]) is not None
             assert db.get(HarnessTaskFrameRecord, record_ids[2]) is not None
+            assert db.get(HarnessAgentLoopRecord, record_ids[3]) is not None
 
 
 def test_workspace_cleanup_uses_invoker_segment_and_removes_only_target(
@@ -249,9 +266,11 @@ def test_delete_chat_session_cleans_harness_state_and_workspace(
         assert db.get(HarnessInvocationRecord, target_ids[0]) is None
         assert db.get(HarnessRunRecord, target_ids[1]) is None
         assert db.get(HarnessTaskFrameRecord, target_ids[2]) is None
+        assert db.get(HarnessAgentLoopRecord, target_ids[3]) is None
         assert db.get(HarnessInvocationRecord, survivor_ids[0]) is not None
         assert db.get(HarnessRunRecord, survivor_ids[1]) is not None
         assert db.get(HarnessTaskFrameRecord, survivor_ids[2]) is not None
+        assert db.get(HarnessAgentLoopRecord, survivor_ids[3]) is not None
         assert db.exec(select(HarnessTaskFrameRecord)).all()
 
 
@@ -301,3 +320,4 @@ def test_delete_team_cleans_team_session_harness_state_and_workspace(
         assert db.get(HarnessInvocationRecord, target_ids[0]) is None
         assert db.get(HarnessRunRecord, target_ids[1]) is None
         assert db.get(HarnessTaskFrameRecord, target_ids[2]) is None
+        assert db.get(HarnessAgentLoopRecord, target_ids[3]) is None

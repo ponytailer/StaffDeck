@@ -6,6 +6,7 @@ from time import sleep
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
@@ -45,6 +46,7 @@ from app.agents.branching import (
     visible_skill_rows,
 )
 from app.db import get_session
+from app.db.bulk_delete import bulk_delete_matching, expunge_matching
 from app.db.models import (
     APIClient,
     APICredential,
@@ -467,21 +469,20 @@ def delete_agent(
     _ensure_can_manage_agent(row, current_user)
     if row.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent cannot be deleted")
-    bindings = db.exec(
-        select(AgentResourceBinding).where(AgentResourceBinding.agent_id == row.id)
-    ).all()
-    for binding in bindings:
-        db.delete(binding)
+    # 子表清理一律走批量语句：逐行 db.delete/db.update 在远程 PG 上每次都要一次往返，
+    # 员工资源多的租户删一个员工会明显卡住（与会话/团队删除同一类问题）。
+    bulk_delete_matching(db, AgentResourceBinding, agent_id=row.id)
     # 渠道挂载同步清理:否则孤儿挂载行会让 /员工 列出已删除员工的裸 ID,
     # 甚至可被 /切换 路由到。默认挂载被删时把首个剩余挂载提升为默认并同步
     # binding.agent_id,保持存量绑定回退路径有效。会话指针无需处理:
     # resolve_current_agent 发现指针不在挂载集会自动重置默认。
-    channel_mounts = db.exec(
-        select(ChannelBindingAgent).where(ChannelBindingAgent.agent_id == row.id)
-    ).all()
-    affected_binding_ids = {mount.binding_id for mount in channel_mounts}
-    for mount in channel_mounts:
-        db.delete(mount)
+    # 单列 select 经 SQLModel 的 exec 直接返回标量
+    affected_binding_ids = set(
+        db.exec(
+            select(ChannelBindingAgent.binding_id).where(ChannelBindingAgent.agent_id == row.id)
+        ).all()
+    )
+    bulk_delete_matching(db, ChannelBindingAgent, agent_id=row.id)
     for binding_id in affected_binding_ids:
         channel_binding = db.get(ChannelBinding, binding_id)
         if not channel_binding or channel_binding.agent_id != row.id:
@@ -508,34 +509,32 @@ def delete_agent(
     for session in sessions:
         purge_chat_session_records(db, session)
     # 团队成员关系同步清理,避免花名册/TL 会话悬挂在已删除员工上。
-    memberships = db.exec(select(TeamMember).where(TeamMember.agent_id == row.id)).all()
-    for membership in memberships:
-        db.delete(membership)
+    bulk_delete_matching(db, TeamMember, agent_id=row.id)
     # 定时任务立即暂停,而不是等到下次触发才失败。
-    scheduled_tasks = db.exec(
-        select(ScheduledTask).where(
+    _changed_at = utc_now()
+    expunge_matching(db, ScheduledTask, tenant_id=tenant_id, agent_id=row.id, status="active")
+    db.exec(
+        sa_update(ScheduledTask)
+        .where(
             ScheduledTask.tenant_id == tenant_id,
             ScheduledTask.agent_id == row.id,
             ScheduledTask.status == "active",
         )
-    ).all()
-    for task in scheduled_tasks:
-        task.status = "paused"
-        task.next_run_at = None
-        task.updated_at = utc_now()
-        db.add(task)
+        .values(status="paused", next_run_at=None, updated_at=_changed_at)
+    )
     # 待处理人工转接直接取消,避免悬挂在已删员工的收件箱里。
-    pending_handoffs = db.exec(
-        select(HumanHandoffRequest).where(
+    expunge_matching(
+        db, HumanHandoffRequest, tenant_id=tenant_id, agent_id=row.id, status="pending"
+    )
+    db.exec(
+        sa_update(HumanHandoffRequest)
+        .where(
             HumanHandoffRequest.tenant_id == tenant_id,
             HumanHandoffRequest.agent_id == row.id,
             HumanHandoffRequest.status == "pending",
         )
-    ).all()
-    for handoff in pending_handoffs:
-        handoff.status = "cancelled"
-        handoff.updated_at = utc_now()
-        db.add(handoff)
+        .values(status="cancelled", updated_at=_changed_at)
+    )
     db.delete(row)
     db.commit()
     for session_tenant_id, session_id in workspace_keys:
@@ -1588,6 +1587,10 @@ def _copy_private_general_skill(
     metadata = agent_private_metadata(target_agent_id, deepcopy(source.metadata_json or {}))
     metadata["copied_from_general_skill_id"] = source.id
     metadata["copied_from_general_skill_slug"] = source.slug
+    # skill_files_json 可达 MB 级（20MB 包实测）：deepcopy 逐节点递归，纯数据树
+    # 会耗秒级 CPU。文件条目是 {path, content, size, mime_type} 平铺且只读快照，
+    # 逐项浅拷贝保证新行不与源行共享可变引用，语义等价、快一个量级。
+    copied_files = [dict(item) for item in (source.skill_files_json or [])]
     copied = GeneralSkill(
         tenant_id=tenant_id,
         slug=_unique_general_skill_slug(db, tenant_id, f"{source.slug}-copy"),
@@ -1595,7 +1598,7 @@ def _copy_private_general_skill(
         description=source.description,
         homepage=source.homepage,
         skill_markdown=source.skill_markdown,
-        skill_files_json=deepcopy(source.skill_files_json or []),
+        skill_files_json=copied_files,
         metadata_json=metadata,
         status=source.status,
         capability_scope=source.capability_scope,

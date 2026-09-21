@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import { notify } from '@/components/ui/app-toast';
-import { api } from '@/api/client';
+import { api, type DownloadProgress } from '@/api/client';
 import type { HarnessWorkspaceArtifact } from '@/types';
 
 import {
@@ -34,8 +34,39 @@ export default function HarnessArtifactDownloads({
   sessionId,
 }: HarnessArtifactDownloadsProps) {
   const [downloading, setDownloading] = useState('');
+  // 打包下载：真实下载进度（XHR onprogress），percent=-1 时显示已接收体积
+  const [zipProgress, setZipProgress] = useState<{ percent: number; received: number } | null>(null);
 
   if (artifacts.length === 0) return null;
+
+  async function downloadTaskZip() {
+    if (!sessionId || !tenantId || downloading) return;
+    setDownloading('__task_zip__');
+    setZipProgress({ percent: 0, received: 0 });
+    try {
+      const blob = await api.blobWithProgress(
+        `/api/chat/sessions/${encodeURIComponent(sessionId)}/artifacts/`
+          + `${encodeURIComponent(artifacts[0].task_frame_id)}/zip?tenant_id=${encodeURIComponent(tenantId)}`,
+        ({ percent, receivedBytes }: DownloadProgress) => {
+          setZipProgress({ percent, received: receivedBytes });
+        },
+      );
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `task-artifacts-${artifacts[0].task_frame_id}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(objectUrl);
+      notify.success('已打包下载全部生成文件');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '打包下载失败');
+    } finally {
+      setDownloading('');
+      setZipProgress(null);
+    }
+  }
 
   async function downloadArtifact(artifact: HarnessWorkspaceArtifact) {
     const identity = `${artifact.task_frame_id}\u001f${artifact.path}`;
@@ -64,7 +95,41 @@ export default function HarnessArtifactDownloads({
       <div className={CHAT_ARTIFACT_HEADING_CLASS}>
         <StaffdeckIcon name="folder" size={14} />
         <span>生成文件</span>
+        {artifacts.length > 1 && (
+          <button
+            type="button"
+            className="ml-auto inline-flex cursor-pointer items-center gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[10px] py-[4px] text-[11px] text-[#464C5E] transition-colors hover:border-[#c9d2e3] hover:bg-[#f6f7fa] disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={Boolean(downloading) || !sessionId || !tenantId}
+            aria-label="打包下载全部生成文件"
+            onClick={() => void downloadTaskZip()}
+          >
+            <StaffdeckIcon name="download" size={12} />
+            打包下载 ({artifacts.length})
+          </button>
+        )}
       </div>
+      {downloading === '__task_zip__' && zipProgress && (
+        <div aria-live="polite" className="mb-[8px]">
+          <div
+            role="progressbar"
+            aria-label="打包下载进度"
+            aria-valuenow={zipProgress.percent > 0 ? zipProgress.percent : undefined}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            className="h-[5px] w-full overflow-hidden rounded-full bg-[#eef1f7]"
+          >
+            <div
+              className={zipProgress.percent < 0 ? 'h-full w-1/3 animate-pulse rounded-full bg-[#18181a]' : 'h-full rounded-full bg-[#18181a] transition-[width] duration-150'}
+              style={zipProgress.percent >= 0 ? { width: `${zipProgress.percent}%` } : undefined}
+            />
+          </div>
+          <p className="mt-[4px] text-[11px] text-[#858b9c]">
+            {zipProgress.percent >= 0
+              ? `${zipProgress.percent}%`
+              : `已接收 ${(zipProgress.received / 1_048_576).toFixed(1)} MB`}
+          </p>
+        </div>
+      )}
       <div className={CHAT_ARTIFACT_LIST_CLASS}>
         {artifacts.map((artifact) => {
           const identity = `${artifact.task_frame_id}\u001f${artifact.path}`;

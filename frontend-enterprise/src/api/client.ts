@@ -72,12 +72,162 @@ function authHeader(): Record<string, string> {
   return session?.token ? { Authorization: `Bearer ${session.token}` } : {};
 }
 
+/** fetch 拿不到上传进度；大包上传（如 zip 技能包）用 XHR 上报 onProgress。 */
+function postXml<T>(
+  path: string,
+  body: unknown,
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}${path}`);
+    xhr.responseType = 'json';
+    const auth = getEnterpriseAuthSession();
+    if (auth?.token) xhr.setRequestHeader('Authorization', `Bearer ${auth.token}`);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.upload.onprogress = (event) => {
+      if (onProgress && event.lengthComputable && event.total > 0) {
+        onProgress(Math.min(99, Math.round((event.loaded / event.total) * 99)));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        // 99 只表示字节发送完，服务端解析完成才算 100
+        onProgress?.(100);
+        resolve((xhr.response || {}) as T);
+        return;
+      }
+      reject(new ApiError(xhr.status, typeof xhr.response === 'string' ? xhr.response : (xhr.responseText || ''), xhr.statusText || ''));
+    };
+    xhr.onerror = () => reject(new ApiError(0, '网络错误', ''));
+    signal?.addEventListener('abort', () => {
+      xhr.abort();
+      reject(new DOMException('Aborted', 'AbortError'));
+    });
+    xhr.send(JSON.stringify(body));
+  });
+}
+
+export type UploadProgressStage = 'uploading' | 'parsing';
+
+/**
+ * multipart 直传文件（带双阶段进度）。
+ *
+ * 字节上传阶段上报 0-95（真实比例）；字节发完切到 'parsing' 阶段（96-99 停留，
+ * 由调用方展示“服务端解析中”文案）；收到响应后 100。
+ * 避免大包（如 20MB zip）在服务端解析阶段长时间停在 99% 给人的死锁错觉。
+ */
+function uploadFileXml<T>(
+  path: string,
+  file: File,
+  queryParams: string,
+  onProgress?: (percent: number, stage: UploadProgressStage) => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}${path}${queryParams ? `?${queryParams}` : ''}`);
+    xhr.responseType = 'json';
+    const auth = getEnterpriseAuthSession();
+    if (auth?.token) xhr.setRequestHeader('Authorization', `Bearer ${auth.token}`);
+    // FormData 自动带 multipart boundary，不要手动设 Content-Type
+    xhr.upload.onprogress = (event) => {
+      if (!onProgress || !event.lengthComputable || event.total <= 0) return;
+      const ratio = event.loaded / event.total;
+      if (ratio >= 1) {
+        onProgress(96, 'parsing');
+      } else {
+        onProgress(Math.round(ratio * 95), 'uploading');
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.(100, 'parsing');
+        resolve((xhr.response || {}) as T);
+        return;
+      }
+      reject(new ApiError(xhr.status, typeof xhr.response === 'string' ? xhr.response : (xhr.responseText || ''), xhr.statusText || ''));
+    };
+    xhr.onerror = () => reject(new ApiError(0, '网络错误', ''));
+    signal?.addEventListener('abort', () => {
+      xhr.abort();
+      reject(new DOMException('Aborted', 'AbortError'));
+    });
+    const form = new FormData();
+    form.append('file', file);
+    xhr.send(form);
+  });
+}
+
+export type DownloadProgress = {
+  /** 0-100；响应无 Content-Length 时 percent 会停留在 -1，改用 loadedBytes 展示 */
+  percent: number;
+  receivedBytes: number;
+  totalBytes: number;
+};
+
+/**
+ * 下载大文件（zip 技能包等）用 XHR 上报下载进度：onprogress 里 loaded/total
+ * 逐段回调。Content-Length 缺失时 percent 用 -1，调用方用 receivedBytes 兑底。
+ */
+function downloadBlobXml(
+  path: string,
+  onProgress?: (progress: DownloadProgress) => void,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', `${API_BASE}${path}`);
+    xhr.responseType = 'blob';
+    const auth = getEnterpriseAuthSession();
+    if (auth?.token) xhr.setRequestHeader('Authorization', `Bearer ${auth.token}`);
+    xhr.onprogress = (event) => {
+      if (!onProgress) return;
+      const total = event.lengthComputable ? event.total : 0;
+      onProgress({
+        percent: total > 0 ? Math.min(99, Math.round((event.loaded / total) * 99)) : -1,
+        receivedBytes: event.loaded,
+        totalBytes: total,
+      });
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.({ percent: 100, receivedBytes: (xhr.response as Blob)?.size || 0, totalBytes: (xhr.response as Blob)?.size || 0 });
+        resolve(xhr.response as Blob);
+        return;
+      }
+      const text = typeof xhr.response === 'string' ? xhr.response : (xhr.responseText || '');
+      reject(new ApiError(xhr.status, text, xhr.statusText || ''));
+    };
+    xhr.onerror = () => reject(new ApiError(0, '网络错误', ''));
+    signal?.addEventListener('abort', () => {
+      xhr.abort();
+      reject(new DOMException('Aborted', 'AbortError'));
+    });
+    xhr.send();
+  });
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
   postWithSignal: <T>(path: string, body: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'POST', body: JSON.stringify(body), signal }),
+  postWithProgress: <T>(
+    path: string,
+    body: unknown,
+    onProgress?: (percent: number) => void,
+    signal?: AbortSignal,
+  ) => postXml<T>(path, body, onProgress, signal),
+  uploadWithProgress: <T>(
+    path: string,
+    file: File,
+    queryParams: string,
+    onProgress?: (percent: number, stage: UploadProgressStage) => void,
+    signal?: AbortSignal,
+  ) => uploadFileXml<T>(path, file, queryParams, onProgress, signal),
   postKeepalive: <T>(path: string, body?: unknown) => keepalivePost<T>(path, body),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
@@ -93,6 +243,8 @@ export const api = {
     }
     return response.blob();
   },
+  blobWithProgress: (path: string, onProgress?: (progress: DownloadProgress) => void, signal?: AbortSignal) =>
+    downloadBlobXml(path, onProgress, signal),
   postBlob: async (path: string, body: unknown) => {
     const response = await fetch(`${API_BASE}${path}`, {
       method: 'POST',

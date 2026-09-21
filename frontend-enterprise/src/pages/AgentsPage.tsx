@@ -1,9 +1,11 @@
 import { UnderlineTabs, type UnderlineTabItem } from '@/components/ui';
+import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 
 import IconPlus from '../assets/icons/plus.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
+import { SearchEmptyState } from '@/components/SearchEmptyState';
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -17,6 +19,7 @@ import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import AgentShareDialog from '../components/AgentShareDialog';
 import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
+import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import {
   canManageEmployeeAgent,
@@ -59,6 +62,10 @@ export default function AgentsPage({
   const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline'>('all');
+  // 页面级 tab：数字员工 / 技能管理（技能管理不再是页面底部的附属面板）。
+  const [pageTab, setPageTab] = useState<'employees' | 'skills'>(() =>
+    window.location.hash.includes('skills') ? 'skills' : 'employees'
+  );
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
     () => readEmployeeScope() || null,
   );
@@ -235,26 +242,23 @@ export default function AgentsPage({
       <AppHeader
         onLogout={onLogout}
         userName={currentUser?.username}
-        left={(
-          <div className="flex h-[50px] w-full items-center gap-[6px] rounded-[20px] bg-white px-[20px] text-[#757F9C] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
-            <IconSearch className="size-[20px] shrink-0" />
-            <input
-              autoComplete="off"
-              data-1p-ignore="true"
-              data-lpignore="true"
-              data-bwignore="true"
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="搜索"
-              aria-label="搜索员工"
-              className="min-w-0 flex-1 border-0 bg-transparent text-[14px] text-[#18181A] outline-none placeholder:text-[#757F9C]"
-            />
-          </div>
-        )}
       />
 
 
-      <div className="flex flex-wrap items-stretch gap-[20px] my-[36px]" aria-label="数字员工统计">
+      <UnderlineTabs
+        className="mb-[16px]"
+        aria-label="我的数字员工页面切换"
+        value={pageTab}
+        onChange={setPageTab}
+        items={[
+          { value: 'employees', label: '数字员工' },
+          { value: 'skills', label: '技能管理' },
+        ]}
+      />
+
+      {pageTab === 'employees' ? (
+        <>
+          <div className="flex flex-wrap items-stretch gap-[20px] my-[36px]" aria-label="数字员工统计">
         {summaryStats.map((stat) => (
           <button
             key={stat.key}
@@ -283,6 +287,21 @@ export default function AgentsPage({
         </button>
       </div>
 
+      <div className="mb-[16px] flex h-[50px] w-full items-center gap-[6px] rounded-[20px] bg-white px-[20px] text-[#757F9C] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
+        <IconSearch className="size-[20px] shrink-0" />
+        <input
+          autoComplete="off"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-bwignore="true"
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder="搜索"
+          aria-label="搜索员工"
+          className="min-w-0 flex-1 border-0 bg-transparent text-[14px] text-[#18181A] outline-none placeholder:text-[#757F9C]"
+        />
+      </div>
+
       <UnderlineTabs
         className="mb-[16px]"
         aria-label="数字员工分类"
@@ -290,7 +309,6 @@ export default function AgentsPage({
         onChange={setEmployeeFilter}
         items={employeeTabs}
       />
-
       <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
         {filteredEmployees.map((employee) => (
           <EmployeeCard
@@ -313,7 +331,25 @@ export default function AgentsPage({
         {!filteredEmployees.length && (
           <AgentsEmptyState />
         )}
-      </div>
+          </div>
+        </>
+      ) : (
+        <div className="mt-[24px]">
+          <div className="flex items-center justify-end mb-[16px]">
+            <UIButton
+              data-guide-target="skills-create"
+              type="button"
+              onClick={() => navigate('/enterprise/general-skills/new?scope=gallery')}
+              className="h-[38px] rounded-[10px] bg-[#18181a] px-[20px] text-[13px] font-normal text-white hover:bg-[#303030]"
+            >
+              <IconPlus className="size-[16px]" />
+              创建技能
+            </UIButton>
+          </div>
+          {/* 我创建的技能：跨作用域汇总（广场技能 + 挂在员工下的技能）。 */}
+          <MyCreatedSkillsPanel agents={agents} />
+        </div>
+      )}
       <EmployeeAvatarEditor
         agent={avatarAgent}
         open={Boolean(avatarAgent)}
@@ -353,18 +389,9 @@ export default function AgentsPage({
 
 function AgentsEmptyState() {
   return (
-    <div className="flex h-[262px] w-full items-center justify-center rounded-[20px] border border-dashed border-[#e4e9f2] bg-[#fbfcfe] px-[24px] text-center">
-      <div className="flex max-w-[210px] flex-col items-center">
-        <span className="grid size-[34px] place-items-center rounded-[12px] bg-white text-[#98a2b3] shadow-[0_1px_8px_rgba(70,76,94,0.06)] ring-1 ring-[#edf1f6]">
-          <IconSearch className="size-[16px] shrink-0" />
-        </span>
-        <p className="mt-[12px] text-[14px] font-medium leading-[20px] text-[#7f879a]">
-          没有匹配的数字员工
-        </p>
-        <p className="mt-[4px] text-[11px] leading-[17px] text-[#a7adbb]">
-          调整筛选条件，或换个关键词再试试
-        </p>
-      </div>
-    </div>
+    <SearchEmptyState
+      title="没有匹配的数字员工"
+      description="调整筛选条件，或换个关键词再试试"
+    />
   );
 }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -146,5 +147,55 @@ describe('AgentsPage roster refresh', () => {
       }),
     );
     await waitFor(() => expect(fetchMock.mock.calls.length).toBe(callsAfterLoad));
+  });
+});
+
+describe('AgentsPage 页面级 tab', () => {
+  function renderAgentsPage() {
+    return render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentsPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it('默认展示数字员工 tab，可切到技能管理 tab 并出现创建技能入口', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      if (url.includes('/api/enterprise/general-skills')) return jsonResponse([]);
+      return jsonResponse([]);
+    }));
+    renderAgentsPage();
+
+    expect((await screen.findByText('小艾')).textContent).toBeTruthy();
+    // 默认 tab 只渲染员工区，不渲染技能面板
+    expect(screen.queryByText('我创建的技能')).toBeNull();
+
+    await userEvent.click(screen.getByRole('tab', { name: '技能管理' }));
+
+    expect(await screen.findByText('我创建的技能')).toBeTruthy();
+    // 创建技能入口出现在技能管理 tab 顶部
+    expect(screen.getByRole('button', { name: /创建技能/ })).toBeTruthy();
+    // 切回后员工区还在
+    await userEvent.click(screen.getByRole('tab', { name: '数字员工' }));
+    expect(await screen.findByText('小艾')).toBeTruthy();
+  });
+
+  it('hash 带 #skills 时默认落在技能管理 tab', async () => {
+    window.location.hash = '#skills';
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => jsonResponse([])));
+    renderAgentsPage();
+
+    expect(await screen.findByText('我创建的技能')).toBeTruthy();
+    // hash 路径默认在技能 tab，数字员工区不渲染
+    expect(screen.queryByText('小艾')).toBeNull();
+    window.location.hash = '';
   });
 });
