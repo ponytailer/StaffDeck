@@ -75,6 +75,35 @@ def operation_timeout_seconds(operation: str | None, default_seconds: float) -> 
     return max(1.0, float(configured))
 
 
+# 按操作覆盖「思考/思维链」开关。纯分类、纯选 id 的控制面调用开思考是纯亏：
+# 模型把 token 全烧在思维链上，而答案只有几十个字符。
+#
+# 2026-09-23 实测（同一 model_config / 同一份请求原文，deepseek-v4.1-flash +
+# 阿里云网关，bucket_route 的单次调用）：
+#   思考开启（provider_default）: 单次 18~42s，且会撞 60s 上限直接超时失败
+#   思考关闭（disabled）        : 1.21~1.34s，约 13×，首个命中桶一致
+# 原始现场：该轮对话 102.12s 里模型等待 100.72s，其中 document_route 9.61s
+# （输出 441 token / 思维链 1790 字符，答案 `{"selected_document_ids":[…]}` 仅 51 字符）
+# 与 bucket_route 41.78s（输出 2364 token / 思维链 9130 字符，答案仅 52 字符）
+# 合计 51.4s，占整轮一半——而这两次调用真正要产出的内容一共 103 个字符。
+#
+# 安全性：两者都是「从候选里挑 id」的 json_object 调用，有 json 修复与确定性
+# 词法兜底（见 knowledge/service.py 的 *_lexical 分支），关思考不影响可用性。
+OPERATION_THINKING_MODE: dict[str, str] = {
+    "knowledge.document_route": "disabled",
+    "knowledge.bucket_route": "disabled",
+}
+
+
+def operation_thinking_mode(operation: str | None, configured_mode: str) -> str:
+    """返回该操作最终生效的思考模式；未配置覆盖时沿用模型/全局配置。"""
+
+    override = OPERATION_THINKING_MODE.get(str(operation or ""))
+    if override in {"enabled", "disabled"}:
+        return override
+    return configured_mode
+
+
 def operation_json_repair_attempts(operation: str, default_attempts: int) -> int:
     configured = OPERATION_JSON_REPAIR_ATTEMPTS.get(operation)
     return max(0, int(default_attempts if configured is None else configured))

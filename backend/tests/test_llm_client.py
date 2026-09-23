@@ -225,6 +225,8 @@ def test_generate_text_uses_chat_completions_only():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     output = client.generate_text("system prompt", {"hello": "world"})
 
@@ -259,6 +261,8 @@ def test_generate_text_preserves_structured_protocol_diagnostics() -> None:
     client.timeout_seconds = 25.0
     client.temperature = 0.2
     client.max_output_tokens = 32
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     with pytest.raises(LLMError) as exc_info:
         client.generate_text("system", {"message": "ping"})
@@ -292,6 +296,8 @@ def test_generate_text_can_disable_provider_thinking():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     client.thinking_mode = "disabled"
 
     assert client.generate_text("system prompt", "hello") == "ok"
@@ -306,6 +312,8 @@ def test_generate_text_passes_model_extra_body_and_preserves_thinking_options():
     client.model = "glm-5.2"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     client.thinking_mode = "disabled"
     client.extra_body = {
         "thinking": {"type": "disabled", "clear_thinking": True},
@@ -332,6 +340,8 @@ def test_generate_text_preserves_plain_user_content_without_json_encoding():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     content = "技能标题：新SOP\n原始流程：\n收集报销事由并提交审批。"
 
@@ -349,6 +359,8 @@ def test_generate_text_persists_provider_request_metrics():
     client.base_url = "https://example.test/v1"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     events: list[tuple[str, dict]] = []
 
     with bind_span_sink(lambda event_type, payload: events.append((event_type, payload))):
@@ -397,6 +409,8 @@ def test_generate_text_preserves_reasoning_tool_arguments_and_raw_provider_outpu
     client.base_url = "https://example.test/v1"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     events: list[tuple[str, dict]] = []
     raw_arguments = '{"I_ENAME":"张三","I_BS":"1"}'
     completion = SimpleNamespace(
@@ -464,6 +478,8 @@ def test_generate_text_observability_omits_embedded_image_data() -> None:
     client.base_url = "https://example.test/v1"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     events: list[tuple[str, dict]] = []
 
     payload = {
@@ -499,6 +515,8 @@ def test_generate_text_persists_provider_cache_usage_metrics():
     client.base_url = "https://example.test/v1"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     events: list[tuple[str, dict]] = []
     message = type("Message", (), {"content": "ok"})()
     choice = type("Choice", (), {"message": message, "finish_reason": "stop"})()
@@ -537,6 +555,8 @@ def test_generate_text_retries_empty_response():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     contents = iter(["", None, "ok"])
 
     def fake_create(**kwargs):  # noqa: ANN003
@@ -556,6 +576,8 @@ def test_knowledge_router_uses_lexical_fallback_after_first_empty_response():
     client.base_url = "https://example.test/v1"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     client.client.chat.completions.create = lambda **kwargs: (  # noqa: E731
         client.client.chat.completions.calls.append(kwargs)
         or _completion_with_content("")
@@ -576,6 +598,8 @@ def test_generate_text_records_each_empty_response_retry():
     client.base_url = "https://example.test/v1"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     contents = iter(["", None, "ok"])
     events: list[tuple[str, dict]] = []
 
@@ -599,6 +623,8 @@ def test_generate_text_empty_response_reports_provider_diagnostics():
     client.timeout_seconds = 600.0
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     def fake_create(**kwargs):  # noqa: ANN003
         client.client.chat.completions.calls.append(kwargs)
@@ -639,6 +665,8 @@ def test_generate_text_reads_text_from_structured_content_parts():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     part = type("ContentPart", (), {"text": "structured answer"})()
 
     client.client.chat.completions.create = lambda **_kwargs: _completion_with_content([part])
@@ -654,6 +682,8 @@ def test_generate_text_stream_reports_empty_stream_diagnostics():
     client.timeout_seconds = 600.0
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     def fake_create(**kwargs):  # noqa: ANN003
         client.client.chat.completions.calls.append(kwargs)
@@ -682,6 +712,8 @@ def test_generate_text_stream_records_ttft_and_output_volume():
     client.base_url = "https://example.test/v1"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     events: list[tuple[str, dict]] = []
 
     raw_arguments = '{"I_ENAME":"张三"}'
@@ -762,6 +794,8 @@ def test_generate_text_projects_conversation_context_messages():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     output = client.generate_text(
         "system prompt",
@@ -810,6 +844,8 @@ def test_stage_input_uses_stable_history_and_puts_memory_time_and_question_first
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     payload = stage_payload(
         phase="Router",
         user_message="我想申请报销",
@@ -855,6 +891,8 @@ def test_stage_requests_append_each_input_and_output_to_one_turn_context() -> No
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 8192
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     outputs = iter(
         [
             '{"decision":"answer_only","confidence":0.9}',
@@ -936,6 +974,8 @@ def test_stage_json_repair_continues_in_the_same_turn_context() -> None:
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 8192
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     outputs = iter(["not json", '{"decision":"answer_only"}'])
 
     def fake_create(**kwargs):  # noqa: ANN003
@@ -982,6 +1022,8 @@ def test_generate_text_keeps_append_only_history_prefix_for_kv_cache() -> None:
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     stable_history = [
         {"role": "user", "content": "你好"},
         {"role": "assistant", "content": "您好"},
@@ -1023,6 +1065,8 @@ def test_generate_text_projects_conversation_context_images_for_vision_model():
     client.model = "gpt-4o-mini"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     output = client.generate_text(
         "system prompt",
@@ -1066,6 +1110,8 @@ def test_generate_text_keeps_memory_capture_history_as_role_messages() -> None:
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     assert client.generate_text(
         "memory prompt",
@@ -1099,6 +1145,8 @@ def test_generate_text_does_not_guess_image_support_from_model_name():
     client.model = "qwen3-6-27b"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     output = client.generate_text(
         "system prompt",
@@ -1144,6 +1192,8 @@ def test_generate_text_retries_without_images_only_after_provider_rejects_them()
     client.model = "provider-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     output = client.generate_text(
         "system prompt",
@@ -1191,6 +1241,8 @@ def test_generate_json_requests_json_object_mode():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     client.client.chat.completions.create = lambda **kwargs: (  # noqa: E731
         client.client.chat.completions.calls.append(kwargs)
         or type(
@@ -1219,6 +1271,8 @@ def test_internal_json_operation_uses_configured_output_budget():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 8192
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
     client.client.chat.completions.create = lambda **kwargs: (  # noqa: E731
         client.client.chat.completions.calls.append(kwargs)
         or _completion_with_content('{"decision":"answer_only"}')
@@ -1247,6 +1301,8 @@ def test_user_visible_response_uses_configured_output_budget():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 8192
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     with llm_operation("response.generate"):
         assert client.generate_text("system prompt", {}) == "ok"
@@ -1287,6 +1343,8 @@ def test_generate_json_falls_back_when_json_object_mode_is_unsupported():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     def fake_create(**kwargs):  # noqa: ANN003
         client.client.chat.completions.calls.append(kwargs)
@@ -1319,6 +1377,8 @@ def test_generate_json_falls_back_when_json_object_mode_returns_empty():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 256
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     def fake_create(**kwargs):  # noqa: ANN003
         client.client.chat.completions.calls.append(kwargs)
@@ -1541,6 +1601,8 @@ def test_generate_text_preserves_token_budget_on_reasoning_length_retry():
     client.model = "demo-model"
     client.temperature = 0.2
     client.max_output_tokens = 4096
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     # First attempt: length-truncated empty content with reasoning -> retry.
     # Second attempt succeeds, but retries must preserve the configured budget.
@@ -1564,6 +1626,8 @@ def test_generate_text_preserves_budget_above_escalation_ceiling():
     client.temperature = 0.2
     # Operator configured a budget larger than the escalation ceiling.
     client.max_output_tokens = 65536
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     responses = iter([_length_truncated_completion(), _successful_completion()])
     client.client.chat.completions.create = _recording_create(client, lambda: next(responses))
@@ -1586,6 +1650,8 @@ def test_generate_text_stream_preserves_token_budget_on_reasoning_length_retry()
     client.timeout_seconds = 600.0
     client.temperature = 0.2
     client.max_output_tokens = 4096
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     def length_chunk():
         delta = type("Delta", (), {"content": None, "reasoning_content": "thinking"})()
@@ -1617,6 +1683,8 @@ def test_generate_text_stream_preserves_budget_above_escalation_ceiling():
     client.timeout_seconds = 600.0
     client.temperature = 0.2
     client.max_output_tokens = 65536
+    # 与 __init__ 的 settings.model_api_timeout_seconds 默认值保持一致
+    client.timeout_seconds = 600.0
 
     def length_chunk():
         delta = type("Delta", (), {"content": None, "reasoning_content": "thinking"})()

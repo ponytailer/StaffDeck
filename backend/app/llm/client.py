@@ -25,6 +25,7 @@ from app.llm.output_policy import (
     operation_empty_response_retries,
     operation_json_repair_attempts,
     operation_output_tokens,
+    operation_thinking_mode,
     operation_timeout_seconds,
 )
 from app.llm.protocol_drivers import (
@@ -236,6 +237,10 @@ class LLMClient:
         empty_response_retries = operation_empty_response_retries(
             operation, EMPTY_RESPONSE_RETRIES
         )
+        # 纯分类类控制面调用按 output_policy 关掉思维链（见 OPERATION_THINKING_MODE）
+        thinking_mode = operation_thinking_mode(
+            operation, getattr(self, "thinking_mode", "")
+        )
         context_messages, serialized = _prepare_user_input(user_payload)
         request_messages = _request_messages(system_prompt, context_messages, serialized)
         if response_format and response_format.get("type") == "json_object":
@@ -270,8 +275,7 @@ class LLMClient:
                 request["response_format"] = response_format
             request.update(
                 _thinking_request_kwargs(
-                    getattr(self, "thinking_mode", ""),
-                    getattr(self, "extra_body", {}),
+                    thinking_mode, getattr(self, "extra_body", {})
                 )
             )
             empty_diagnostics: list[str] = []
@@ -289,7 +293,7 @@ class LLMClient:
                     retry_count=attempt,
                     max_attempts=empty_response_retries + 1,
                     max_output_tokens=current_max_tokens,
-                    thinking_mode=getattr(self, "thinking_mode", "") or "provider_default",
+                    thinking_mode=thinking_mode or "provider_default",
                     request_messages=_observable_messages(request_messages),
                     request_parameters=_observable_request_parameters(
                         temperature=self.temperature,
@@ -371,6 +375,9 @@ class LLMClient:
         empty_response_retries = operation_empty_response_retries(
             operation, EMPTY_RESPONSE_RETRIES
         )
+        thinking_mode = operation_thinking_mode(
+            operation, getattr(self, "thinking_mode", "")
+        )
         context_messages, serialized = _prepare_user_input(user_payload)
         request_messages = _request_messages(system_prompt, context_messages, serialized)
         request_messages = _fit_request_messages(request_messages)
@@ -393,7 +400,7 @@ class LLMClient:
                     "temperature": self.temperature,
                     "max_tokens": current_max_tokens,
                     **_thinking_request_kwargs(
-                        getattr(self, "thinking_mode", ""),
+                        thinking_mode,
                         getattr(self, "extra_body", {}),
                     ),
                 }
@@ -410,7 +417,7 @@ class LLMClient:
                     retry_count=attempt,
                     max_attempts=empty_response_retries + 1,
                     max_output_tokens=current_max_tokens,
-                    thinking_mode=getattr(self, "thinking_mode", "") or "provider_default",
+                    thinking_mode=thinking_mode or "provider_default",
                     request_messages=_observable_messages(request_messages),
                     request_parameters=_observable_request_parameters(
                         temperature=self.temperature,

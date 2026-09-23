@@ -33,8 +33,10 @@ from app.observability.spans import llm_operation
 from app.llm import client as llm_client_module
 from app.llm.output_policy import (
     OPERATION_JSON_REPAIR_ATTEMPTS,
+    OPERATION_THINKING_MODE,
     OPERATION_TIMEOUT_SECONDS,
     operation_json_repair_attempts,
+    operation_thinking_mode,
     operation_timeout_seconds,
 )
 from app.llm.protocol_drivers import ChatCompletionsDriver
@@ -503,3 +505,67 @@ def test_knowledge_routing_falls_back_to_main_model(monkeypatch) -> None:
 
     assert result["success"] is True
     assert captured["model_config"] is main_model
+
+
+# ---------------------------------------------------------------------------
+# 知识路由关闭思维链（纯分类调用不该把 token 烧在思维链上）
+# 现场：一轮 102.12s 的对话里模型等待 100.72s，其中 document_route 9.61s /
+# bucket_route 41.78s —— 两者答案合计只有 103 个字符（各自一个 id 列表）。
+# ---------------------------------------------------------------------------
+
+
+def test_operation_thinking_mode_policy() -> None:
+    # 知识路由强制关闭，且能覆盖模型配置里的 enabled
+    assert OPERATION_THINKING_MODE["knowledge.document_route"] == "disabled"
+    assert OPERATION_THINKING_MODE["knowledge.bucket_route"] == "disabled"
+    assert operation_thinking_mode("knowledge.bucket_route", "enabled") == "disabled"
+    assert operation_thinking_mode("knowledge.document_route", "provider_default") == "disabled"
+    # 未配置覆盖的调用沿用模型/全局设置
+    assert operation_thinking_mode("harness.task_action", "enabled") == "enabled"
+    assert operation_thinking_mode("harness.task_action", "") == ""
+    assert operation_thinking_mode(None, "enabled") == "enabled"
+
+
+def test_knowledge_route_request_disables_provider_thinking(monkeypatch) -> None:
+    """知识路由的下发请求必须带 thinking.type=disabled。"""
+    calls: list[dict] = []
+    _patch_client_driver(monkeypatch, calls)
+
+    client = llm_client_module.LLMClient(_model_config())
+    with pytest.raises(llm_client_module.LLMError):
+        with llm_operation("knowledge.bucket_route"):
+            client.generate_json("系统提示", {"buckets": []})
+
+    assert calls
+    assert calls[0]["extra_body"]["thinking"]["type"] == "disabled"
+
+
+def test_knowledge_route_thinking_override_beats_model_config(monkeypatch) -> None:
+    """模型配置显式开启思维链时，知识路由仍要关闭（覆盖优先于配置）。"""
+    calls: list[dict] = []
+    _patch_client_driver(monkeypatch, calls)
+
+    config = _model_config()
+    config.extra_body_json = {"thinking": {"type": "enabled"}}
+    client = llm_client_module.LLMClient(config)
+    assert client.thinking_mode == "enabled"
+
+    with pytest.raises(llm_client_module.LLMError):
+        with llm_operation("knowledge.document_route"):
+            client.generate_json("系统提示", {"documents": []})
+
+    assert calls[0]["extra_body"]["thinking"]["type"] == "disabled"
+
+
+def test_task_action_keeps_configured_thinking(monkeypatch) -> None:
+    """反证：交互式决策轮不注入 thinking 覆盖，保持模型配置原样。"""
+    calls: list[dict] = []
+    _patch_client_driver(monkeypatch, calls)
+
+    client = llm_client_module.LLMClient(_model_config())
+    with pytest.raises(llm_client_module.LLMError):
+        with llm_operation("harness.task_action"):
+            client.generate_json("系统提示", {"task_requirement": {}})
+
+    assert calls
+    assert "extra_body" not in calls[0] or "thinking" not in (calls[0].get("extra_body") or {})
