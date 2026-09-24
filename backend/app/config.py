@@ -147,6 +147,27 @@ class Settings(BaseSettings):
     # MinerU 云端单文件解析的轮询上限（秒）；超时视为失败，前端给出可重试提示。
     attachment_parse_poll_timeout_seconds: int = 600
 
+    # ---- AI Reviewer（代码评审）----
+    # ocr CLI（alibaba/open-code-review）在 rq worker 上跑：克隆仓库 + 调 LLM
+    # 评审是分钟级任务，独立队列名便于观察积压；想不占用定时任务消费能力，
+    # 多起一个 `uv run rq-worker` 即可。OCR 的 LLM 凭证经 OCR_LLM_* 环境变量
+    # 注入（见 app/ai_review/runner.py），不落盘到 ocr 配置文件。
+    ai_review_queue: str = "ai_review"
+    ai_review_job_timeout_seconds: int = 1800
+    # ocr 可执行文件：默认查 PATH；npm 装在非 PATH 目录时给绝对路径。
+    ai_review_ocr_binary: str = "ocr"
+    # 克隆 / fetch 与单次评审的子进程超时（秒）；评审上限须小于 rq job 超时。
+    ai_review_clone_timeout_seconds: int = 600
+    ai_review_review_timeout_seconds: int = 1500
+    # 注入 ocr 的 LLM 端点（完整 OCR_LLM_* 配置）。留空 → 任务创建时直接失败。
+    ai_review_llm_url: str = ""
+    ai_review_llm_token: str = ""
+    ai_review_llm_model: str = ""
+    # 端点是 Anthropic 兼容（Claude）时置 true（对应 OCR_LLM_USE_ANTHROPIC）。
+    ai_review_llm_use_anthropic: str = "false"
+    # 评审意见语言（ocr config set language）
+    ai_review_language: str = "中文"
+
     # MinerU 开放平台 Bearer Token（https://mineru.net）。注意历史上 .env 曾误拼
     # 为 MINUERU_TOKEN；mineru_client 会同时兼容两个键名，新环境请统一 MINERU_TOKEN。
     mineru_token: str = ""

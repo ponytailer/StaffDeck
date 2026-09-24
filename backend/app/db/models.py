@@ -1941,3 +1941,127 @@ class TeamTaskBid(SQLModel, table=True):
     score: Optional[float] = None
     score_rationale: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
+
+
+# ---------------------------------------------------------------------------
+# AI Reviewer（代码评审）：平台凭证 / 工作区 / 全局 review 要求 / 异步评审任务
+# 整体是「提交任务 → rq 后台跑 ocr CLI → 回写结果 → 用户在任务列表看结果」的
+# 异步模型；PR/MR 快照在建任务时落库，ocr 不在请求路径上。
+# ---------------------------------------------------------------------------
+
+
+class AiReviewCredential(SQLModel, table=True):
+    """平台访问凭证（**租户级全局**）：拉取 PR/MR 列表与详情用。
+
+    一个租户每个平台最多一条（GitHub / GitLab 各一）。token 以明文落库，
+    API 层只对外回 ``token_last4``；GitLab 支持自托管，所以保留 ``base_url``。
+    """
+
+    __tablename__ = "ai_review_credentials"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "platform", name="uq_ai_review_credential_platform"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("airevcred"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    # github / gitlab
+    platform: str = Field(index=True)
+    # GitLab 自托管时填实例根地址（https://gitlab.example.com）；github 侧忽略
+    base_url: str = ""
+    token: str = ""
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AiReviewWorkspace(SQLModel, table=True):
+    """一个 workspace = 一个待评审仓库（按 repo 区分），挂平台与克隆地址。"""
+
+    __tablename__ = "ai_review_workspaces"
+
+    id: str = Field(default_factory=lambda: new_id("airevws"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    # github / gitlab（决定用哪张全局凭证与哪套 REST 调用）
+    platform: str = Field(index=True)
+    # https 克隆地址，如 https://gitlab.example.com/group/repo.git
+    repo_url: str
+    # 平台展示路径，如 group/repo（列表接口要用）
+    repo_path: str = ""
+    default_branch: str = "main"
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AiReviewPreset(SQLModel, table=True):
+    """全局「review 要求」预设：提交任务时可附加，作为公共评审口径。"""
+
+    __tablename__ = "ai_review_presets"
+
+    id: str = Field(default_factory=lambda: new_id("airevpreset"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    content: str
+    # 每个租户至多一条 default：新建任务时用它预填
+    is_default: bool = Field(default=False, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AiReviewRuleFile(SQLModel, table=True):
+    """租户级全局自定义评审规则（对应 ocr 的 ``rule.json``）。
+
+    执行时以 ``ocr review --rule <file>`` 注入，属于四层规则链里**最高优先级**
+    （高于项目/全局配置文件与系统内置规则）。结构：
+    ``{"include": [...], "exclude": [...], "rules": [{"path", "rule", "merge_system_rule"}]}``。
+    一个租户至多一份（唯一约束）。
+    """
+
+    __tablename__ = "ai_review_rule_files"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_ai_review_rule_file_tenant"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("airevrule"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str = ""
+    content: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AiReviewTask(SQLModel, table=True):
+    """一次异步评审任务：建任务时冻结 PR/MR 快照，ocr 结果回写 ``result_json``。
+
+    ``status`` 四态：queued（已入队）→ running（ocr 执行中）→ succeeded / failed。
+    全部字段在**建任务时**固化（标题、描述、分支、作者），后续 MR 更新不影响
+    本次评审的口径； ``result_json`` 存 ocr 的 comments 数组。
+    """
+
+    __tablename__ = "ai_review_tasks"
+
+    id: str = Field(default_factory=lambda: new_id("airevtask"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    workspace_id: str = Field(index=True)
+    # queued / running / succeeded / failed
+    status: str = Field(default="queued", index=True)
+    # ---- PR/MR 快照（建任务时冻结）----
+    mr_number: int = 0
+    mr_title: str = ""
+    mr_description: str = ""
+    source_branch: str = ""
+    target_branch: str = ""
+    author: str = ""
+    web_url: str = ""
+    # ---- 用户附加的评审要求（快照，预设后续改动不影响已建任务）----
+    requirements: str = ""
+    # ---- 执行结果 ----
+    result_json: list[Any] = Field(default_factory=list, sa_column=Column(JSON))
+    summary_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error: str = ""
+    # ---- 结果回写平台评论区（查看报告时可把意见同步到 PR/MR）----
+    platform_synced_at: Optional[datetime] = None
+    platform_sync_url: str = ""
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None

@@ -294,6 +294,7 @@ def consume_queue_names() -> list[str]:
         settings.skill_compile_queue,
         settings.knowledge_ingest_queue,
         settings.attachment_parse_queue,
+        settings.ai_review_queue,
     ):
         if extra and extra not in names:
             names.append(extra)

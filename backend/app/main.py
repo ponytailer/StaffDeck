@@ -8,6 +8,7 @@ from sqlmodel import Session
 from app.api import (
     agent_shares,
     agents,
+    ai_review,
     app_updates,
     auth,
     channels,
@@ -172,6 +173,7 @@ app.include_router(skills.router)
 app.include_router(model_configs.router)
 app.include_router(api_key_applications.router)
 app.include_router(laya.router)
+app.include_router(ai_review.router)
 app.include_router(memories.router)
 app.include_router(evolution.router)
 app.include_router(feedback.router)

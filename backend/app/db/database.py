@@ -63,6 +63,7 @@ def init_db() -> None:
 
     # _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
+    _migrate_ai_review_schema()
     # _migrate_sqlite_skill_schema()
     # _migrate_pg_api_key_schema()
     # _migrate_user_ldap_schema()
@@ -3273,6 +3274,28 @@ def _migrate_api_key_usage_snapshot(conn, tables: set[str]) -> None:
                 "ADD COLUMN reset_count INTEGER NOT NULL DEFAULT 0"
             )
         )
+
+
+def _migrate_ai_review_schema() -> None:
+    """ai_review_tasks 给已有表补列（结果回写平台评论，2026-09-24）。
+
+    新表由上面 create_all 直接建；这里是给**已存在**的表补新列。
+    """
+    inspector = inspect(engine)
+    if "ai_review_tasks" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("ai_review_tasks")}
+    # PG 用 TIMESTAMP；SQLite 用 DATETIME（宽松类型别名）
+    timestamp_type = (
+        "TIMESTAMP" if engine.url.get_backend_name().startswith("postgresql") else "DATETIME"
+    )
+    with engine.begin() as conn:
+        if "platform_synced_at" not in columns:
+            conn.execute(
+                text(f"ALTER TABLE ai_review_tasks ADD COLUMN platform_synced_at {timestamp_type}")
+            )
+        if "platform_sync_url" not in columns:
+            conn.execute(text("ALTER TABLE ai_review_tasks ADD COLUMN platform_sync_url VARCHAR NOT NULL DEFAULT ''"))
 
 
 def get_session() -> Generator[Session, None, None]:

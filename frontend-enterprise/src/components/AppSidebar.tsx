@@ -70,6 +70,8 @@ const PRIMARY_NAV: NavItem[] = [
   { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },
   // 决策助手：Laya 决策头驱动的表单式决策（分类 / 评分 / 是非）
   { route: EnterpriseRoute.DecisionAssistant, label: '决策助手', Icon: IconDecision, hot: true },
+  // AI Reviewer：异步代码评审（open-code-review + rq 队列）
+  { route: EnterpriseRoute.AiReviewer, label: 'AI CodeReviewer', Icon: IconAiReview },
   // 暂时隐藏渠道接入入口（页面与路由保留，需要时恢复下行即可）
   // { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
   { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
@@ -141,6 +143,32 @@ function HotFlame({ className, decorative }: { className?: string; decorative?: 
         d="M12 21.6a3.3 3.3 0 0 0 3.3-3.3c0-1.35-.87-2.43-1.74-3.5-.6-.73-1.2-1.45-1.56-2.33-.36.88-.96 1.6-1.56 2.33-.87 1.07-1.74 2.15-1.74 3.5A3.3 3.3 0 0 0 12 21.6Z"
         fill="#ffc93c"
       />
+    </svg>
+  );
+}
+
+function IconAiReview({ className, ...props }: { className?: string } & SVGProps<SVGSVGElement>) {
+  // 代码评审：两份 diff 块经一条变更线连到末端的评审对勾
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      {...props}
+    >
+      <path d="M3 7h3M3 12h3M3 17h3" />
+      <rect x="8.2" y="4.6" width="6.4" height="5" rx="1.2" />
+      <path d="M10 7.1h2.8M10 9.1h1.6" strokeWidth={1.4} />
+      <rect x="8.2" y="14.4" width="6.4" height="5" rx="1.2" />
+      <path d="M10 16.9h2.8M10 18.9h1.6" strokeWidth={1.4} />
+      <path d="M14.6 7.1h2.2a2.2 2.2 0 0 1 2.2 2.2 2.2 2.2 0 0 1-2.2 2.2h-1.6" />
+      <path d="M15.2 16.9h1.6a2.2 2.2 0 0 0 2.2-2.2v-0.2" />
+      <circle cx="19.2" cy="16.4" r="2.1" fill="currentColor" stroke="none" opacity={0.18} />
+      <path d="m18.3 16.5.7.7 1.2-1.4" strokeWidth={1.5} />
     </svg>
   );
 }
