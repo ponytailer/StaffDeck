@@ -19,4 +19,5 @@ export enum EnterpriseRoute {
   Models = '/enterprise/models',
   RuntimeSettings = '/enterprise/runtime-settings',
   ApiKeyApprovals = '/enterprise/api-key-approvals',
+  DecisionAssistant = '/enterprise/decision-assistant',
 }

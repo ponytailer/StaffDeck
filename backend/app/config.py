@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     consumer_group_owners: str = '["重庆项目", "总部IT", "Club Med"]'
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
+    # Laya 决策服务（Convai Laya Decision API，非自回归决策头）。前端「决策助手」
+    # 一律经后端代理调用：该服务未挂 CORS 中间件（OPTIONS 直接 405），浏览器直连
+    # 会被预检拦掉；同时地址属服务端内网，不应出现在前端产物里。
+    laya_predict_url: str = "http://8.153.146.109:8080/predict"
+    laya_timeout_seconds: float = 60.0
+    # 对外可访问的站点基址（`PUBLIC_BASE_URL`），用于生成开放 API 的调用示例。
+    # 部署在域名 / 公网 IP 后面时填它，决策助手页面「API 接入」里的示例就会用该地址；
+    # 留空则前端回退成浏览器当前 origin（本地开发即 http://127.0.0.1:5173）。
+    public_base_url: str = ""
     tool_timeout_seconds: float = 8.0
     a2a_task_timeout_seconds: float = 600.0
     a2a_poll_interval_seconds: float = 0.5

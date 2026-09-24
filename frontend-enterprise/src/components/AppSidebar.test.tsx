@@ -236,3 +236,47 @@ describe('AppSidebar chat variant group conversations', () => {
     expect(tooltip.textContent).toContain('小艾');
   });
 });
+
+describe('AppSidebar primary navigation', () => {
+  function renderManagementSidebar(onNavigate: (route: string) => void = () => {}) {
+    return render(
+      <I18nProvider>
+        <TooltipProvider>
+          <SidebarProvider>
+            <AppSidebar
+              selected="/enterprise/dashboard"
+              onNavigate={onNavigate}
+              isAdmin={false}
+              scopeAgents={[agent]}
+              scopeTeams={[team]}
+              selectedAgentId="agent-1"
+              onSelectAgent={() => {}}
+              onOpenChat={() => {}}
+            />
+          </SidebarProvider>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it('exposes the 决策助手 entry and emits its route on click', async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    renderManagementSidebar(onNavigate);
+
+    await user.click(screen.getByText('决策助手'));
+    expect(onNavigate).toHaveBeenCalledWith('/enterprise/decision-assistant');
+  });
+
+  it('marks only the 决策助手 entry with the hot flame badge', () => {
+    renderManagementSidebar();
+
+    const decisionRow = screen.getByText('决策助手').closest('[data-guide-target]') as HTMLElement;
+    expect(decisionRow).toBeTruthy();
+    const flame = within(decisionRow).getByTestId('nav-hot-flame');
+    expect(flame.getAttribute('aria-label')).toMatch(/热门|Hot/);
+
+    const teamsRow = screen.getByText('我的团队').closest('[data-guide-target]') as HTMLElement;
+    expect(within(teamsRow).queryByTestId('nav-hot-flame')).toBeNull();
+  });
+});

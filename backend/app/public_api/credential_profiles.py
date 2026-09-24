@@ -53,6 +53,9 @@ USER_FULL_ACCESS_SCOPES = frozenset(
         "tools:test",
         "scheduled_tasks:write",
         "scheduled_tasks:run",
+        # 决策助手（Laya 决策头）是无状态的推理服务，不属于任何单个员工，
+        # 因此只挂在账号级全量密钥上；员工级密钥（AGENT_RUNTIME_SCOPES）不授予。
+        "decisions:run",
     }
 )
 

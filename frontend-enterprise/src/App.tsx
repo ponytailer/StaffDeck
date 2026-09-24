@@ -43,6 +43,7 @@ import ChannelsPage from "./pages/ChannelsPage";
 import ChatPage from "./pages/chat/ChatPage";
 import ChatGalleryPage from "./pages/chat/ChatGalleryPage";
 import DashboardPage from "./pages/dashboard/DashboardPage";
+import DecisionAssistantPage from "./pages/decision/DecisionAssistantPage";
 import EmptyEmployeeState from "./components/EmptyEmployeeState";
 import DistillPage from "./pages/DistillPage";
 import GeneralSkillsPage, {
@@ -800,6 +801,15 @@ function Shell({
                   ) : (
                     <Navigate to={EnterpriseRoute.Platform} replace />
                   )
+                }
+              />
+              <Route
+                path="/enterprise/decision-assistant"
+                element={
+                  <DecisionAssistantPage
+                    currentUser={auth.user}
+                    onLogout={onLogout}
+                  />
                 }
               />
               <Route

@@ -60,12 +60,16 @@ type NavItem = {
   route: EnterpriseRoute;
   label: string;
   Icon: IconComponent;
+  /** 挂一枚「火热」火苗角标（新上线 / 主推功能）。 */
+  hot?: boolean;
 };
 
 const PRIMARY_NAV: NavItem[] = [
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
   { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },
+  // 决策助手：Laya 决策头驱动的表单式决策（分类 / 评分 / 是非）
+  { route: EnterpriseRoute.DecisionAssistant, label: '决策助手', Icon: IconDecision, hot: true },
   // 暂时隐藏渠道接入入口（页面与路由保留，需要时恢复下行即可）
   // { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
   { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
@@ -92,6 +96,54 @@ const SYSTEM_NAV: NavItem[] = [
   { route: EnterpriseRoute.ApiKeyApprovals, label: 'API Key 审批', Icon: IconApiKey },
   { route: EnterpriseRoute.RuntimeSettings, label: '超级管理员', Icon: IconSettings },
 ];
+
+function IconDecision({ className, ...props }: { className?: string } & SVGProps<SVGSVGElement>) {
+  // 决策树：一个问题分叉到多个待判结论
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      {...props}
+    >
+      <circle cx="12" cy="4.2" r="1.9" />
+      <path d="M12 6.1v2.4" />
+      <path d="M12 8.5 6.6 11.2M12 8.5l5.4 2.7" />
+      <circle cx="5.4" cy="13" r="1.9" />
+      <circle cx="18.6" cy="13" r="1.9" />
+      <path d="M5.4 14.9v2.2M18.6 14.9v2.2" />
+      <rect x="3.4" y="17.1" width="4" height="3.4" rx="1.2" />
+      <rect x="16.6" y="17.1" width="4" height="3.4" rx="1.2" />
+    </svg>
+  );
+}
+
+/** 「火热」火苗角标：双色实心，自带轻微呼吸动效（见 .sd1-hot-flame）。 */
+function HotFlame({ className, decorative }: { className?: string; decorative?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      role={decorative ? undefined : 'img'}
+      aria-hidden={decorative || undefined}
+      aria-label={decorative ? undefined : '热门'}
+      data-testid="nav-hot-flame"
+      className={cn('sd1-hot-flame shrink-0', className)}
+    >
+      <path
+        d="M12 1.8c0 3.1-1.6 4.7-3.1 6.6C7.4 10.3 6 12.4 6 14.8a6 6 0 0 0 12 0c0-2.4-1.4-4.5-2.9-6.4-1.5-1.9-3.1-3.5-3.1-6.6Z"
+        fill="#ff5a1f"
+      />
+      <path
+        d="M12 21.6a3.3 3.3 0 0 0 3.3-3.3c0-1.35-.87-2.43-1.74-3.5-.6-.73-1.2-1.45-1.56-2.33-.36.88-.96 1.6-1.56 2.33-.87 1.07-1.74 2.15-1.74 3.5A3.3 3.3 0 0 0 12 21.6Z"
+        fill="#ffc93c"
+      />
+    </svg>
+  );
+}
 
 function IconApiKey({ className, ...props }: { className?: string } & SVGProps<SVGSVGElement>) {
   return (
@@ -193,7 +245,10 @@ function PrimaryNavButton({
         )}
       >
         <item.Icon className="size-[16px]!" />
-        <span className="text-[13px]">{item.label}</span>
+        <span className="flex min-w-0 items-center gap-[5px] text-[13px]">
+          <span className="truncate">{item.label}</span>
+          {item.hot && <HotFlame className="size-[13px]!" />}
+        </span>
         {attention && (
           <span className="ml-auto size-[6px] rounded-full bg-[#f59e0b] group-data-[collapsible=icon]:hidden" />
         )}
@@ -436,6 +491,7 @@ function CollapsedNavButton({
           style={{ borderRadius: radius }}
         >
           <item.Icon style={{ width: iconSize, height: iconSize }} />
+          {item.hot && <HotFlame decorative className="absolute mt-[-19px] ml-[19px] size-[11px]!" />}
           {attention && (
             <span className="absolute mt-[-22px] ml-[22px] size-[6px] rounded-full bg-[#f59e0b]" />
           )}
