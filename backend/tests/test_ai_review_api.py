@@ -740,6 +740,50 @@ def test_task_list_pagination_and_search() -> None:
     assert all(task["platform_synced_at"] is None for task in page_one["items"])
 
 
+def test_task_list_exposes_ocr_status_for_skipped_runs() -> None:
+    """列表接口要能让前端区分「跑完了」与「跑完了但无可评审文件」。
+
+    后端 status 是作业状态（succeeded），ocr 自己的结论在 summary_json.ocr_status 里；
+    _task_out 需要把它和 files_reviewed 透出，否则列表只能显示「已完成」误导用户。
+    """
+    db = _session()
+    user = _seed_tenant(db)
+    workspace = ai_review.create_workspace(
+        ai_review.WorkspaceCreateRequest(
+            tenant_id=TENANT, name="ws", platform="github", repo_url="https://github.com/foo/bar.git"
+        ),
+        current_user=user,
+        db=db,
+    )
+    db.add(
+        AiReviewTask(
+            tenant_id=TENANT,
+            workspace_id=workspace["id"],
+            status="succeeded",
+            mr_number=170,
+            mr_title="Bump pydantic",
+            summary_json={"ocr_status": "skipped", "files_reviewed": 0},
+        )
+    )
+    # 没有 summary_json 的历史任务不能炸，字段留空即可
+    db.add(
+        AiReviewTask(
+            tenant_id=TENANT,
+            workspace_id=workspace["id"],
+            status="queued",
+            mr_number=171,
+            mr_title="历史任务",
+        )
+    )
+    db.commit()
+    listed = ai_review.list_tasks(tenant_id=TENANT, workspace_id=workspace["id"], current_user=user, db=db)
+    by_number = {task["mr_number"]: task for task in listed["items"]}
+    assert by_number[170]["ocr_status"] == "skipped"
+    assert by_number[170]["files_reviewed"] == 0
+    assert by_number[171]["ocr_status"] == ""
+    assert by_number[171]["files_reviewed"] is None
+
+
 def test_merge_request_list_shape(monkeypatch) -> None:
     from app.ai_review.platform_client import PlatformMergeRequest
 

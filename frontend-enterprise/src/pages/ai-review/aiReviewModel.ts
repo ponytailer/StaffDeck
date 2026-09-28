@@ -33,6 +33,64 @@ export const PLATFORM_META: Record<string, { label: string; tone: string }> = {
   gitlab: { label: 'GitLab', tone: 'bg-[#fff7e8] text-[#8a4b00]' },
 };
 
+/**
+ * ocr 自身的执行结论（summary.ocr_status），和后端作业状态是两回事：
+ * 作业 succeeded 只代表「ocr 命令跑完了」，它仍可能报 skipped（diff 里没有可评审文件）。
+ * 这里把 skipped 译成人话，避免用户误以为是故障。
+ */
+export type OcrStatusMeta = { label: string; tone: string; dot: string };
+
+export function ocrStatusMeta(status: string | undefined | null): OcrStatusMeta | null {
+  const key = (status ?? '').trim().toLowerCase();
+  if (!key) return null;
+  if (key === 'skipped') {
+    return { label: '无可评审文件（已跳过）', tone: 'bg-[#fff7e8] text-[#8a4b00]', dot: 'bg-[#d98b1f]' };
+  }
+  if (['succeeded', 'success', 'completed', 'done', 'ok'].includes(key)) {
+    return { label: '已完成', tone: 'bg-[#e9f7ef] text-[#1a7f4b]', dot: 'bg-[#1a7f4b]' };
+  }
+  if (['failed', 'error'].includes(key)) {
+    return { label: '失败', tone: 'bg-[#fce7e7] text-[#c0392b]', dot: 'bg-[#c0392b]' };
+  }
+  if (['running', 'in_progress', 'in-progress'].includes(key)) {
+    return { label: '评审中', tone: 'bg-[#e8f0ff] text-[#1a71ff]', dot: 'bg-[#1a71ff] animate-pulse' };
+  }
+  return { label: key, tone: 'bg-[#f3f4f6] text-[#757f9c]', dot: 'bg-[#a3aaba]' };
+}
+
+/** ocr 是否因为「没有可评审文件」而跳过。 */
+export function isOcrSkipped(status: string | undefined | null): boolean {
+  return (status ?? '').trim().toLowerCase() === 'skipped';
+}
+
+/**
+ * skipped 的成因推断 + 处置建议。ocr 的 JSON 里只有「没有可评审文件」这一句，
+ * 具体原因要靠上下文还原，所以这里按最常见的三种情况列出可核对的线索。
+ */
+export function ocrSkipHint(
+  status: string | undefined | null,
+  summary?: { files_reviewed?: number | null; source_branch?: string; target_branch?: string } | null,
+): { headline: string; reasons: string[]; advice: string } | null {
+  if (!isOcrSkipped(status)) return null;
+  const reasons = [
+    'diff 为空：源分支与目标分支指向同一提交（例如从 main 开到 main 的 PR，或已合并后 head 分支被删除）。',
+    '变更文件类型不在 ocr 默认白名单：.txt / .md / .lock / 图片、二进制等默认不参与评审。',
+    '变更文件被规则过滤掉：命中自定义规则文件的 exclude，或落在默认排除目录（tests/、node_modules/、dist/ 等）。',
+  ];
+  const sameBranch =
+    summary?.source_branch && summary?.target_branch && summary.source_branch === summary.target_branch;
+  if (sameBranch) {
+    // 同一分支是确定性的空 diff，放到第一条并标注
+    reasons[0] = `源分支与目标分支相同（均为 ${summary?.target_branch}），diff 恒为空。`;
+  }
+  return {
+    headline: `ocr 没有找到可评审的文件，本次未产出任何评审意见（实际评审文件数 ${summary?.files_reviewed ?? 0}）。`,
+    reasons,
+    advice:
+      '想让被白名单挡掉的文件也参与评审，可在「自定义评审规则」的 include 里加对应 glob（如 **/requirements.txt、**/*.md）；若 diff 本身为空，说明这次变更没有可评审内容，可忽略。',
+  };
+}
+
 /** rq 任务是分钟级的，这里把状态映射成轮询间隔：活跃任务 3s，其余 10s。 */
 export function taskPollingInterval(tasks: { status: AiReviewTaskStatus }[]): number {
   const active = tasks.some((task) => task.status === 'queued' || task.status === 'running');

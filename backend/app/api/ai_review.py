@@ -188,6 +188,9 @@ def _preset_out(preset: AiReviewPreset) -> dict[str, Any]:
 
 
 def _task_out(task: AiReviewTask, workspace_name: str = "") -> dict[str, Any]:
+    # ocr 自己的执行结论（succeeded / skipped / ...）。后端 status 只表示「作业跑没跑完」，
+    # 列表里要区分「跑完了但无可评审文件」，所以把这两个字段单独透出，不塞整个 summary_json。
+    summary = task.summary_json if isinstance(task.summary_json, dict) else {}
     return {
         "id": task.id,
         "workspace_id": task.workspace_id,
@@ -209,6 +212,9 @@ def _task_out(task: AiReviewTask, workspace_name: str = "") -> dict[str, Any]:
             task.platform_synced_at.isoformat() if task.platform_synced_at else None
         ),
         "platform_sync_url": task.platform_sync_url,
+        # ocr 的执行结论 + 实际评审文件数（skipped 时通常为 0）
+        "ocr_status": str(summary.get("ocr_status") or ""),
+        "files_reviewed": summary.get("files_reviewed"),
         # 列表接口不带结果正文（result_json 可达上百条评论），详情接口才给
         "has_result": bool(task.result_json),
     }

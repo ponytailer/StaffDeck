@@ -33,7 +33,7 @@ import {
 import { ApiError } from '../../api/client';
 import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { PLATFORM_META, TASK_STATUS_META, pageNumbers, taskPollingInterval } from './aiReviewModel';
+import { PLATFORM_META, TASK_STATUS_META, isOcrSkipped, pageNumbers, taskPollingInterval } from './aiReviewModel';
 import AiReviewWorkspaceDialog from './AiReviewWorkspaceDialog';
 import AiReviewSettingsDialog from './AiReviewSettingsDialog';
 import CreateReviewTaskDialog from './CreateReviewTaskDialog';
@@ -462,6 +462,14 @@ function TaskRow({
               {task.source_branch} → {task.target_branch}
             </span>
             <span className="shrink-0">{formatTime(task.created_at)}</span>
+            {isOcrSkipped(task.ocr_status) && (
+              <span
+                title="ocr 没有找到可评审的文件：diff 为空，或变更文件类型不在默认白名单（.txt/.md/.lock 等）"
+                className="inline-flex shrink-0 items-center gap-[3px] rounded-[6px] bg-[#fff7e8] px-[6px] py-[1px] text-[10.5px] text-[#8a4b00]"
+              >
+                无可评审文件
+              </span>
+            )}
             {task.platform_synced_at && (
               <a
                 href={task.platform_sync_url || task.web_url}

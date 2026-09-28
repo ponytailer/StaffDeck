@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, FileCode2, LoaderCircle, MessageSquare, RotateCcw, SendToBack } from 'lucide-react';
+import { Bot, FileCode2, Info, LoaderCircle, MessageSquare, RotateCcw, SendToBack } from 'lucide-react';
 
 import {
   fetchAiReviewTaskDetail,
@@ -11,7 +11,14 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { notify } from '@/components/ui/app-toast';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import { commentRange, formatElapsed, formatTokens, sortComments } from './aiReviewModel';
+import {
+  commentRange,
+  formatElapsed,
+  formatTokens,
+  ocrSkipHint,
+  ocrStatusMeta,
+  sortComments,
+} from './aiReviewModel';
 
 function SummaryChip({ label, value }: { label: string; value: string }) {
   if (!value) return null;
@@ -19,6 +26,23 @@ function SummaryChip({ label, value }: { label: string; value: string }) {
     <span className="inline-flex items-center gap-[5px] rounded-[8px] bg-[#f4f5f8] px-[10px] py-[4px] text-[11.5px] text-[#464c5e]">
       <span className="text-[#a3aaba]">{label}</span>
       <span className="font-medium tabular-nums text-[#18181a]">{value}</span>
+    </span>
+  );
+}
+
+/** ocr 结论 chip：把 skipped 等原始值译成人话，并给出对应色调。 */
+function OcrStatusChip({ status }: { status: string }) {
+  const meta = ocrStatusMeta(status);
+  if (!meta) return null;
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-[6px] rounded-[8px] px-[10px] py-[4px] text-[11.5px] font-medium',
+        meta.tone,
+      )}
+    >
+      <span className={cn('size-[6px] rounded-full', meta.dot)} />
+      {meta.label}
     </span>
   );
 }
@@ -134,6 +158,11 @@ export default function ReviewResultDialog({
   const comments = detail ? sortComments(detail.result_json) : [];
   const summary = detail?.summary_json ?? {};
   const canSync = Boolean(detail && comments.length > 0);
+  const skipHint = ocrSkipHint(String(summary.ocr_status || ''), {
+    files_reviewed: summary.files_reviewed ?? null,
+    source_branch: detail?.source_branch,
+    target_branch: detail?.target_branch,
+  });
 
   return (
     <Dialog open={taskId !== null} onOpenChange={(next) => { if (!next) onClose(); }}>
@@ -191,7 +220,7 @@ export default function ReviewResultDialog({
           ) : detail ? (
             <div className="flex flex-col gap-[14px]">
               <div className="flex flex-wrap items-center gap-[8px]">
-                <SummaryChip label="状态" value={String(summary.ocr_status || '')} />
+                <OcrStatusChip status={String(summary.ocr_status || '')} />
                 <SummaryChip label="模型" value={String(summary.model || '')} />
                 <SummaryChip label="评审文件" value={summary.files_reviewed !== undefined ? String(summary.files_reviewed) : ''} />
                 <SummaryChip label="评论数" value={String(comments.length)} />
@@ -226,9 +255,31 @@ export default function ReviewResultDialog({
               </div>
 
               {comments.length === 0 ? (
-                <div className="rounded-[12px] border-[0.5px] border-dashed border-[#e3e7f1] bg-[#fafbfd] px-[14px] py-[18px] text-[12px] leading-[18px] text-[#757f9c]">
-                  这次评审没有产出行级意见——可能变更很小，或模型认为没有值得指摘的点。
-                </div>
+                skipHint ? (
+                  <div className="rounded-[12px] border-[0.5px] border-[#f0e2c4] bg-[#fffaf0] px-[14px] py-[12px]">
+                    <div className="flex items-start gap-[8px]">
+                      <Info className="mt-[1px] size-[14px] shrink-0 text-[#d98b1f]" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[12px] font-medium text-[#8a4b00]">{skipHint.headline}</p>
+                        <ul className="mt-[6px] flex flex-col gap-[3px] text-[11.5px] leading-[18px] text-[#7a6231]">
+                          {skipHint.reasons.map((reason) => (
+                            <li key={reason} className="flex gap-[6px]">
+                              <span className="shrink-0 text-[#d98b1f]">·</span>
+                              <span className="min-w-0">{reason}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="mt-[8px] rounded-[8px] bg-white/70 px-[10px] py-[7px] text-[11.5px] leading-[18px] text-[#5b6273]">
+                          {skipHint.advice}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-[12px] border-[0.5px] border-dashed border-[#e3e7f1] bg-[#fafbfd] px-[14px] py-[18px] text-[12px] leading-[18px] text-[#757f9c]">
+                    这次评审没有产出行级意见——可能变更很小，或模型认为没有值得指摘的点。
+                  </div>
+                )
               ) : (
                 <div className="flex flex-col gap-[8px]">
                   {comments.map((comment, index) => (

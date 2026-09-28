@@ -3649,5 +3649,14 @@
   "请填写评审要求，或至少勾选一条全局预设": "Fill in review requirements, or select at least one global preset",
   "已保存 {1} access token": "Saved {1} access token",
   "粘贴新 token 覆盖；留空并保存则清除": "Paste a new token to replace it; leave empty and save to remove",
-  "隐藏 token": "Hide token"
+  "隐藏 token": "Hide token",
+  "无可评审文件（已跳过）": "No reviewable files (skipped)",
+  "无可评审文件": "No reviewable files",
+  "ocr 没有找到可评审的文件，本次未产出任何评审意见（实际评审文件数 {1}）。": "OCR found no reviewable files, so this run produced no comments ({1} files reviewed).",
+  "diff 为空：源分支与目标分支指向同一提交（例如从 main 开到 main 的 PR，或已合并后 head 分支被删除）。": "Empty diff: source and target point to the same commit (e.g. a PR opened from main to main, or a merged PR whose head branch was deleted).",
+  "源分支与目标分支相同（均为 {1}），diff 恒为空。": "Source and target branch are the same ({1}), so the diff is always empty.",
+  "变更文件类型不在 ocr 默认白名单：.txt / .md / .lock / 图片、二进制等默认不参与评审。": "Changed file types are not in the OCR default allowlist: .txt / .md / .lock / images and binaries are excluded by default.",
+  "变更文件被规则过滤掉：命中自定义规则文件的 exclude，或落在默认排除目录（tests/、node_modules/、dist/ 等）。": "Changed files were filtered out: matched the custom rule file's exclude, or fall under default-excluded paths (tests/, node_modules/, dist/, ...).",
+  "想让被白名单挡掉的文件也参与评审，可在「自定义评审规则」的 include 里加对应 glob（如 **/requirements.txt、**/*.md）；若 diff 本身为空，说明这次变更没有可评审内容，可忽略。": "To review files excluded by the allowlist, add the matching glob to include in Custom review rules (e.g. **/requirements.txt, **/*.md). If the diff itself is empty, there is nothing to review and you can ignore this.",
+  "ocr 没有找到可评审的文件：diff 为空，或变更文件类型不在默认白名单（.txt/.md/.lock 等）": "OCR found no reviewable files: empty diff, or changed file types outside the default allowlist (.txt/.md/.lock, ...)"
 }

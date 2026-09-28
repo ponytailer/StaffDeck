@@ -4,6 +4,9 @@ import {
   commentRange,
   formatElapsed,
   formatTokens,
+  isOcrSkipped,
+  ocrSkipHint,
+  ocrStatusMeta,
   pageNumbers,
   sampleRuleFileText,
   sortComments,
@@ -122,5 +125,62 @@ describe('validateRuleFileText', () => {
       expect(result.config.exclude).toEqual(['**/vendor/**']);
       expect(result.config.rules?.[0].merge_system_rule).toBe(false);
     }
+  });
+});
+
+describe('ocrStatusMeta / isOcrSkipped', () => {
+  it('skipped 译成「无可评审文件（已跳过）」而不是失败', () => {
+    const meta = ocrStatusMeta('skipped');
+    expect(meta?.label).toBe('无可评审文件（已跳过）');
+    expect(meta?.tone).toContain('#fff7e8');
+    expect(isOcrSkipped('skipped')).toBe(true);
+    expect(isOcrSkipped('SKIPPED')).toBe(true);
+    expect(isOcrSkipped('succeeded')).toBe(false);
+  });
+
+  it('正常收尾与失败的别名都归一', () => {
+    expect(ocrStatusMeta('succeeded')?.label).toBe('已完成');
+    expect(ocrStatusMeta('done')?.label).toBe('已完成');
+    expect(ocrStatusMeta('failed')?.label).toBe('失败');
+    expect(ocrStatusMeta('running')?.label).toBe('评审中');
+  });
+
+  it('空值与未知值：空值不渲染 chip，未知值原样展示', () => {
+    expect(ocrStatusMeta('')).toBeNull();
+    expect(ocrStatusMeta(undefined)).toBeNull();
+    expect(ocrStatusMeta('weird')?.label).toBe('weird');
+  });
+});
+
+describe('ocrSkipHint', () => {
+  it('非 skipped 不产提示', () => {
+    expect(ocrSkipHint('succeeded')).toBeNull();
+    expect(ocrSkipHint(undefined)).toBeNull();
+  });
+
+  it('skipped 时给出结论 + 三条成因 + 处置建议', () => {
+    const hint = ocrSkipHint('skipped', { files_reviewed: 0 });
+    expect(hint?.headline).toContain('实际评审文件数 0');
+    expect(hint?.reasons).toHaveLength(3);
+    expect(hint?.advice).toContain('include');
+  });
+
+  it('源分支与目标分支相同时，第一条成因换成确定性的空 diff 说明', () => {
+    const hint = ocrSkipHint('skipped', {
+      files_reviewed: 0,
+      source_branch: 'main',
+      target_branch: 'main',
+    });
+    expect(hint?.reasons[0]).toContain('源分支与目标分支相同（均为 main）');
+  });
+
+  it('分支不同时保留通用的三种成因', () => {
+    const hint = ocrSkipHint('skipped', {
+      files_reviewed: 0,
+      source_branch: 'feature/x',
+      target_branch: 'main',
+    });
+    expect(hint?.reasons[0]).toContain('diff 为空');
+    expect(hint?.reasons[1]).toContain('.txt');
   });
 });

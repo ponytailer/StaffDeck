@@ -69,6 +69,10 @@ export type AiReviewTaskSummary = {
   platform_synced_at: string | null;
   platform_sync_url: string;
   has_result: boolean;
+  /** ocr 自己的执行结论：succeeded / skipped ...（后端 status 只表示作业跑没跑完） */
+  ocr_status?: string;
+  /** ocr 实际评审的文件数；skipped 时通常为 0 */
+  files_reviewed?: number | null;
 };
 
 export type AiReviewComment = {
