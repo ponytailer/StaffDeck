@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, FileCode2, LoaderCircle, MessageSquare, RotateCcw, SendToBack } from 'lucide-react';
+import {
+  AlertCircle,
+  Bot,
+  ChevronRight,
+  FileCode2,
+  Info,
+  LoaderCircle,
+  MessageSquare,
+  RotateCcw,
+  SendToBack,
+  Settings2,
+  X,
+} from 'lucide-react';
 
 import {
+  AI_REVIEW_PLATFORM_WRITE_DENIED_CODE,
   fetchAiReviewTaskDetail,
   syncAiReviewTaskToPlatform,
   type AiReviewTaskDetail,
@@ -11,7 +24,17 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { notify } from '@/components/ui/app-toast';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import { commentRange, formatElapsed, formatTokens, sortComments } from './aiReviewModel';
+import {
+  commentRange,
+  formatElapsed,
+  formatThinkingSize,
+  formatTokens,
+  ocrSkipHint,
+  ocrStatusMeta,
+  sortComments,
+  splitTextLinks,
+  splitThinkingBlocks,
+} from './aiReviewModel';
 
 function SummaryChip({ label, value }: { label: string; value: string }) {
   if (!value) return null;
@@ -23,9 +46,30 @@ function SummaryChip({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** ocr 结论 chip：把 skipped 等原始值译成人话，并给出对应色调。 */
+function OcrStatusChip({ status }: { status: string }) {
+  const meta = ocrStatusMeta(status);
+  if (!meta) return null;
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-[6px] rounded-[8px] px-[10px] py-[4px] text-[11.5px] font-medium',
+        meta.tone,
+      )}
+    >
+      <span className={cn('size-[6px] rounded-full', meta.dot)} />
+      {meta.label}
+    </span>
+  );
+}
+
 function CommentCard({ comment }: { comment: AiReviewTaskDetail['result_json'][number] }) {
   const path = comment.path || '(未知文件)';
   const range = commentRange(comment);
+  // ocr 的 thinking 是模型原始思维链（可能上万字符），先切段再折叠展示：
+  // 展开前只有一行、展开后限高滚动，不让它把整张卡片撑开。
+  const thinkingSize = formatThinkingSize(comment.thinking);
+  const thinkingBlocks = thinkingSize ? splitThinkingBlocks(comment.thinking) : [];
   return (
     <div className="flex flex-col gap-[8px] rounded-[14px] border-[0.5px] border-[#eef0f4] bg-white px-[14px] py-[12px]">
       <div className="flex flex-wrap items-center gap-[8px]">
@@ -56,17 +100,54 @@ function CommentCard({ comment }: { comment: AiReviewTaskDetail['result_json'][n
           </pre>
         </div>
       )}
-      {comment.thinking?.trim() && (
-        <details className="group">
-          <summary className="cursor-pointer select-none text-[11px] text-[#a3aaba] transition-colors hover:text-[#757f9c]">
-            评审思路
+      {thinkingBlocks.length > 0 && (
+        <details className="group overflow-hidden rounded-[10px] border-[0.5px] border-[#eef0f4] bg-[#fafbfd]">
+          <summary className="flex cursor-pointer select-none list-none items-center gap-[6px] px-[10px] py-[7px] text-[11px] text-[#757f9c] transition-colors hover:bg-[#f4f6fa] [&::-webkit-details-marker]:hidden">
+            <ChevronRight className="size-[12px] shrink-0 text-[#a3aaba] transition-transform group-open:rotate-90" />
+            <span className="shrink-0 font-medium text-[#5b6273]">评审思路</span>
+            <span className="shrink-0 rounded-[5px] bg-white px-[5px] py-[1px] tabular-nums text-[10.5px] text-[#a3aaba]">
+              {thinkingSize}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-right text-[10.5px] text-[#a3aaba]">
+              模型内部推理，未做整理
+            </span>
           </summary>
-          <p className="mt-[6px] rounded-[10px] bg-[#fafbfd] p-[10px] text-[11.5px] leading-[18px] text-[#757f9c]">
-            {comment.thinking}
-          </p>
+          <div className="max-h-[260px] overflow-y-auto border-t-[0.5px] border-[#eef0f4] bg-white px-[12px] py-[10px]">
+            {thinkingBlocks.map((block, index) => (
+              <p
+                key={index}
+                className="whitespace-pre-wrap text-[11.5px] leading-[19px] text-[#6b7386] [&+&]:mt-[8px]"
+              >
+                {block}
+              </p>
+            ))}
+          </div>
         </details>
       )}
     </div>
+  );
+}
+
+/** 报错文案渲染：把其中嵌的设置页地址变成可点链接，其余按纯文本走。 */
+function ErrorMessageText({ text }: { text: string }) {
+  return (
+    <>
+      {splitTextLinks(text).map((segment, index) =>
+        segment.type === 'link' ? (
+          <a
+            key={index}
+            href={segment.value}
+            target="_blank"
+            rel="noreferrer"
+            className="break-all text-[#1a71ff] underline underline-offset-2"
+          >
+            {segment.value}
+          </a>
+        ) : (
+          <span key={index}>{segment.value}</span>
+        ),
+      )}
+    </>
   );
 }
 
@@ -80,15 +161,19 @@ function formatSyncTime(value: string | null): string {
 export default function ReviewResultDialog({
   taskId,
   onClose,
+  onOpenSettings,
 }: {
   taskId: string | null;
   onClose: () => void;
+  /** 打开「平台设置」——回写被拒时引导用户去补 token 权限。 */
+  onOpenSettings?: () => void;
 }) {
   const [detail, setDetail] = useState<AiReviewTaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [confirmSync, setConfirmSync] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<{ message: string; needsSettings: boolean } | null>(null);
 
   const reload = useCallback(async () => {
     if (!taskId) return;
@@ -108,8 +193,10 @@ export default function ReviewResultDialog({
     if (!taskId) {
       setDetail(null);
       setError(null);
+      setSyncError(null);
       return;
     }
+    setSyncError(null);
     void reload();
   }, [taskId, reload]);
 
@@ -118,6 +205,7 @@ export default function ReviewResultDialog({
     setSyncing(true);
     try {
       const result = await syncAiReviewTaskToPlatform(taskId);
+      setSyncError(null);
       notify.success('评审结果已回写到 PR / MR 评论区');
       if (result.platform_sync_url) {
         window.open(result.platform_sync_url, '_blank', 'noopener');
@@ -125,7 +213,15 @@ export default function ReviewResultDialog({
       setConfirmSync(false);
       await reload();
     } catch (cause) {
-      notify.error(cause instanceof ApiError || cause instanceof Error ? cause.message : '回写失败');
+      // token 能读不能写这类问题，靠一闪而过的 toast 说不清，所以在弹窗里留一块常驻引导
+      const needsSettings =
+        cause instanceof ApiError && cause.code === AI_REVIEW_PLATFORM_WRITE_DENIED_CODE;
+      const message =
+        cause instanceof ApiError || cause instanceof Error ? cause.message : '回写失败';
+      setSyncError({ message, needsSettings });
+      // 关掉确认框，否则它会盖住刚渲染的错误面板（重试再点一次按钮即可）
+      setConfirmSync(false);
+      notify.error(needsSettings ? `回写被平台拒绝：${message}` : message);
     } finally {
       setSyncing(false);
     }
@@ -134,6 +230,11 @@ export default function ReviewResultDialog({
   const comments = detail ? sortComments(detail.result_json) : [];
   const summary = detail?.summary_json ?? {};
   const canSync = Boolean(detail && comments.length > 0);
+  const skipHint = ocrSkipHint(String(summary.ocr_status || ''), {
+    files_reviewed: summary.files_reviewed ?? null,
+    source_branch: detail?.source_branch,
+    target_branch: detail?.target_branch,
+  });
 
   return (
     <Dialog open={taskId !== null} onOpenChange={(next) => { if (!next) onClose(); }}>
@@ -191,7 +292,7 @@ export default function ReviewResultDialog({
           ) : detail ? (
             <div className="flex flex-col gap-[14px]">
               <div className="flex flex-wrap items-center gap-[8px]">
-                <SummaryChip label="状态" value={String(summary.ocr_status || '')} />
+                <OcrStatusChip status={String(summary.ocr_status || '')} />
                 <SummaryChip label="模型" value={String(summary.model || '')} />
                 <SummaryChip label="评审文件" value={summary.files_reviewed !== undefined ? String(summary.files_reviewed) : ''} />
                 <SummaryChip label="评论数" value={String(comments.length)} />
@@ -210,6 +311,40 @@ export default function ReviewResultDialog({
                 )}
               </div>
 
+              {syncError && (
+                <div className="rounded-[12px] border-[0.5px] border-[#f0d4d4] bg-[#fdf4f3] px-[14px] py-[12px]">
+                  <div className="flex items-start gap-[8px]">
+                    <AlertCircle className="mt-[1px] size-[14px] shrink-0 text-[#c0392b]" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[12px] font-medium text-[#8f2c20]">
+                        {syncError.needsSettings ? '回写被代码平台拒绝：token 缺少写权限' : '回写失败'}
+                      </p>
+                      <p className="mt-[5px] text-[11.5px] leading-[18px] text-[#a2534a]">
+                        <ErrorMessageText text={syncError.message} />
+                      </p>
+                      {syncError.needsSettings && onOpenSettings && (
+                        <button
+                          type="button"
+                          onClick={onOpenSettings}
+                          className="mt-[8px] inline-flex h-[28px] items-center gap-[5px] rounded-[8px] border-[0.5px] border-[#e8bfbc] bg-white px-[10px] text-[11.5px] font-medium text-[#c0392b] transition-colors hover:bg-[#fbeae9]"
+                        >
+                          <Settings2 className="size-[12px]" />
+                          去平台设置补权限
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="关闭回写错误提示"
+                      onClick={() => setSyncError(null)}
+                      className="grid size-[22px] shrink-0 place-items-center rounded-[6px] text-[#c99c97] transition-colors hover:bg-white hover:text-[#c0392b]"
+                    >
+                      <X className="size-[12px]" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {detail.requirements?.trim() && (
                 <div className="rounded-[12px] bg-[#fafbfd] px-[14px] py-[10px]">
                   <div className="text-[11px] font-medium text-[#757f9c]">本次评审要求（快照）</div>
@@ -226,9 +361,31 @@ export default function ReviewResultDialog({
               </div>
 
               {comments.length === 0 ? (
-                <div className="rounded-[12px] border-[0.5px] border-dashed border-[#e3e7f1] bg-[#fafbfd] px-[14px] py-[18px] text-[12px] leading-[18px] text-[#757f9c]">
-                  这次评审没有产出行级意见——可能变更很小，或模型认为没有值得指摘的点。
-                </div>
+                skipHint ? (
+                  <div className="rounded-[12px] border-[0.5px] border-[#f0e2c4] bg-[#fffaf0] px-[14px] py-[12px]">
+                    <div className="flex items-start gap-[8px]">
+                      <Info className="mt-[1px] size-[14px] shrink-0 text-[#d98b1f]" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[12px] font-medium text-[#8a4b00]">{skipHint.headline}</p>
+                        <ul className="mt-[6px] flex flex-col gap-[3px] text-[11.5px] leading-[18px] text-[#7a6231]">
+                          {skipHint.reasons.map((reason) => (
+                            <li key={reason} className="flex gap-[6px]">
+                              <span className="shrink-0 text-[#d98b1f]">·</span>
+                              <span className="min-w-0">{reason}</span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="mt-[8px] rounded-[8px] bg-white/70 px-[10px] py-[7px] text-[11.5px] leading-[18px] text-[#5b6273]">
+                          {skipHint.advice}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-[12px] border-[0.5px] border-dashed border-[#e3e7f1] bg-[#fafbfd] px-[14px] py-[18px] text-[12px] leading-[18px] text-[#757f9c]">
+                    这次评审没有产出行级意见——可能变更很小，或模型认为没有值得指摘的点。
+                  </div>
+                )
               ) : (
                 <div className="flex flex-col gap-[8px]">
                   {comments.map((comment, index) => (

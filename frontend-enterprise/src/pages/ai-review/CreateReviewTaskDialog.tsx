@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, GitPullRequest, LoaderCircle, RotateCcw, Star } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, GitPullRequest, Info, LoaderCircle, RotateCcw, Star } from 'lucide-react';
 
 import {
   createAiReviewTask,
@@ -7,30 +7,41 @@ import {
   fetchAiReviewPresets,
   type AiReviewMergeRequest,
   type AiReviewPreset,
+  type AiReviewTaskStatus,
   type AiReviewWorkspace,
 } from '../../api/aiReview';
 import { ApiError } from '../../api/client';
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, notify, Textarea } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import { validateTaskDraft } from './aiReviewModel';
+import {
+  TASK_STATUS_META,
+  duplicateReviewAdvice,
+  duplicateReviewBlockedText,
+  isTaskInFlight,
+  validateTaskDraft,
+} from './aiReviewModel';
 
 /**
  * 发起评审任务弹窗：
  * - 默认带出从 MR 列表点进来的那条 PR/MR；「手动指定」时先在弹窗内挑一条
  * - 评审要求 = 自由文本 + 勾选的全局预设（标星预设默认勾上）
  * - 提交只是入队（rq），成功后任务出现在列表里等待轮询
+ * - 同一 PR/MR 已有排队 / 执行中的任务时不允许重复发起（前端先拦，后端 409 兜底）
  */
 export default function CreateReviewTaskDialog({
   open,
   onClose,
   workspace,
   initialMr,
+  inFlightByMr,
   onCreated,
 }: {
   open: boolean;
   onClose: () => void;
   workspace: AiReviewWorkspace | null;
   initialMr: AiReviewMergeRequest | null;
+  /** 任务列表轮询到的最新「进行中」状态（编号 → 状态） */
+  inFlightByMr?: Map<number, string>;
   onCreated: () => void;
 }) {
   const [mr, setMr] = useState<AiReviewMergeRequest | null>(null);
@@ -43,8 +54,8 @@ export default function CreateReviewTaskDialog({
   const [requirements, setRequirements] = useState('');
   const [manualNumber, setManualNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
-
-  const needPick = !initialMr || !initialMr.number;
+  /** 后端 409 回来的「已被占用」编号（本地补锁，父级刷新到位后以父级为准） */
+  const [serverBlocked, setServerBlocked] = useState<Record<number, string>>({});
 
   const reloadMr = useCallback(async () => {
     if (!workspace) return;
@@ -84,6 +95,7 @@ export default function CreateReviewTaskDialog({
     setManualNumber('');
     setRequirements('');
     setSubmitting(false);
+    setServerBlocked({});
     void reloadMr();
     void reloadPresets();
   }, [open, initialMr, reloadMr, reloadPresets]);
@@ -117,8 +129,38 @@ export default function CreateReviewTaskDialog({
     [requirements, selectedPresetIds],
   );
 
+  /** 选中 PR/MR 的进行中状态：父级轮询值 > 本地 409 标记 > 列表接口快照。 */
+  const selectedInFlight = mr
+    ? inFlightByMr?.get(mr.number) ?? serverBlocked[mr.number] ?? mr.in_flight_status ?? ''
+    : '';
+  const blocked = isTaskInFlight(selectedInFlight);
+  const blockedText = mr ? duplicateReviewBlockedText(mr.number, selectedInFlight) : '';
+
+  // 任务收尾 / 新任务入队时刷新选择列表，避免弹窗停在打开那一刻的快照。
+  // 单独一个 effect：不能并进下面的重置 effect，否则会清掉用户已填的要求。
+  const inFlightSignature = useMemo(
+    () =>
+      inFlightByMr
+        ? [...inFlightByMr.entries()]
+            .sort((left, right) => left[0] - right[0])
+            .map(([number, status]) => `${number}:${status}`)
+            .join(',')
+        : '',
+    [inFlightByMr],
+  );
+  const inFlightSignatureRef = useRef(inFlightSignature);
+  useEffect(() => {
+    if (inFlightSignatureRef.current === inFlightSignature) return;
+    inFlightSignatureRef.current = inFlightSignature;
+    if (open) void reloadMr();
+  }, [inFlightSignature, open, reloadMr]);
+
   async function submit() {
     if (!workspace || !mr) return;
+    if (blocked) {
+      notify.error(blockedText);
+      return;
+    }
     if (invalid) {
       notify.error(invalid);
       return;
@@ -139,7 +181,13 @@ export default function CreateReviewTaskDialog({
       onCreated();
       onClose();
     } catch (cause) {
-      notify.error(cause instanceof ApiError || cause instanceof Error ? cause.message : '提交失败');
+      const message = cause instanceof ApiError || cause instanceof Error ? cause.message : '提交失败';
+      if (cause instanceof ApiError && cause.status === 409) {
+        // 后端判定该 PR/MR 已有进行中任务：本地补锁 + 让父级刷新任务列表
+        setServerBlocked((prev) => ({ ...prev, [mr.number]: 'running' }));
+        onCreated();
+      }
+      notify.error(message);
     } finally {
       setSubmitting(false);
     }
@@ -208,22 +256,61 @@ export default function CreateReviewTaskDialog({
                   {(mrs ?? []).length === 0 ? (
                     <span className="py-[8px] text-[11.5px] text-[#757f9c]">没有 open 状态的 PR / MR，请手动指定编号。</span>
                   ) : (
-                    (mrs ?? []).map((item) => (
-                      <button
-                        key={item.number}
-                        type="button"
-                        onClick={() => setMr(item)}
-                        className="flex flex-col items-start gap-[2px] rounded-[10px] border-[0.5px] border-[#eef0f4] bg-[#fafbfd] px-[10px] py-[8px] text-left transition-colors hover:border-[#cfe0ff] hover:bg-[#f4f8ff]"
-                      >
-                        <span className="w-full truncate text-[12.5px] font-medium text-[#18181a]">
-                          #{item.number} {item.title}
-                        </span>
-                        <span className="truncate font-mono text-[11px] text-[#757f9c]">
-                          {item.source_branch} → {item.target_branch}
-                          {item.author ? ` · @${item.author}` : ''}
-                        </span>
-                      </button>
-                    ))
+                    (mrs ?? []).map((item) => {
+                      const itemInFlight =
+                        inFlightByMr?.get(item.number) ??
+                        serverBlocked[item.number] ??
+                        item.in_flight_status ??
+                        '';
+                      const itemBlocked = isTaskInFlight(itemInFlight);
+                      const itemMeta = itemBlocked
+                        ? TASK_STATUS_META[itemInFlight as AiReviewTaskStatus]
+                        : null;
+                      return (
+                        <button
+                          key={item.number}
+                          type="button"
+                          disabled={itemBlocked}
+                          aria-label={
+                            itemBlocked ? duplicateReviewBlockedText(item.number, itemInFlight) : undefined
+                          }
+                          onClick={() => setMr(item)}
+                          className={cn(
+                            'flex flex-col items-start gap-[2px] rounded-[10px] border-[0.5px] px-[10px] py-[8px] text-left transition-colors',
+                            itemBlocked
+                              ? 'cursor-not-allowed border-[#eef0f4] bg-[#f6f7f9]'
+                              : 'border-[#eef0f4] bg-[#fafbfd] hover:border-[#cfe0ff] hover:bg-[#f4f8ff]',
+                          )}
+                        >
+                          <span className="flex w-full items-center gap-[6px]">
+                            <span
+                              className={cn(
+                                'min-w-0 flex-1 truncate text-[12.5px] font-medium',
+                                itemBlocked ? 'text-[#a3aaba]' : 'text-[#18181a]',
+                              )}
+                            >
+                              #{item.number} {item.title}
+                            </span>
+                            {itemBlocked && itemMeta && (
+                              <span
+                                title={duplicateReviewBlockedText(item.number, itemInFlight)}
+                                className={cn(
+                                  'inline-flex shrink-0 items-center gap-[4px] rounded-[6px] px-[6px] py-[1px] text-[10.5px]',
+                                  itemMeta.tone,
+                                )}
+                              >
+                                <span className={cn('size-[5px] shrink-0 rounded-full', itemMeta.dot)} />
+                                {itemMeta.label}
+                              </span>
+                            )}
+                          </span>
+                          <span className="truncate font-mono text-[11px] text-[#757f9c]">
+                            {item.source_branch} → {item.target_branch}
+                            {item.author ? ` · @${item.author}` : ''}
+                          </span>
+                        </button>
+                      );
+                    })
                   )}
                 </div>
               )}
@@ -307,6 +394,20 @@ export default function CreateReviewTaskDialog({
             </section>
           )}
 
+          {blocked && (
+            <section className="rounded-[14px] border-[0.5px] border-[#f3d28b] bg-[#fff8e8] px-[14px] py-[12px]">
+              <div className="flex items-start gap-[8px] text-[12.5px] font-medium leading-[19px] text-[#6f4500]">
+                <Info className="mt-[2px] size-[13px] shrink-0" />
+                <span>{blockedText}</span>
+              </div>
+              <ul className="mt-[7px] list-disc space-y-[3px] pl-[26px] text-[11.5px] leading-[17px] text-[#8a5b13]">
+                {duplicateReviewAdvice().map((tip) => (
+                  <li key={tip}>{tip}</li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           <section className="flex flex-col gap-[6px]">
             <label className="text-[12px] font-medium text-[#464c5e]">
               本次评审要求
@@ -334,12 +435,12 @@ export default function CreateReviewTaskDialog({
           </Button>
           <Button
             type="button"
-            disabled={submitting || !mr || Boolean(invalid)}
+            disabled={submitting || !mr || Boolean(invalid) || blocked}
             onClick={() => void submit()}
             className="h-[32px] gap-[6px] rounded-[9px] bg-[#18181a] px-[16px] text-[12px] text-white hover:bg-[#2b2b2e] disabled:opacity-50"
           >
             {submitting && <LoaderCircle className="size-[13px] animate-spin" />}
-            创建评审任务
+            {blocked ? '已有评审任务' : '创建评审任务'}
           </Button>
         </div>
       </DialogContent>

@@ -29,6 +29,59 @@ class PlatformError(Exception):
     """平台 API 调用失败（凭证缺失 / 网络 / 上游报错），message 可直接给前端。"""
 
 
+class PlatformWriteDeniedError(PlatformError):
+    """写接口被平台拒绝（401/403）：token 能读不能写，或已失效。
+
+    单独成类是为了让 API 层给得出「去平台设置补哪个权限」这种可操作结论，
+    而不是一句笼统的「平台返回 401/403」——实测最常见的病因就是
+    token 只有读权限（回写 PR 评论需要 Issues 写权限）。
+    """
+
+    def __init__(self, message: str, *, platform: str, status: int) -> None:
+        super().__init__(message)
+        self.platform = platform
+        self.status = status
+
+
+GITHUB_TOKEN_SETTINGS_URL = "https://github.com/settings/tokens?type=beta"
+
+
+def write_denied_message(platform: str, status: int, body: str) -> str:
+    """把写接口的 401/403 翻成「下一步改哪里」。
+
+    平台原始报错（如 GitHub 的 ``Resource not accessible by personal access token``）
+    说明了病因，但用户看不出该动哪个开关，这里把开关指出来。
+    """
+    raw = (body or "").lower()
+    if platform == "github":
+        if "resource not accessible" in raw:
+            return (
+                "回写 PR 评论被 GitHub 拒绝：这个 token 能读仓库、但没有写权限"
+                "（Resource not accessible by personal access token）。"
+                "fine-grained token 到 GitHub → Settings → Developer settings → Fine-grained tokens"
+                f"（{GITHUB_TOKEN_SETTINGS_URL}）给目标仓库勾上 Repository permissions → "
+                "Issues = Read and write（回写走 issues 评论接口）；classic token 则需要 repo 权限。"
+                "改完把新 token 填回「平台设置」。"
+            )
+        if status == 401:
+            return "回写 PR 评论被 GitHub 拒绝：token 无效或已过期，请到「平台设置」重新填写 access token。"
+        return (
+            f"回写 PR 评论被 GitHub 拒绝（HTTP {status}）：请确认 token 未过期，"
+            "且对目标仓库有 Issues 写权限。"
+        )
+    if "insufficient" in raw:
+        return (
+            "回写 MR 评论被 GitLab 拒绝：token 权限不足（insufficient_scope）。"
+            "GitLab token 需要 api 权限（read_api 只能读不能写），请到「平台设置」更新 token。"
+        )
+    if status == 401:
+        return "回写 MR 评论被 GitLab 拒绝：token 无效或已过期，请到「平台设置」重新填写 access token。"
+    return (
+        f"回写 MR 评论被 GitLab 拒绝（HTTP {status}）：请确认 token 未过期、"
+        "具备 api 权限，且在该项目中的角色不低于 Developer。"
+    )
+
+
 @dataclass
 class PlatformCredential:
     platform: str
@@ -260,7 +313,9 @@ def credential_display(token: str) -> dict[str, Any]:
     return {"token_set": bool(token), "token_last4": token[-4:] if token else ""}
 
 
-def _request_post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+def _request_post_json(
+    url: str, headers: dict[str, str], payload: dict[str, Any], platform: str = ""
+) -> dict[str, Any]:
     try:
         response = httpx.post(
             url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True
@@ -268,9 +323,16 @@ def _request_post_json(url: str, headers: dict[str, str], payload: dict[str, Any
     except httpx.HTTPError as exc:
         raise PlatformError(f"提交到代码平台失败：{exc}") from exc
     if response.status_code in (401, 403):
-        raise PlatformError("平台 token 无效或权限不足（401/403），请到「平台设置」里更新。")
+        raise PlatformWriteDeniedError(
+            write_denied_message(platform, response.status_code, response.text),
+            platform=platform,
+            status=response.status_code,
+        )
     if response.status_code == 404:
-        raise PlatformError("目标 PR/MR 不存在（404），或 token 缺少评论写权限。")
+        raise PlatformError(
+            "目标 PR/MR 不存在（404）；GitHub / GitLab 对「token 无权访问的仓库」同样返回 404，"
+            "所以也可能是 token 缺少该仓库的访问权限。"
+        )
     if response.status_code >= 400:
         raise PlatformError(f"代码平台返回 {response.status_code}：{response.text[:200]}")
     try:
@@ -296,6 +358,6 @@ def post_merge_request_comment(
     else:
         quoted = quote(repo_path, safe="")
         url = f"{credential.gitlab_api_base()}/projects/{quoted}/merge_requests/{number}/notes"
-    data = _request_post_json(url, headers, {"body": body})
+    data = _request_post_json(url, headers, {"body": body}, platform=credential.platform)
     link = str(data.get("html_url") or data.get("web_url") or "")
     return link

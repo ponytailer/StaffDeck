@@ -33,10 +33,100 @@ export const PLATFORM_META: Record<string, { label: string; tone: string }> = {
   gitlab: { label: 'GitLab', tone: 'bg-[#fff7e8] text-[#8a4b00]' },
 };
 
+/**
+ * ocr 自身的执行结论（summary.ocr_status），和后端作业状态是两回事：
+ * 作业 succeeded 只代表「ocr 命令跑完了」，它仍可能报 skipped（diff 里没有可评审文件）。
+ * 这里把 skipped 译成人话，避免用户误以为是故障。
+ */
+export type OcrStatusMeta = { label: string; tone: string; dot: string };
+
+export function ocrStatusMeta(status: string | undefined | null): OcrStatusMeta | null {
+  const key = (status ?? '').trim().toLowerCase();
+  if (!key) return null;
+  if (key === 'skipped') {
+    return { label: '无可评审文件（已跳过）', tone: 'bg-[#fff7e8] text-[#8a4b00]', dot: 'bg-[#d98b1f]' };
+  }
+  if (['succeeded', 'success', 'completed', 'done', 'ok'].includes(key)) {
+    return { label: '已完成', tone: 'bg-[#e9f7ef] text-[#1a7f4b]', dot: 'bg-[#1a7f4b]' };
+  }
+  if (['failed', 'error'].includes(key)) {
+    return { label: '失败', tone: 'bg-[#fce7e7] text-[#c0392b]', dot: 'bg-[#c0392b]' };
+  }
+  if (['running', 'in_progress', 'in-progress'].includes(key)) {
+    return { label: '评审中', tone: 'bg-[#e8f0ff] text-[#1a71ff]', dot: 'bg-[#1a71ff] animate-pulse' };
+  }
+  return { label: key, tone: 'bg-[#f3f4f6] text-[#757f9c]', dot: 'bg-[#a3aaba]' };
+}
+
+/** ocr 是否因为「没有可评审文件」而跳过。 */
+export function isOcrSkipped(status: string | undefined | null): boolean {
+  return (status ?? '').trim().toLowerCase() === 'skipped';
+}
+
+/**
+ * skipped 的成因推断 + 处置建议。ocr 的 JSON 里只有「没有可评审文件」这一句，
+ * 具体原因要靠上下文还原，所以这里按最常见的三种情况列出可核对的线索。
+ */
+export function ocrSkipHint(
+  status: string | undefined | null,
+  summary?: { files_reviewed?: number | null; source_branch?: string; target_branch?: string } | null,
+): { headline: string; reasons: string[]; advice: string } | null {
+  if (!isOcrSkipped(status)) return null;
+  const reasons = [
+    'diff 为空：源分支与目标分支指向同一提交（例如从 main 开到 main 的 PR，或已合并后 head 分支被删除）。',
+    '变更文件类型不在 ocr 默认白名单：.txt / .md / .lock / 图片、二进制等默认不参与评审。',
+    '变更文件被规则过滤掉：命中自定义规则文件的 exclude，或落在默认排除目录（tests/、node_modules/、dist/ 等）。',
+  ];
+  const sameBranch =
+    summary?.source_branch && summary?.target_branch && summary.source_branch === summary.target_branch;
+  if (sameBranch) {
+    // 同一分支是确定性的空 diff，放到第一条并标注
+    reasons[0] = `源分支与目标分支相同（均为 ${summary?.target_branch}），diff 恒为空。`;
+  }
+  return {
+    headline: `ocr 没有找到可评审的文件，本次未产出任何评审意见（实际评审文件数 ${summary?.files_reviewed ?? 0}）。`,
+    reasons,
+    advice:
+      '想让被白名单挡掉的文件也参与评审，可在「自定义评审规则」的 include 里加对应 glob（如 **/requirements.txt、**/*.md）；若 diff 本身为空，说明这次变更没有可评审内容，可忽略。',
+  };
+}
+
 /** rq 任务是分钟级的，这里把状态映射成轮询间隔：活跃任务 3s，其余 10s。 */
 export function taskPollingInterval(tasks: { status: AiReviewTaskStatus }[]): number {
   const active = tasks.some((task) => task.status === 'queued' || task.status === 'running');
   return active ? 3000 : 10000;
+}
+
+/* ------------------------------------------------------------------ *
+ * 同一 PR/MR 只允许一个进行中任务
+ * ------------------------------------------------------------------ */
+
+/**
+ * 是否处于「进行中」（排队 / 执行）。这类任务会占住该 PR/MR 的评审位：
+ * 后端在创建与重试时都会拒掉重复提交，前端据此提前把入口禁掉。
+ */
+export function isTaskInFlight(status: string | undefined | null): boolean {
+  return status === 'queued' || status === 'running';
+}
+
+/** 进行中阶段的中文名（口径与 TASK_STATUS_META 一致）。 */
+export function inFlightPhaseLabel(status: string | undefined | null): string {
+  return status === 'queued' ? '排队中' : '评审中';
+}
+
+/** 同一 PR/MR 已有进行中任务时的拦截文案（{1}=编号，{2}=阶段）。 */
+export function duplicateReviewBlockedText(mrNumber: number, status?: string | null): string {
+  return `PR/MR #${mrNumber} 已有进行中的评审任务（${inFlightPhaseLabel(
+    status,
+  )}），同一 PR/MR 同时只能有一个评审任务，请等它结束后再发起。`;
+}
+
+/** 拦截面板里给出的两条处置路径。 */
+export function duplicateReviewAdvice(): string[] {
+  return [
+    '任务交给后台队列跑，通常几分钟，完成后状态自动刷新，该 PR/MR 的「发起评审」就会恢复可用。',
+    '如果任务长时间卡在同一个状态，先到「评审任务」列表里把它删除或重试，再发起新的评审。',
+  ];
 }
 
 /** ocr 的 elapsed 可能是秒数或带单位的字符串，统一成可读文本。 */
@@ -199,4 +289,72 @@ export function pageNumbers(current: number, totalPages: number): number[] {
   const pages: number[] = [];
   for (let page = start; page <= end; page += 1) pages.push(page);
   return pages;
+}
+
+// ---------------------------------------------------------------------------
+// 「评审思路」渲染：ocr 的 thinking 是模型原始思维链，动辄上万字符
+// ---------------------------------------------------------------------------
+
+/** 思维链体量文案，给用户一个「要不要展开」的预期。空值返回空串（调用方据此不渲染）。 */
+export function formatThinkingSize(thinking: string | undefined | null): string {
+  const size = (thinking ?? '').trim().length;
+  if (size === 0) return '';
+  if (size < 1000) return `${size} 字符`;
+  return `${(size / 1000).toFixed(1)}k 字符`;
+}
+
+const THINKING_LIST_LINE = /^(?:[-*+]|\d+[.)])\s+/;
+
+/**
+ * 把原始思维链拆成可读的段落。
+ *
+ * 不做语义解析（模型输出格式不稳定），只做两件确定性的事：按空行分段、段内压掉
+ * 硬换行——否则上万个字符会糊成一整段。段内若整体是列表、或含代码围栏，则保留
+ * 换行，免得把结构压坏。
+ */
+export function splitThinkingBlocks(thinking: string | undefined | null): string[] {
+  const text = (thinking ?? '').replace(/\r\n/g, '\n').trim();
+  if (!text) return [];
+  return text
+    .split(/\n\s*\n/)
+    .map(normalizeThinkingBlock)
+    .filter(Boolean);
+}
+
+function normalizeThinkingBlock(block: string): string {
+  const lines = block
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length <= 1) return lines.join('');
+  const structured =
+    lines.every((line) => THINKING_LIST_LINE.test(line)) || lines.some((line) => line.startsWith('```'));
+  return structured ? lines.join('\n') : lines.join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// 报错文案里嵌的链接
+// ---------------------------------------------------------------------------
+
+export type TextSegment = { type: 'text' | 'link'; value: string };
+
+const URL_PATTERN = /https?:\/\/[^\s（）()，。]+/g;
+
+/**
+ * 把一段文本按 http(s) 链接切成片段，便于把平台报错里的设置页地址渲染成可点锚点
+ * （纯文本 URL 在中文句子里既难读也点不动）。
+ */
+export function splitTextLinks(text: string | undefined | null): TextSegment[] {
+  const source = text ?? '';
+  if (!source) return [];
+  const segments: TextSegment[] = [];
+  let cursor = 0;
+  for (const match of source.matchAll(URL_PATTERN)) {
+    const start = match.index ?? 0;
+    if (start > cursor) segments.push({ type: 'text', value: source.slice(cursor, start) });
+    segments.push({ type: 'link', value: match[0] });
+    cursor = start + match[0].length;
+  }
+  if (cursor < source.length) segments.push({ type: 'text', value: source.slice(cursor) });
+  return segments;
 }

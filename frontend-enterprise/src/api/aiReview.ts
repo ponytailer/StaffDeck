@@ -37,6 +37,11 @@ export type AiReviewMergeRequest = {
   author: string;
   web_url: string;
   updated_at: string;
+  /** 该 PR/MR 是否已有排队 / 执行中的评审任务：'' | 'queued' | 'running' */
+  in_flight_status?: string;
+  in_flight_task_id?: string;
+  /** 进行中任务的开始（或入队）时间，用于提示「已经跑了多久」 */
+  in_flight_since?: string | null;
 };
 
 export type AiReviewPreset = {
@@ -69,6 +74,10 @@ export type AiReviewTaskSummary = {
   platform_synced_at: string | null;
   platform_sync_url: string;
   has_result: boolean;
+  /** ocr 自己的执行结论：succeeded / skipped ...（后端 status 只表示作业跑没跑完） */
+  ocr_status?: string;
+  /** ocr 实际评审的文件数；skipped 时通常为 0 */
+  files_reviewed?: number | null;
 };
 
 export type AiReviewComment = {
@@ -267,6 +276,12 @@ export function deleteAiReviewTask(taskId: string): Promise<{ deleted: boolean }
     `/api/enterprise/ai-review/tasks/${taskId}?tenant_id=${TENANT_ID}`,
   );
 }
+
+/**
+ * 回写被平台拒（token 能读不能写）的稳定错误码，与后端
+ * `app/api/ai_review.py::PLATFORM_WRITE_DENIED_CODE` 对齐。
+ */
+export const AI_REVIEW_PLATFORM_WRITE_DENIED_CODE = 'AI_REVIEW_PLATFORM_WRITE_DENIED';
 
 /** 把已完成的评审结果回写到 PR/MR 评论区（GitHub issue comment / GitLab note） */
 export function syncAiReviewTaskToPlatform(

@@ -24,12 +24,14 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import String, cast as sa_cast
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
 from app.ai_review.platform_client import (
     PLATFORMS,
     PlatformCredential,
     PlatformError,
+    PlatformWriteDeniedError,
     credential_display,
     get_merge_request,
     list_merge_requests,
@@ -59,6 +61,10 @@ router = APIRouter(
 )
 
 MAX_PAGE_SIZE = 100
+
+# 回写评论被平台拒（token 能读不能写）时的稳定错误码：前端据此把「去平台设置补权限」
+# 渲染成常驻引导面板，而不是一闪而过的 toast。
+PLATFORM_WRITE_DENIED_CODE = "AI_REVIEW_PLATFORM_WRITE_DENIED"
 
 
 # --------------------------------------------------------------------------
@@ -188,6 +194,9 @@ def _preset_out(preset: AiReviewPreset) -> dict[str, Any]:
 
 
 def _task_out(task: AiReviewTask, workspace_name: str = "") -> dict[str, Any]:
+    # ocr 自己的执行结论（succeeded / skipped / ...）。后端 status 只表示「作业跑没跑完」，
+    # 列表里要区分「跑完了但无可评审文件」，所以把这两个字段单独透出，不塞整个 summary_json。
+    summary = task.summary_json if isinstance(task.summary_json, dict) else {}
     return {
         "id": task.id,
         "workspace_id": task.workspace_id,
@@ -209,9 +218,61 @@ def _task_out(task: AiReviewTask, workspace_name: str = "") -> dict[str, Any]:
             task.platform_synced_at.isoformat() if task.platform_synced_at else None
         ),
         "platform_sync_url": task.platform_sync_url,
+        # ocr 的执行结论 + 实际评审文件数（skipped 时通常为 0）
+        "ocr_status": str(summary.get("ocr_status") or ""),
+        "files_reviewed": summary.get("files_reviewed"),
         # 列表接口不带结果正文（result_json 可达上百条评论），详情接口才给
         "has_result": bool(task.result_json),
     }
+
+
+#: 「进行中」状态集合：同一个 PR/MR 只允许存在一条这类任务。
+IN_FLIGHT_STATUSES: tuple[str, ...] = ("queued", "running")
+
+
+def _find_in_flight_task(
+    db: Session,
+    tenant_id: str,
+    workspace_id: str,
+    mr_number: int,
+    *,
+    exclude_task_id: str | None = None,
+) -> AiReviewTask | None:
+    """同一租户 + workspace 下，该 PR/MR 是否已有排队 / 执行中的评审任务。
+
+    ``exclude_task_id`` 用于重试场景：排除自己，只判「有没有别人在跑」。
+    """
+    statement = select(AiReviewTask).where(
+        AiReviewTask.tenant_id == tenant_id,
+        AiReviewTask.workspace_id == workspace_id,
+        AiReviewTask.mr_number == mr_number,
+        AiReviewTask.status.in_(IN_FLIGHT_STATUSES),  # type: ignore[attr-defined]
+    )
+    if exclude_task_id:
+        statement = statement.where(AiReviewTask.id != exclude_task_id)
+    return db.exec(statement).first()
+
+
+def _in_flight_tasks_by_mr(
+    db: Session, tenant_id: str, workspace_id: str
+) -> dict[int, AiReviewTask]:
+    """该 workspace 全部进行中任务，按 PR/MR 编号索引（一次查询，避免列表接口 N+1）。"""
+    rows = db.exec(
+        select(AiReviewTask).where(
+            AiReviewTask.tenant_id == tenant_id,
+            AiReviewTask.workspace_id == workspace_id,
+            AiReviewTask.status.in_(IN_FLIGHT_STATUSES),  # type: ignore[attr-defined]
+        )
+    ).all()
+    return {row.mr_number: row for row in rows}
+
+
+def _duplicate_review_detail(mr_number: int, status: str) -> str:
+    stage = "排队中" if status == "queued" else "执行中"
+    return (
+        f"PR/MR #{mr_number} 已有进行中的评审任务（{stage}），"
+        "同一 PR/MR 同时只能有一个评审任务，请等它结束后再发起。"
+    )
 
 
 def _apply_default_preset(db: Session, tenant_id: str, preset_id: str) -> None:
@@ -467,8 +528,21 @@ def list_workspace_merge_requests(
         )
     except PlatformError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    # 带上「该 PR/MR 是否已有排队 / 执行中的评审任务」——前端据此禁用「发起评审」，
+    # 不用等用户点了才吃 409（任务不在当前任务页时也能判准）。
+    in_flight = _in_flight_tasks_by_mr(db, tenant_id, workspace.id)
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        payload = item.to_dict()
+        task = in_flight.get(item.number)
+        payload["in_flight_status"] = task.status if task else ""
+        payload["in_flight_task_id"] = task.id if task else ""
+        payload["in_flight_since"] = (
+            (task.started_at or task.created_at).isoformat() if task else None
+        )
+        rows.append(payload)
     return {
-        "items": [item.to_dict() for item in items],
+        "items": rows,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -755,20 +829,13 @@ def create_task(
     ensure_tenant(db, request.tenant_id)
     workspace = _get_workspace(db, request.tenant_id, request.workspace_id)
 
-    existing = (
-        db.exec(
-            select(AiReviewTask).where(
-                AiReviewTask.tenant_id == request.tenant_id,
-                AiReviewTask.workspace_id == workspace.id,
-                AiReviewTask.mr_number == request.mr_number,
-                AiReviewTask.status.in_(["queued", "running"]),  # type: ignore[attr-defined]
-            )
-        ).first()
+    # 同一 PR/MR 同时只允许一条进行中任务（排队 / 执行中都不行）
+    existing = _find_in_flight_task(
+        db, request.tenant_id, workspace.id, request.mr_number
     )
     if existing is not None:
         raise HTTPException(
-            status_code=409,
-            detail=f"PR/MR #{request.mr_number} 已有进行中的评审任务（{existing.status}），请等它完成后再提交。",
+            status_code=409, detail=_duplicate_review_detail(request.mr_number, existing.status)
         )
 
     credential_row = _get_tenant_credential(db, request.tenant_id, workspace.platform)
@@ -804,7 +871,15 @@ def create_task(
         created_by=current_user.username,
     )
     db.add(task)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # 并发兜底：两个请求同时通过上面的检查时，由
+        # uq_ai_review_task_in_flight 这条部分唯一索引挡下第二个。
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail=_duplicate_review_detail(request.mr_number, "running")
+        ) from exc
     db.refresh(task)
 
     from app.ai_review.jobs import schedule_ai_review
@@ -827,6 +902,16 @@ def retry_task(
         raise HTTPException(status_code=404, detail="评审任务不存在")
     if task.status not in ("queued", "failed"):
         raise HTTPException(status_code=409, detail=f"任务当前状态为 {task.status}，不能重试")
+
+    # 重试同样受「同一 PR/MR 只能有一个进行中任务」约束：
+    # 例如 A 失败后用户又发起了 B，此时重试 A 会造出两条并行任务。
+    conflict = _find_in_flight_task(
+        db, tenant_id, task.workspace_id, task.mr_number, exclude_task_id=task.id
+    )
+    if conflict is not None:
+        raise HTTPException(
+            status_code=409, detail=_duplicate_review_detail(task.mr_number, conflict.status)
+        )
 
     task.status = "queued"
     task.error = ""
@@ -904,6 +989,12 @@ def sync_task_to_platform(
         link = post_merge_request_comment(
             _platform_credential(credential_row), workspace.repo_path, task.mr_number, body
         )
+    except PlatformWriteDeniedError as exc:
+        # 能读不能写：单独给一个稳定 code，前端据此展示「去平台设置补权限」的常驻引导。
+        raise HTTPException(
+            status_code=502,
+            detail={"code": PLATFORM_WRITE_DENIED_CODE, "message": str(exc)},
+        ) from exc
     except PlatformError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

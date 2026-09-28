@@ -3277,9 +3277,11 @@ def _migrate_api_key_usage_snapshot(conn, tables: set[str]) -> None:
 
 
 def _migrate_ai_review_schema() -> None:
-    """ai_review_tasks 给已有表补列（结果回写平台评论，2026-09-24）。
+    """ai_review_tasks 补列 + 进行中任务的唯一约束。
 
-    新表由上面 create_all 直接建；这里是给**已存在**的表补新列。
+    新表由上面 create_all 直接建；这里是给**已存在**的表补新列 / 索引。
+    索引：同一个 PR/MR 同时只允许一条 ``queued``/``running`` 任务
+    （应用层在创建 / 重试时已拦一道，这里是并发写入的兜底）。
     """
     inspector = inspect(engine)
     if "ai_review_tasks" not in set(inspector.get_table_names()):
@@ -3296,6 +3298,21 @@ def _migrate_ai_review_schema() -> None:
             )
         if "platform_sync_url" not in columns:
             conn.execute(text("ALTER TABLE ai_review_tasks ADD COLUMN platform_sync_url VARCHAR NOT NULL DEFAULT ''"))
+    # 部分唯一索引：PG 与 SQLite(>=3.8) 都支持 WHERE 子句。建索引不能与上面的
+    # ALTER 共处一个事务——历史库里若已存在重复的进行中任务，失败会连带回滚补列。
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_review_task_in_flight "
+                    "ON ai_review_tasks (tenant_id, workspace_id, mr_number) "
+                    "WHERE status IN ('queued', 'running')"
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 - 索引建不上不该阻断启动，创建接口仍有应用层校验
+        print(
+            f"[init_db] uq_ai_review_task_in_flight 创建失败（可能存在重复的进行中任务）：{exc}"
+        )
 
 
 def get_session() -> Generator[Session, None, None]:
