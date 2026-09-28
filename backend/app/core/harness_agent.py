@@ -31,6 +31,45 @@ MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK = 2
 # 必须给它留出对应额度，否则会被截成半截 JSON 的 preview。
 _CAPABILITY_RESULT_TRANSCRIPT_MAX_CHARS = 12_000
 _KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS = 25_000
+
+# 动作生成（harness.task_action）单次模型调用最多尝试几次。此前上游超时/限流会
+# 直接终止整个 TaskFrame，把「瞬时不可用」当成「模型没按协议返回动作」，用户等了
+# 数分钟后只拿到一句「当前任务的执行模型没有返回有效动作。」（2026-09-28 现场：
+# 41K 字符 payload + 思考模式下第 14 轮撞 90s 上限）。一次有界重试即可覆盖网关抖动，
+# 又不会让最坏延迟失控（每次尝试仍受 output_policy 的单次上限约束）。
+_ACTION_MODEL_ATTEMPTS = 2
+_MODEL_TRANSIENT_ERROR_CODES = frozenset(
+    {
+        "MODEL_TIMEOUT",
+        "MODEL_RATE_LIMITED",
+        "MODEL_UPSTREAM_UNAVAILABLE",
+        "MODEL_UPSTREAM_ERROR",
+    }
+)
+# 供 harness_v2_engine 判定 SOP 步骤是否可续跑：模型侧瞬时失败与协议失败一样
+# 不应该吃掉已完成节点的结果。
+MODEL_UNAVAILABLE_FAILURE_CODE = "HARNESS_MODEL_UNAVAILABLE"
+# 面向用户的失败归因（截图/回复里只看到「没有返回有效动作」时无从判断该怎么办）。
+_MODEL_FAILURE_REASONS = {
+    "MODEL_TIMEOUT": "模型调用超时",
+    "MODEL_RATE_LIMITED": "模型被限流",
+    "MODEL_UPSTREAM_UNAVAILABLE": "模型上游服务不可用",
+    "MODEL_UPSTREAM_ERROR": "模型上游返回错误",
+    "MODEL_AUTHENTICATION_FAILED": "模型凭证无效",
+    "MODEL_PERMISSION_DENIED": "模型权限不足",
+    "MODEL_ENDPOINT_NOT_FOUND": "模型或接入地址不存在",
+    "MODEL_INVALID_REQUEST": "模型拒绝了本次请求",
+    "MODEL_REQUEST_TOO_LARGE": "请求体超过模型上限",
+    "MODEL_UPSTREAM_CONFLICT": "模型上游冲突",
+}
+# 这些失败重发无用，必须改配置。
+_MODEL_CONFIG_ERROR_CODES = frozenset(
+    {
+        "MODEL_AUTHENTICATION_FAILED",
+        "MODEL_PERMISSION_DENIED",
+        "MODEL_ENDPOINT_NOT_FOUND",
+    }
+)
 ToolInvoker = Callable[[str, dict[str, Any]], dict[str, Any]]
 TraceSink = Callable[[str, dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
@@ -285,15 +324,41 @@ class HarnessTaskAgent:
                                 + len(system_prompt or "")
                             ),
                         ):
-                            client = _deadline_llm_client(
-                                decision_model,
-                                step_deadline_monotonic,
-                            )
-                            raw = _generate_harness_action_json(
-                                client,
-                                system_prompt,
-                                directive_payload,
-                            )
+                            # 上游瞬时失败（超时/限流/5xx）重试同一请求：这类错误与
+                            # 协议无关，重试成本远低于让整轮对话以「模型没有返回有效
+                            # 动作」收尾。协议/鉴权类错误不在此处重试，直接抛出交给
+                            # 外层分类收尾。
+                            for model_attempt in range(_ACTION_MODEL_ATTEMPTS):
+                                try:
+                                    client = _deadline_llm_client(
+                                        decision_model,
+                                        step_deadline_monotonic,
+                                    )
+                                    raw = _generate_harness_action_json(
+                                        client,
+                                        system_prompt,
+                                        directive_payload,
+                                    )
+                                    break
+                                except LLMError as exc:
+                                    exhausted = model_attempt + 1 >= _ACTION_MODEL_ATTEMPTS
+                                    if (
+                                        exhausted
+                                        or not _is_transient_model_error(exc)
+                                        or _deadline_expired(step_deadline_monotonic)
+                                    ):
+                                        raise
+                                    if trace_sink:
+                                        trace_sink(
+                                            "harness_action_model_retry",
+                                            {
+                                                "iteration": iteration,
+                                                "attempt": model_attempt + 2,
+                                                "max_attempts": _ACTION_MODEL_ATTEMPTS,
+                                                "error": str(exc),
+                                                "code": str(getattr(exc, "code", "") or ""),
+                                            },
+                                        )
                         try:
                             actions = _harness_actions_from_raw(raw)
                             action = actions[0]
@@ -383,15 +448,14 @@ class HarnessTaskAgent:
                             "error": str(exc),
                         },
                     )
-                return finish(TaskExecutionResult(
-                    task_frame_id=requirement.task_frame_id,
-                    status="failed",
-                    reply_fragment="当前任务的执行模型没有返回有效动作。",
-                    task_summary="Harness 动作解析失败。",
-                    capability_results=capability_results,
-                    action_count=iteration,
-                    error={"code": "HARNESS_ACTION_INVALID", "message": str(exc)},
-                ))
+                return finish(
+                    _action_generation_failure(
+                        requirement,
+                        exc,
+                        iteration=iteration,
+                        capability_results=capability_results,
+                    )
+                )
             _raise_if_cancelled(is_cancelled)
             if _deadline_expired(step_deadline_monotonic):
                 return finish(_step_timeout_result(
@@ -875,6 +939,66 @@ def _raise_if_cancelled(check: CancellationCheck | None) -> None:
 
 def _deadline_expired(deadline_monotonic: float | None) -> bool:
     return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
+
+
+def _is_transient_model_error(exc: Exception) -> bool:
+    """判断模型/上游侧错误是否值得原样重试（协议与鉴权类错误不在此列）。"""
+
+    if not isinstance(exc, LLMError):
+        return False
+    code = str(getattr(exc, "code", "") or "")
+    if code in _MODEL_TRANSIENT_ERROR_CODES:
+        return True
+    return bool(getattr(exc, "retryable", False)) and code.startswith("MODEL_")
+
+
+def _action_generation_failure(
+    requirement: TaskRequirement,
+    exc: Exception,
+    *,
+    iteration: int,
+    capability_results: list[dict[str, Any]],
+) -> TaskExecutionResult:
+    """把动作生成失败收尾成用户能看懂的结果。
+
+    模型侧失败（超时/限流/5xx/凭证）与协议失败必须分开：前者此前统一以「当前任务的
+    执行模型没有返回有效动作。」收尾，用户等了整轮却看不到任何可操作的提示。
+    """
+
+    detail = str(exc)
+    if isinstance(exc, LLMError):
+        code = str(getattr(exc, "code", "") or "")
+        reason = _MODEL_FAILURE_REASONS.get(code, "模型调用失败")
+        retried = (
+            f"（已重试 {_ACTION_MODEL_ATTEMPTS} 次）" if _is_transient_model_error(exc) else ""
+        )
+        advice = (
+            "请到「模型配置」检查该模型的凭证、接入地址与权限。"
+            if code in _MODEL_CONFIG_ERROR_CODES
+            else "可以：① 直接重新发送这条消息；② 换用响应更快的模型后重试；"
+            "③ 把任务拆成更小的步骤。"
+        )
+        return TaskExecutionResult(
+            task_frame_id=requirement.task_frame_id,
+            status="failed",
+            reply_fragment=f"本步{reason}{retried}，任务没有完成。{advice}",
+            task_summary=f"{reason}，任务未完成。",
+            capability_results=capability_results,
+            action_count=iteration,
+            error={"code": MODEL_UNAVAILABLE_FAILURE_CODE, "message": detail},
+        )
+    return TaskExecutionResult(
+        task_frame_id=requirement.task_frame_id,
+        status="failed",
+        reply_fragment=(
+            "模型没有返回可执行的动作（协议校验失败），请重新发送这条消息，"
+            "或更换模型后再试。"
+        ),
+        task_summary="Harness 动作解析失败。",
+        capability_results=capability_results,
+        action_count=iteration,
+        error={"code": "HARNESS_ACTION_INVALID", "message": detail},
+    )
 
 
 def _deadline_llm_client(

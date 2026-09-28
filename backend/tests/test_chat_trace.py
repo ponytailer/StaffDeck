@@ -76,6 +76,110 @@ def test_task_frame_finished_keeps_switched_sop_name_while_awaiting_user() -> No
     }
 
 
+def test_command_nonzero_exit_trace_shows_exit_code_and_output_instead_of_raw_json() -> None:
+    line = _harness_event_trace_line(
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_test",
+            event_type="harness_tool_completed",
+            payload_json={
+                "task_frame_id": "task_probe",
+                "iteration": 4,
+                "tool_name": "exec_command",
+                "success": False,
+                "error": {
+                    "code": "COMMAND_EXIT_NONZERO",
+                    "message": "命令执行完成，但返回非零退出码（exit 2）。",
+                    "hint": "非零退出码只表示进程自己报告了失败：grep/find/ls …",
+                    "exit_code": 2,
+                },
+                "result": {
+                    "tool_name": "exec_command",
+                    "success": False,
+                    "data": {
+                        "status": "failed",
+                        "exit_code": 2,
+                        "timed_out": False,
+                        "stdout": "--- tree ---\n.\n./.harness\n",
+                        "stderr": "",
+                        "command_sha256": "f242ba02200bdf831b32beff56693dc4e5340427b7d43ca63d0d2cdfc8da89ae",
+                    },
+                },
+            },
+        )
+    )
+
+    assert line is not None
+    assert line["text"] == "命令返回非零退出码（exit 2） exec_command"
+    assert line["state"] == "completed"
+    assert line["outputLanguage"] == "text"
+    assert line["outputTitle"] == "查看命令输出"
+    assert "--- tree ---" in line["output"]
+    # 原始结果 JSON（含哈希、隔离模式等调试字段）不再作为详情展示
+    assert "command_sha256" not in line["output"]
+    assert "非零退出码" in line["detail"]
+
+
+def test_command_timeout_trace_stays_failed() -> None:
+    line = _harness_event_trace_line(
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_test",
+            event_type="harness_tool_completed",
+            payload_json={
+                "task_frame_id": "task_probe",
+                "iteration": 5,
+                "tool_name": "exec_command",
+                "success": False,
+                "error": {"code": "COMMAND_TIMEOUT", "message": "受控进程执行超时。", "hint": "拆分任务"},
+                "result": {
+                    "tool_name": "exec_command",
+                    "success": False,
+                    "data": {
+                        "status": "failed",
+                        "exit_code": None,
+                        "timed_out": True,
+                        "timeout_seconds": 30,
+                        "stdout": "partial",
+                        "stderr": "",
+                    },
+                },
+            },
+        )
+    )
+
+    assert line is not None
+    assert line["text"] == "命令执行超时 exec_command"
+    assert line["state"] == "failed"
+    assert "COMMAND_TIMEOUT" in line["detail"]
+    assert "上限 30 秒" in line["detail"]
+
+
+def test_model_retry_trace_line_is_projected_for_refresh() -> None:
+    line = _harness_event_trace_line(
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_test",
+            event_type="harness_action_model_retry",
+            payload_json={
+                "task_frame_id": "task_probe",
+                "iteration": 14,
+                "attempt": 2,
+                "max_attempts": 2,
+                "code": "MODEL_TIMEOUT",
+            },
+        )
+    )
+
+    assert line == {
+        "id": "harness_model_retry_task_probe_14",
+        "kind": "thinking",
+        "text": "模型调用超时，正在重试",
+        "detail": "第 2 次尝试 · 最多 2 次 · MODEL_TIMEOUT",
+        "state": "running",
+    }
+
+
 def test_event_log_binds_all_execution_events_to_current_turn() -> None:
     with _test_db() as db:
         events = EventLog(db)

@@ -473,10 +473,20 @@ class HarnessCapabilityInvoker:
                             else "COMMAND_EXIT_NONZERO"
                         ),
                         "message": (
-                            "受控进程执行超时。"
+                            _command_timeout_message(data)
                             if timed_out
-                            else "受控进程执行完成，但返回了非零退出码。"
+                            else _command_nonzero_message(data, name)
                         ),
+                        # hint 让模型（和前端轨迹）不必解析整包 JSON 就能判断下一步：
+                        # 非零退出码在 grep/find/ls 这类「未命中即非零」的命令上很常见，
+                        # 且 stdout 往往仍包含所需信息（真实现场：状态探测脚本 exit 2，
+                        # stdout 已列出 workspace 结构，模型却把它当成工具失败重跑）。
+                        "hint": (
+                            "命令超过单次执行上限被中止，请拆分任务或缩短单次命令。"
+                            if timed_out
+                            else _command_nonzero_hint(name)
+                        ),
+                        "exit_code": data.get("exit_code"),
                         "retryable": False,
                         "details": visible_data,
                     },
@@ -1797,6 +1807,39 @@ def _model_visible_file_result(value: Any, *, key: str = "") -> Any:
     if isinstance(value, str) and key in path_keys:
         return _sandbox_path(value)
     return value
+
+
+def _command_nonzero_message(data: dict[str, Any], tool_name: str) -> str:
+    exit_code = data.get("exit_code")
+    subject = "脚本" if tool_name == "run_skill_script" else "命令"
+    if isinstance(exit_code, int):
+        return f"{subject}执行完成，但返回非零退出码（exit {exit_code}）。"
+    return f"{subject}执行完成，但报告了失败状态。"
+
+
+def _command_nonzero_hint(tool_name: str) -> str:
+    if tool_name == "run_skill_script":
+        tail = (
+            "先读 stderr 判断是脚本自身失败还是输入不满足；脚本确定失败时，"
+            "不要重复执行同一 argv，改为检查参数或改用 typed 文件工具。"
+        )
+    else:
+        tail = (
+            "先读 stdout/stderr 判断是否影响结论；若属预期，可在命令里显式兜底"
+            "（例如 `ls attachments 2>/dev/null || true`），或用 typed 文件工具代替。"
+        )
+    return (
+        "非零退出码只表示进程自己报告了失败：grep/find/ls 等工具在「没有匹配 / "
+        "目标不存在」时同样返回非零（常见 exit 1/2），而 stdout 往往仍包含所需信息。"
+        + tail
+    )
+
+
+def _command_timeout_message(data: dict[str, Any]) -> str:
+    timeout_seconds = data.get("timeout_seconds")
+    if isinstance(timeout_seconds, (int, float)) and timeout_seconds > 0:
+        return f"受控进程执行超时（上限 {timeout_seconds:g} 秒）。"
+    return "受控进程执行超时。"
 
 
 def _is_user_facing_workspace_file(path: str) -> bool:

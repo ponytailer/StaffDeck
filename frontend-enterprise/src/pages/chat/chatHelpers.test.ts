@@ -586,6 +586,108 @@ describe('chat history consumer contract', () => {
       state: 'running',
     });
   });
+
+  it('renders a non-zero command exit as a readable, non-failing trace line', () => {
+    const line = harnessEventTraceLine('harness_tool_completed', {
+      task_frame_id: 'task-probe',
+      iteration: 4,
+      tool_name: 'exec_command',
+      success: false,
+      error: {
+        code: 'COMMAND_EXIT_NONZERO',
+        message: '命令执行完成，但返回非零退出码（exit 2）。',
+        hint: '非零退出码只表示进程自己报告了失败：grep/find/ls …',
+        exit_code: 2,
+      },
+      result: {
+        tool_name: 'exec_command',
+        success: false,
+        data: {
+          status: 'failed',
+          exit_code: 2,
+          timed_out: false,
+          stdout: '--- tree ---\n.\n./.harness\n',
+          stderr: '',
+          command_sha256: 'f242ba02200bdf831b32beff56693dc4e5340427b7d43ca63d0d2cdfc8da89ae',
+        },
+        error: { code: 'COMMAND_EXIT_NONZERO', message: '受控进程执行完成，但返回了非零退出码。' },
+      },
+    });
+
+    expect(line).toMatchObject({
+      id: 'harness_action_task-probe_4',
+      kind: 'tool',
+      text: '命令返回非零退出码（exit 2） exec_command',
+      state: 'completed',
+      outputLanguage: 'text',
+      outputTitle: '查看命令输出',
+    });
+    expect(line?.detail).toContain('非零退出码');
+    expect(line?.output).toContain('--- tree ---');
+    // 原始结果 JSON 不再作为详情展示
+    expect(line?.output).not.toContain('command_sha256');
+  });
+
+  it('keeps a timed-out command as a failed trace line', () => {
+    const line = harnessEventTraceLine('harness_tool_completed', {
+      task_frame_id: 'task-probe',
+      iteration: 5,
+      tool_name: 'exec_command',
+      success: false,
+      error: { code: 'COMMAND_TIMEOUT', message: '受控进程执行超时。', hint: '拆分任务' },
+      result: {
+        tool_name: 'exec_command',
+        success: false,
+        data: { status: 'failed', exit_code: null, timed_out: true, timeout_seconds: 30, stdout: 'partial', stderr: '' },
+      },
+    });
+
+    expect(line).toMatchObject({
+      text: '命令执行超时 exec_command',
+      state: 'failed',
+    });
+    expect(line?.detail).toContain('COMMAND_TIMEOUT');
+    expect(line?.detail).toContain('上限 30 秒');
+  });
+
+  it('shows a successful command result as command output instead of raw JSON', () => {
+    const line = harnessEventTraceLine('harness_tool_completed', {
+      task_frame_id: 'task-probe',
+      iteration: 7,
+      tool_name: 'exec_command',
+      success: true,
+      result: {
+        tool_name: 'exec_command',
+        success: true,
+        data: { status: 'completed', exit_code: 0, timed_out: false, stdout: 'NO_TOKEN\n', stderr: '' },
+      },
+    });
+
+    expect(line).toMatchObject({
+      text: '命令执行完成 exec_command',
+      detail: 'exit 0',
+      state: 'completed',
+    });
+    expect(line?.output).toBe('# stdout\nNO_TOKEN');
+  });
+
+  it('surfaces a bounded model-call retry instead of silent waiting', () => {
+    const line = harnessEventTraceLine('harness_action_model_retry', {
+      task_frame_id: 'task-probe',
+      iteration: 14,
+      attempt: 2,
+      max_attempts: 2,
+      code: 'MODEL_TIMEOUT',
+    });
+
+    expect(line).toMatchObject({
+      id: 'harness_model_retry_task-probe_14',
+      kind: 'thinking',
+      text: '模型调用超时，正在重试',
+      state: 'running',
+    });
+    expect(line?.detail).toBe('第 2 次尝试 · 最多 2 次 · MODEL_TIMEOUT');
+  });
 });
 
 describe('a2uiFormForMessage', () => {

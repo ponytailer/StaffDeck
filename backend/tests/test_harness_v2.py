@@ -56,6 +56,7 @@ from app.core.task_frame_store import (
     planned_frame_from_record,
 )
 from app.config import get_settings
+from app.llm import LLMError
 from app.core.task_request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
@@ -2977,6 +2978,10 @@ def test_exec_command_nonzero_exit_is_a_failed_capability_result(
     assert result["error"]["retryable"] is False
     assert result["data"]["exit_code"] == 2
     assert result["data"]["stderr"] == "missing script"
+    # 非零退出码必须自带可操作解释，否则模型会把「命令探测失败」当成能力故障重跑。
+    assert result["error"]["exit_code"] == 2
+    assert "exit 2" in result["error"]["message"]
+    assert "非零退出码只表示进程自己报告了失败" in result["error"]["hint"]
 
 
 def test_general_skill_harness_tool_defaults_to_read_instead_of_generating_code(
@@ -3674,6 +3679,132 @@ def test_harness_agent_does_not_adapt_bare_json_without_loaded_general_skill(
     assert result.error is not None
     assert result.error["code"] == "HARNESS_ACTION_INVALID"
     assert result.structured_result is None
+
+
+class _TransientFailingLLMClient:
+    """上游超时/限流：每次调用都失败，用于验证有界重试与收尾文案。"""
+
+    calls = 0
+
+    def __init__(self, _model_config: ModelConfig):
+        pass
+
+    def generate_json(self, _system_prompt, _payload):
+        type(self).calls += 1
+        raise LLMError(
+            "LLM provider request failed (MODEL_TIMEOUT); message=Request timed out.",
+            code="MODEL_TIMEOUT",
+            retryable=True,
+        )
+
+
+def test_harness_agent_retries_transient_model_failure_then_reports_readable_reason(
+    monkeypatch,
+) -> None:
+    _TransientFailingLLMClient.calls = 0
+    monkeypatch.setattr(
+        harness_agent_module, "LLMClient", _TransientFailingLLMClient
+    )
+    trace_events: list[tuple[str, dict]] = []
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-model-timeout",
+            kind="conversation",
+            goal="整理一份文档",
+            capability_manifest=CapabilityManifest(),
+        ),
+        _model_config(),
+        lambda _name, _arguments: {"success": True},
+        max_actions=3,
+        trace_sink=lambda event_type, payload: trace_events.append(
+            (event_type, payload)
+        ),
+    )
+
+    # 一次有界重试：两次尝试都在同一迭代内完成，且发出了可见的重试事件。
+    assert _TransientFailingLLMClient.calls == 2
+    assert [name for name, _payload in trace_events].count(
+        "harness_action_model_retry"
+    ) == 1
+    retry_payload = next(
+        payload
+        for name, payload in trace_events
+        if name == "harness_action_model_retry"
+    )
+    assert retry_payload["attempt"] == 2
+    assert retry_payload["code"] == "MODEL_TIMEOUT"
+    assert result.status == "failed"
+    assert result.error is not None
+    assert result.error["code"] == "HARNESS_MODEL_UNAVAILABLE"
+    # 用户看到的是可操作的说明，而不是「没有返回有效动作」。
+    assert "模型调用超时" in result.reply_fragment
+    assert "重新发送" in result.reply_fragment
+    assert "没有返回有效动作" not in result.reply_fragment
+
+
+def test_harness_agent_does_not_retry_credential_failures_and_points_to_model_settings(
+    monkeypatch,
+) -> None:
+    class _CredentialFailingLLMClient:
+        calls = 0
+
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            type(self).calls += 1
+            raise LLMError(
+                "LLM provider request failed (MODEL_AUTHENTICATION_FAILED); status_code=401",
+                code="MODEL_AUTHENTICATION_FAILED",
+                status_code=401,
+                retryable=False,
+            )
+
+    monkeypatch.setattr(
+        harness_agent_module, "LLMClient", _CredentialFailingLLMClient
+    )
+    trace_events: list[tuple[str, dict]] = []
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-model-auth",
+            kind="conversation",
+            goal="整理一份文档",
+            capability_manifest=CapabilityManifest(),
+        ),
+        _model_config(),
+        lambda _name, _arguments: {"success": True},
+        max_actions=3,
+        trace_sink=lambda event_type, payload: trace_events.append(
+            (event_type, payload)
+        ),
+    )
+
+    # 凭证类错误重发无用：不重试，且直接指向「模型配置」。
+    assert _CredentialFailingLLMClient.calls == 1
+    assert not any(
+        name == "harness_action_model_retry" for name, _payload in trace_events
+    )
+    assert result.error is not None
+    assert result.error["code"] == "HARNESS_MODEL_UNAVAILABLE"
+    assert "模型凭证无效" in result.reply_fragment
+    assert "模型配置" in result.reply_fragment
+
+
+def test_sop_loop_keeps_model_unavailable_step_recoverable() -> None:
+    failure = TaskExecutionResult(
+        task_frame_id="task-purchase",
+        status="failed",
+        reply_fragment="本步模型调用超时（已重试 2 次），任务没有完成。",
+        error={"code": "HARNESS_MODEL_UNAVAILABLE", "message": "MODEL_TIMEOUT"},
+    )
+    business_failure = failure.model_copy(
+        update={"error": {"code": "TOOL_EXECUTION_FAILED"}}
+    )
+
+    assert _is_recoverable_action_protocol_failure(failure) is True
+    assert _is_recoverable_action_protocol_failure(business_failure) is False
 
 
 def test_harness_agent_repairs_invalid_tool_action_envelope_once(

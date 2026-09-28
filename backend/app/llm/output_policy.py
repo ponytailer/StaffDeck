@@ -48,7 +48,10 @@ OPERATION_JSON_REPAIR_ATTEMPTS: dict[str, int] = {
 # bounded ceiling; every one of these has a deterministic/LLM fallback.
 OPERATION_TIMEOUT_SECONDS: dict[str, float] = {
     "turn_planner.plan": 90.0,
-    "harness.task_action": 90.0,
+    # 2026-09-28 现场：任务型对话最后一轮 payload 41K 字符 + 思考模式，task_action
+    # 实测 10s→62s→90s(超时) 递增，90s 上限把「接近完成」的第 14 轮判死。放宽到
+    # 120s 覆盖长上下文决策；单次调用仍有界，配合 harness_agent 的一次有界重试。
+    "harness.task_action": 120.0,
     "knowledge.document_route": 60.0,
     "knowledge.bucket_route": 60.0,
     "sop.slot_extraction": 30.0,

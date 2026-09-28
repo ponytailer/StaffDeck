@@ -1578,6 +1578,26 @@ export function harnessEventTraceLine(
     }
     return null;
   }
+  if (eventName === 'harness_action_model_retry') {
+    // 上游超时/限流时的有界重试：让「卡住 90 秒」变成一句可见的进度说明，
+    // 而不是让用户以为对话已经死掉。
+    const attempt = typeof data.attempt === 'number' ? data.attempt : undefined;
+    const maxAttempts = typeof data.max_attempts === 'number' ? data.max_attempts : undefined;
+    const code = typeof data.code === 'string' ? data.code : '';
+    const timedOut = code === 'MODEL_TIMEOUT';
+    return {
+      id: `harness_model_retry_${frameId}_${iteration || 'current'}`,
+      kind: 'thinking',
+      text: timedOut ? '模型调用超时，正在重试' : '模型暂时不可用，正在重试',
+      detail: [
+        attempt === undefined ? '' : `第 ${attempt} 次尝试`,
+        maxAttempts === undefined ? '' : `最多 ${maxAttempts} 次`,
+        code,
+      ].filter(Boolean).join(' · ') || undefined,
+      state: 'running',
+      icon: 'loading',
+    };
+  }
   if (eventName === 'harness_mcp_app_view') {
     const mcpApp = isPlainRecord(data.mcp_app)
       ? data.mcp_app as TraceLine['mcpApp']
@@ -1601,10 +1621,21 @@ export function harnessEventTraceLine(
       ? result.mcp_app as TraceLine['mcpApp']
       : undefined;
     const error = isPlainRecord(data.error) ? data.error : {};
-    const detail = [
-      typeof error.code === 'string' ? error.code : '',
-      typeof error.message === 'string' ? error.message : '',
-    ].filter(Boolean).join(' · ') || undefined;
+    const errorCode = typeof error.code === 'string' ? error.code : '';
+    const errorMessage = typeof error.message === 'string' ? error.message : '';
+    const errorHint = typeof error.hint === 'string' ? error.hint.trim() : '';
+    const resultData = isPlainRecord(result.data) ? result.data : {};
+    const command = commandResultTrace(
+      `harness_action_${frameId}_${iteration || 'current'}`,
+      toolName,
+      success,
+      resultData,
+      errorCode,
+      errorMessage,
+      errorHint,
+    );
+    if (command) return command;
+    const detail = [errorCode, errorMessage].filter(Boolean).join(' · ') || undefined;
     const output = formatTracePayload(data.result);
     return {
       id: `harness_action_${frameId}_${iteration || 'current'}`,
@@ -1623,6 +1654,81 @@ export function harnessEventTraceLine(
     };
   }
   return null;
+}
+
+const COMMAND_OUTPUT_MAX_CHARS = 1_200;
+
+function clipCommandOutput(value: string): string {
+  if (value.length <= COMMAND_OUTPUT_MAX_CHARS) return value;
+  const notice = `…（已截断，共 ${value.length} 字符）`;
+  return [value.slice(0, COMMAND_OUTPUT_MAX_CHARS), notice].join('\n');
+}
+
+function commandOutputText(data: Record<string, unknown>): string {
+  const stderr = typeof data.stderr === 'string' ? data.stderr.trim() : '';
+  const stdout = typeof data.stdout === 'string' ? data.stdout.trim() : '';
+  return [
+    stderr ? `# stderr\n${clipCommandOutput(stderr)}` : '',
+    stdout ? `# stdout\n${clipCommandOutput(stdout)}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+/**
+ * exec_command / run_skill_script 的结果不按「能力调用失败 + 原始 JSON」渲染。
+ *
+ * 非零退出码是命令自己的语义输出：grep/find/ls 在「没有匹配 / 目标不存在」时就是
+ * exit 1/2，而 stdout 往往仍然可用。此前这类结果会以红色失败行 + 整包结果 JSON
+ * 出现在对话里（真实现场：一次 exit 2 的目录探测），既吓人又读不出有效信息。
+ * 这里只给「退出码 + 输出摘要 + 下一步建议」，真失败（超时）才保留失败态。
+ */
+function commandResultTrace(
+  lineId: string,
+  toolName: string,
+  success: boolean,
+  data: Record<string, unknown>,
+  errorCode: string,
+  errorMessage: string,
+  errorHint: string,
+): TraceLine | null {
+  const timedOut = data.timed_out === true;
+  const exitCode = typeof data.exit_code === 'number' ? data.exit_code : undefined;
+  if (!timedOut && exitCode === undefined) return null;
+  const output = commandOutputText(data) || undefined;
+  const subject = toolName ? ` ${toolName}` : '';
+  const base = {
+    id: lineId,
+    kind: 'tool' as const,
+    output,
+    outputLanguage: output ? 'text' : undefined,
+    outputTitle: output ? '查看命令输出' : undefined,
+    collapsible: Boolean(output),
+    icon: 'tool' as const,
+  };
+  if (timedOut) {
+    const limit = typeof data.timeout_seconds === 'number' ? `上限 ${data.timeout_seconds} 秒` : '';
+    return {
+      ...base,
+      text: `命令执行超时${subject}`,
+      detail: [errorCode || 'COMMAND_TIMEOUT', errorHint || errorMessage, limit].filter(Boolean).join(' · ') || undefined,
+      state: 'failed',
+    };
+  }
+  if (!success) {
+    return {
+      ...base,
+      text: `命令返回非零退出码（exit ${exitCode}）${subject}`,
+      detail: errorHint || errorMessage || '非零退出码只表示命令自己报告了失败，stdout 可能仍包含所需信息',
+      // 非零退出码是命令的语义输出（grep/find/ls 未命中即非零），不是 Harness
+      // 能力调用失败：保持可见但不染红，避免用户把正常探测读成系统报错。
+      state: 'completed',
+    };
+  }
+  return {
+    ...base,
+    text: `命令执行完成${subject}`,
+    detail: `exit ${exitCode}`,
+    state: 'completed',
+  };
 }
 
 

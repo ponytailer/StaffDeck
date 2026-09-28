@@ -16,6 +16,7 @@ from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.conversation_projection import ConversationProjection
 from app.core.harness_agent import (
+    MODEL_UNAVAILABLE_FAILURE_CODE,
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
     HarnessTaskAgent,
@@ -1938,12 +1939,26 @@ def _step_result(result: TaskExecutionResult) -> StepAgentResult:
     )
 
 
+# 只消耗模型调用、不消耗业务状态的失败码：这些情况下已完成节点的槽位与转移都已
+# 落库，AgentLoop 可以原样续跑而不丢用户可见结果。
+_RECOVERABLE_ACTION_FAILURE_CODES = frozenset(
+    {
+        "HARNESS_ACTION_INVALID",
+        MODEL_UNAVAILABLE_FAILURE_CODE,
+    }
+)
+
+
 def _is_recoverable_action_protocol_failure(result: TaskExecutionResult) -> bool:
-    """Keep a SOP AgentLoop resumable when only the model action envelope is invalid."""
+    """Keep a SOP AgentLoop resumable when only the model action envelope is invalid.
+
+    模型/上游瞬时不可用（超时、限流、5xx）同样不消耗业务状态，必须和协议失败一样
+    保持 AgentLoop 可续跑；否则一次网关抖动就会把整个 SOP 步骤判死。
+    """
 
     error = result.error if isinstance(result.error, dict) else {}
-    return result.status == "failed" and str(error.get("code") or "") == (
-        "HARNESS_ACTION_INVALID"
+    return result.status == "failed" and str(error.get("code") or "") in (
+        _RECOVERABLE_ACTION_FAILURE_CODES
     )
 
 

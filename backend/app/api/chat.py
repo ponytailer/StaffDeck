@@ -117,6 +117,15 @@ STREAM_RELAY_TERMINAL_EVENTS = {
     "stream_cancelled",
     "stream_interrupted",
 }
+# SSE 必须显式关掉反向代理缓冲。nginx 默认 proxy_buffering on 会把 5s 一次的
+# relay heartbeat 攒在缓冲区里，前端空闲看门狗（20s）就会判定「流已中断」并转入
+# 中继补偿，最坏情况下用户看到「响应超时 / 已中断」，刷新后却发现结果早已写入
+# （2026-09-28 线上反馈的第二种现象）。x-accel-buffering 是 nginx 约定头，
+# no-transform 兜住会改写响应体的中间层。
+SSE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+}
 SPAN_EVENT_TYPES = {
     "llm_call_started",
     "llm_call_finished",
@@ -1475,7 +1484,11 @@ def chat_stream(
             else:
                 time.sleep(STREAM_RELAY_POLL_SECONDS)
 
-    return StreamingResponse(stream_events(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_events(),
+        media_type="text/event-stream",
+        headers=SSE_RESPONSE_HEADERS,
+    )
 
 
 @router.post("/sessions/{session_id}/cancel")
@@ -3181,6 +3194,101 @@ def _trace_payload_language(value: str) -> str:
         return "text"
 
 
+# 命令型能力（exec_command / run_skill_script）的轨迹投影只给「退出码 + 输出摘要」，
+# 不再把整包结果 JSON 当作详情展示（真实现场：一次 exit 2 的目录探测在对话里渲染成
+# 一大段原始 JSON，用户把它读成系统报错）。前端 chatHelpers.commandResultTrace 是
+# 实时侧的同口径实现，两处必须保持一致。
+_COMMAND_OUTPUT_TRACE_MAX_CHARS = 1_200
+
+
+def _clip_command_output(value: str) -> str:
+    if len(value) <= _COMMAND_OUTPUT_TRACE_MAX_CHARS:
+        return value
+    return f"{value[:_COMMAND_OUTPUT_TRACE_MAX_CHARS]}\n…（已截断，共 {len(value)} 字符）"
+
+
+def _command_output_text(data: dict) -> str:
+    stderr = str(data.get("stderr") or "").strip()
+    stdout = str(data.get("stdout") or "").strip()
+    blocks: list[str] = []
+    if stderr:
+        blocks.append("# stderr\n" + _clip_command_output(stderr))
+    if stdout:
+        blocks.append("# stdout\n" + _clip_command_output(stdout))
+    return "\n\n".join(blocks)
+
+
+def _command_result_trace_line(
+    *,
+    event_id: str,
+    frame_id: str,
+    iteration: str,
+    tool_name: str,
+    tool_names: dict[str, str] | None,
+    payload: dict,
+) -> dict | None:
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    timed_out = data.get("timed_out") is True
+    exit_code = data.get("exit_code")
+    if not timed_out and not isinstance(exit_code, int):
+        return None
+    success = bool(payload.get("success"))
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    error_code = str(error.get("code") or "").strip()
+    error_hint = str(error.get("hint") or "").strip()
+    error_message = str(error.get("message") or "").strip()
+    display_tool_name = _resolve_tool_label(tool_name, tool_names)
+    subject = f" {display_tool_name}" if display_tool_name else ""
+    output = _command_output_text(data)
+    base = {
+        "id": f"harness_action_{frame_id}_{iteration or event_id}",
+        "kind": "tool",
+        "output": output or None,
+        "outputLanguage": "text" if output else None,
+        "outputTitle": "查看命令输出" if output else None,
+        "collapsible": bool(output),
+    }
+    if timed_out:
+        timeout_seconds = data.get("timeout_seconds")
+        limit = (
+            f"上限 {timeout_seconds} 秒"
+            if isinstance(timeout_seconds, (int, float))
+            else ""
+        )
+        return {
+            **base,
+            "text": f"命令执行超时{subject}",
+            "detail": " · ".join(
+                part
+                for part in (
+                    error_code or "COMMAND_TIMEOUT",
+                    error_hint or error_message,
+                    limit,
+                )
+                if part
+            )
+            or None,
+            "state": "failed",
+        }
+    if not success:
+        return {
+            **base,
+            "text": f"命令返回非零退出码（exit {exit_code}）{subject}",
+            "detail": error_hint
+            or error_message
+            or "非零退出码只表示命令自己报告了失败，stdout 可能仍包含所需信息",
+            # 非零退出码是命令的语义输出，不是能力调用失败：保持可见但不染红。
+            "state": "completed",
+        }
+    return {
+        **base,
+        "text": f"命令执行完成{subject}",
+        "detail": f"exit {exit_code}",
+        "state": "completed",
+    }
+
+
 def _general_skill_trace_detail(payload: dict, phase: str) -> str | None:
     review = payload.get("review") if isinstance(payload.get("review"), dict) else {}
     if phase.startswith("reflection_"):
@@ -3530,6 +3638,16 @@ def _harness_event_trace_line(
             "state": "completed",
         }
     if event_type == "harness_tool_completed":
+        command_line = _command_result_trace_line(
+            event_id=event.id,
+            frame_id=frame_id,
+            iteration=iteration,
+            tool_name=tool_name,
+            tool_names=tool_names,
+            payload=payload,
+        )
+        if command_line is not None:
+            return command_line
         success = bool(payload.get("success"))
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
         error_detail = " · ".join(
@@ -3568,6 +3686,30 @@ def _harness_event_trace_line(
             "collapsible": bool(output),
             "mcpApp": mcp_app,
             "state": "completed" if success else "failed",
+        }
+    if event_type == "harness_action_model_retry":
+        code = str(payload.get("code") or "").strip()
+        attempt = payload.get("attempt")
+        max_attempts = payload.get("max_attempts")
+        return {
+            "id": f"harness_model_retry_{frame_id}_{iteration or event.id}",
+            "kind": "thinking",
+            "text": (
+                "模型调用超时，正在重试"
+                if code == "MODEL_TIMEOUT"
+                else "模型暂时不可用，正在重试"
+            ),
+            "detail": " · ".join(
+                part
+                for part in (
+                    f"第 {attempt} 次尝试" if isinstance(attempt, int) else "",
+                    f"最多 {max_attempts} 次" if isinstance(max_attempts, int) else "",
+                    code,
+                )
+                if part
+            )
+            or None,
+            "state": "running",
         }
     if event_type == "harness_step_timeout":
         timeout_seconds = payload.get("timeout_seconds")
@@ -3821,6 +3963,7 @@ def _event_trace_line(
         "task_frame_started",
         "task_frame_finished",
         "harness_action_created",
+        "harness_action_model_retry",
         "harness_mcp_app_view",
         "harness_tool_completed",
         "harness_step_timeout",
