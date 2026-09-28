@@ -97,6 +97,38 @@ export function taskPollingInterval(tasks: { status: AiReviewTaskStatus }[]): nu
   return active ? 3000 : 10000;
 }
 
+/* ------------------------------------------------------------------ *
+ * 同一 PR/MR 只允许一个进行中任务
+ * ------------------------------------------------------------------ */
+
+/**
+ * 是否处于「进行中」（排队 / 执行）。这类任务会占住该 PR/MR 的评审位：
+ * 后端在创建与重试时都会拒掉重复提交，前端据此提前把入口禁掉。
+ */
+export function isTaskInFlight(status: string | undefined | null): boolean {
+  return status === 'queued' || status === 'running';
+}
+
+/** 进行中阶段的中文名（口径与 TASK_STATUS_META 一致）。 */
+export function inFlightPhaseLabel(status: string | undefined | null): string {
+  return status === 'queued' ? '排队中' : '评审中';
+}
+
+/** 同一 PR/MR 已有进行中任务时的拦截文案（{1}=编号，{2}=阶段）。 */
+export function duplicateReviewBlockedText(mrNumber: number, status?: string | null): string {
+  return `PR/MR #${mrNumber} 已有进行中的评审任务（${inFlightPhaseLabel(
+    status,
+  )}），同一 PR/MR 同时只能有一个评审任务，请等它结束后再发起。`;
+}
+
+/** 拦截面板里给出的两条处置路径。 */
+export function duplicateReviewAdvice(): string[] {
+  return [
+    '任务交给后台队列跑，通常几分钟，完成后状态自动刷新，该 PR/MR 的「发起评审」就会恢复可用。',
+    '如果任务长时间卡在同一个状态，先到「评审任务」列表里把它删除或重试，再发起新的评审。',
+  ];
+}
+
 /** ocr 的 elapsed 可能是秒数或带单位的字符串，统一成可读文本。 */
 export function formatElapsed(value: number | string | undefined): string {
   if (value === undefined || value === null || value === '') return '';
@@ -257,4 +289,72 @@ export function pageNumbers(current: number, totalPages: number): number[] {
   const pages: number[] = [];
   for (let page = start; page <= end; page += 1) pages.push(page);
   return pages;
+}
+
+// ---------------------------------------------------------------------------
+// 「评审思路」渲染：ocr 的 thinking 是模型原始思维链，动辄上万字符
+// ---------------------------------------------------------------------------
+
+/** 思维链体量文案，给用户一个「要不要展开」的预期。空值返回空串（调用方据此不渲染）。 */
+export function formatThinkingSize(thinking: string | undefined | null): string {
+  const size = (thinking ?? '').trim().length;
+  if (size === 0) return '';
+  if (size < 1000) return `${size} 字符`;
+  return `${(size / 1000).toFixed(1)}k 字符`;
+}
+
+const THINKING_LIST_LINE = /^(?:[-*+]|\d+[.)])\s+/;
+
+/**
+ * 把原始思维链拆成可读的段落。
+ *
+ * 不做语义解析（模型输出格式不稳定），只做两件确定性的事：按空行分段、段内压掉
+ * 硬换行——否则上万个字符会糊成一整段。段内若整体是列表、或含代码围栏，则保留
+ * 换行，免得把结构压坏。
+ */
+export function splitThinkingBlocks(thinking: string | undefined | null): string[] {
+  const text = (thinking ?? '').replace(/\r\n/g, '\n').trim();
+  if (!text) return [];
+  return text
+    .split(/\n\s*\n/)
+    .map(normalizeThinkingBlock)
+    .filter(Boolean);
+}
+
+function normalizeThinkingBlock(block: string): string {
+  const lines = block
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length <= 1) return lines.join('');
+  const structured =
+    lines.every((line) => THINKING_LIST_LINE.test(line)) || lines.some((line) => line.startsWith('```'));
+  return structured ? lines.join('\n') : lines.join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// 报错文案里嵌的链接
+// ---------------------------------------------------------------------------
+
+export type TextSegment = { type: 'text' | 'link'; value: string };
+
+const URL_PATTERN = /https?:\/\/[^\s（）()，。]+/g;
+
+/**
+ * 把一段文本按 http(s) 链接切成片段，便于把平台报错里的设置页地址渲染成可点锚点
+ * （纯文本 URL 在中文句子里既难读也点不动）。
+ */
+export function splitTextLinks(text: string | undefined | null): TextSegment[] {
+  const source = text ?? '';
+  if (!source) return [];
+  const segments: TextSegment[] = [];
+  let cursor = 0;
+  for (const match of source.matchAll(URL_PATTERN)) {
+    const start = match.index ?? 0;
+    if (start > cursor) segments.push({ type: 'text', value: source.slice(cursor, start) });
+    segments.push({ type: 'link', value: match[0] });
+    cursor = start + match[0].length;
+  }
+  if (cursor < source.length) segments.push({ type: 'text', value: source.slice(cursor) });
+  return segments;
 }

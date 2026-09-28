@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -27,13 +27,22 @@ import {
   fetchAiReviewWorkspaces,
   retryAiReviewTask,
   type AiReviewMergeRequest,
+  type AiReviewTaskStatus,
   type AiReviewTaskSummary,
   type AiReviewWorkspace,
 } from '../../api/aiReview';
 import { ApiError } from '../../api/client';
 import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { PLATFORM_META, TASK_STATUS_META, isOcrSkipped, pageNumbers, taskPollingInterval } from './aiReviewModel';
+import {
+  PLATFORM_META,
+  TASK_STATUS_META,
+  duplicateReviewBlockedText,
+  isOcrSkipped,
+  isTaskInFlight,
+  pageNumbers,
+  taskPollingInterval,
+} from './aiReviewModel';
 import AiReviewWorkspaceDialog from './AiReviewWorkspaceDialog';
 import AiReviewSettingsDialog from './AiReviewSettingsDialog';
 import CreateReviewTaskDialog from './CreateReviewTaskDialog';
@@ -235,13 +244,24 @@ function WorkspaceRow({
 
 function MergeRequestRow({
   mr,
+  inFlightStatus,
   onCreate,
 }: {
   mr: AiReviewMergeRequest;
+  /** 该 PR/MR 是否已有排队 / 执行中的任务（'' 表示没有） */
+  inFlightStatus?: string | null;
   onCreate: () => void;
 }) {
+  const blocked = isTaskInFlight(inFlightStatus);
+  const meta = blocked ? TASK_STATUS_META[inFlightStatus as AiReviewTaskStatus] : null;
+  const blockedText = duplicateReviewBlockedText(mr.number, inFlightStatus);
   return (
-    <div className="flex items-start gap-[10px] rounded-[12px] border-[0.5px] border-[#eef0f4] bg-[#fafbfd] px-[14px] py-[10px]">
+    <div
+      className={cn(
+        'flex items-start gap-[10px] rounded-[12px] border-[0.5px] px-[14px] py-[10px]',
+        blocked ? 'border-[#dbe6ff] bg-[#f7faff]' : 'border-[#eef0f4] bg-[#fafbfd]',
+      )}
+    >
       <GitPullRequest className="mt-[3px] size-[14px] shrink-0 text-[#1a71ff]" />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-[6px]">
@@ -258,14 +278,33 @@ function MergeRequestRow({
             {mr.source_branch} → {mr.target_branch}
           </span>
           {mr.author && <span className="shrink-0">@{mr.author}</span>}
+          {blocked && meta && (
+            <span
+              title={blockedText}
+              className={cn(
+                'inline-flex shrink-0 items-center gap-[4px] rounded-[6px] px-[6px] py-[1px] text-[10.5px]',
+                meta.tone,
+              )}
+            >
+              <span className={cn('size-[5px] shrink-0 rounded-full', meta.dot)} />
+              {meta.label}
+            </span>
+          )}
         </div>
       </div>
       <UIButton
         type="button"
+        disabled={blocked}
+        aria-label={blocked ? blockedText : `发起 #${mr.number} 的评审`}
         onClick={onCreate}
-        className="h-[28px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] border-[#cfe0ff] bg-[#f4f8ff] px-[10px] text-[12px] font-normal text-[#1a71ff] hover:bg-[#e9f1ff]"
+        className={cn(
+          'h-[28px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] px-[10px] text-[12px] font-normal',
+          blocked
+            ? 'cursor-not-allowed border-[#e3e7f1] bg-[#f6f6f6] text-[#a3aaba]'
+            : 'border-[#cfe0ff] bg-[#f4f8ff] text-[#1a71ff] hover:bg-[#e9f1ff]',
+        )}
       >
-        发起评审
+        {blocked ? '已有评审任务' : '发起评审'}
       </UIButton>
     </div>
   );
@@ -276,10 +315,13 @@ function MrList({
   workspace,
   onCreate,
   reloadSignal,
+  inFlightByMr,
 }: {
   workspace: AiReviewWorkspace;
   onCreate: (mr: AiReviewMergeRequest) => void;
   reloadSignal: number;
+  /** 任务列表轮询到的最新「进行中」状态（编号 → 状态），优先于列表接口的快照 */
+  inFlightByMr: Map<number, string>;
 }) {
   const [items, setItems] = useState<AiReviewMergeRequest[] | null>(null);
   const [pageMeta, setPageMeta] = useState<{ total: number | null; page: number; has_more: boolean }>({
@@ -411,7 +453,12 @@ function MrList({
         <>
           <div className="flex flex-col gap-[8px]">
             {(items ?? []).map((mr) => (
-              <MergeRequestRow key={mr.number} mr={mr} onCreate={() => onCreate(mr)} />
+              <MergeRequestRow
+                key={mr.number}
+                mr={mr}
+                inFlightStatus={inFlightByMr.get(mr.number) ?? mr.in_flight_status ?? ''}
+                onCreate={() => onCreate(mr)}
+              />
             ))}
           </div>
           <ListPager
@@ -664,9 +711,35 @@ export default function AiReviewerPage({
     [selectedId, reloadTasks],
   );
 
-  const inFlightCount = tasks.filter(
-    (task) => task.status === 'queued' || task.status === 'running',
-  ).length;
+  /** 当前任务页里的进行中任务 → 编号索引：用于即时禁用「发起评审」。 */
+  const inFlightByMr = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const task of tasks) {
+      if (isTaskInFlight(task.status) && !map.has(task.mr_number)) {
+        map.set(task.mr_number, task.status);
+      }
+    }
+    return map;
+  }, [tasks]);
+
+  const inFlightCount = inFlightByMr.size;
+
+  // 进行中集合变化（新任务入队 / 任务收尾）时刷一次 PR/MR 列表，
+  // 让服务端返回的 in_flight_status 跟上，避免行状态与任务状态打架。
+  const inFlightSignature = useMemo(
+    () =>
+      [...inFlightByMr.entries()]
+        .sort((left, right) => left[0] - right[0])
+        .map(([number, status]) => `${number}:${status}`)
+        .join(','),
+    [inFlightByMr],
+  );
+  const inFlightSignatureRef = useRef(inFlightSignature);
+  useEffect(() => {
+    if (inFlightSignatureRef.current === inFlightSignature) return;
+    inFlightSignatureRef.current = inFlightSignature;
+    setMrReloadSignal((value) => value + 1);
+  }, [inFlightSignature]);
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
@@ -772,6 +845,7 @@ export default function AiReviewerPage({
                 workspace={selected}
                 onCreate={(mr) => setCreateTaskMr(mr)}
                 reloadSignal={mrReloadSignal}
+                inFlightByMr={inFlightByMr}
               />
             </SectionCard>
 
@@ -867,12 +941,21 @@ export default function AiReviewerPage({
         onClose={() => setCreateTaskMr(null)}
         workspace={selected}
         initialMr={createTaskMr}
+        inFlightByMr={inFlightByMr}
         onCreated={() => {
           void reloadTasks(selectedId);
           setMrReloadSignal((value) => value + 1);
         }}
       />
-      <ReviewResultDialog taskId={resultTaskId} onClose={() => setResultTaskId(null)} />
+      <ReviewResultDialog
+        taskId={resultTaskId}
+        onClose={() => setResultTaskId(null)}
+        onOpenSettings={() => {
+          // 先关结果弹窗再开设置：两个 Dialog 叠加会互相抢焦点与滚动锁
+          setResultTaskId(null);
+          setSettingsOpen(true);
+        }}
+      />
     </div>
   );
 }

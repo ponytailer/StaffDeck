@@ -2,14 +2,21 @@ import { describe, expect, it } from 'vitest';
 
 import {
   commentRange,
+  duplicateReviewAdvice,
+  duplicateReviewBlockedText,
   formatElapsed,
+  formatThinkingSize,
   formatTokens,
+  inFlightPhaseLabel,
   isOcrSkipped,
+  isTaskInFlight,
   ocrSkipHint,
   ocrStatusMeta,
   pageNumbers,
   sampleRuleFileText,
   sortComments,
+  splitTextLinks,
+  splitThinkingBlocks,
   taskPollingInterval,
   validateRuleFileText,
   validateTaskDraft,
@@ -182,5 +189,113 @@ describe('ocrSkipHint', () => {
     });
     expect(hint?.reasons[0]).toContain('diff 为空');
     expect(hint?.reasons[1]).toContain('.txt');
+  });
+});
+
+describe('isTaskInFlight / inFlightPhaseLabel', () => {
+  it('只有 queued / running 算「进行中」', () => {
+    expect(isTaskInFlight('queued')).toBe(true);
+    expect(isTaskInFlight('running')).toBe(true);
+    expect(isTaskInFlight('succeeded')).toBe(false);
+    expect(isTaskInFlight('failed')).toBe(false);
+    expect(isTaskInFlight('')).toBe(false);
+    expect(isTaskInFlight(undefined)).toBe(false);
+    expect(isTaskInFlight(null)).toBe(false);
+  });
+
+  it('阶段名：queued → 排队中，其余（含未知）→ 评审中', () => {
+    expect(inFlightPhaseLabel('queued')).toBe('排队中');
+    expect(inFlightPhaseLabel('running')).toBe('评审中');
+    expect(inFlightPhaseLabel('')).toBe('评审中');
+    expect(inFlightPhaseLabel(undefined)).toBe('评审中');
+  });
+});
+
+describe('duplicateReviewBlockedText', () => {
+  it('带上编号与阶段，并说明「同时只能有一个」', () => {
+    const text = duplicateReviewBlockedText(170, 'running');
+    expect(text).toBe(
+      'PR/MR #170 已有进行中的评审任务（评审中），同一 PR/MR 同时只能有一个评审任务，请等它结束后再发起。',
+    );
+  });
+
+  it('排队中的任务用「排队中」而不是「评审中」', () => {
+    expect(duplicateReviewBlockedText(7, 'queued')).toContain('（排队中）');
+  });
+
+  it('状态缺失时退化成通用文案，不出现空括号', () => {
+    const text = duplicateReviewBlockedText(7);
+    expect(text).toContain('（评审中）');
+    expect(text).not.toContain('（）');
+  });
+});
+
+describe('duplicateReviewAdvice', () => {
+  it('给出「等待」与「先清理卡住的任务」两条路径', () => {
+    const tips = duplicateReviewAdvice();
+    expect(tips).toHaveLength(2);
+    expect(tips[0]).toContain('恢复可用');
+    expect(tips[1]).toContain('删除或重试');
+  });
+});
+
+describe('formatThinkingSize', () => {
+  it('空值返回空串（调用方据此不渲染整块）', () => {
+    expect(formatThinkingSize('')).toBe('');
+    expect(formatThinkingSize('   \n ')).toBe('');
+    expect(formatThinkingSize(undefined)).toBe('');
+    expect(formatThinkingSize(null)).toBe('');
+  });
+
+  it('千字符以下给精确值，以上折算成 k', () => {
+    expect(formatThinkingSize('x'.repeat(820))).toBe('820 字符');
+    expect(formatThinkingSize('x'.repeat(1000))).toBe('1.0k 字符');
+    expect(formatThinkingSize('x'.repeat(12832))).toBe('12.8k 字符');
+  });
+});
+
+describe('splitThinkingBlocks', () => {
+  it('按空行分段，段内压掉硬换行（否则上万字符糊成一段）', () => {
+    expect(splitThinkingBlocks('a\nb\n\nc\nd')).toEqual(['a b', 'c d']);
+  });
+
+  it('整段都是列表时保留换行，不把结构压坏', () => {
+    expect(splitThinkingBlocks('- a\n- b\n- c')).toEqual(['- a\n- b\n- c']);
+  });
+
+  it('含代码围栏的段保留换行', () => {
+    expect(splitThinkingBlocks('see:\n```\nx = 1\n```')).toEqual(['see:\n```\nx = 1\n```']);
+  });
+
+  it('兼容 CRLF、折叠多余空行、丢掉空段', () => {
+    expect(splitThinkingBlocks('a\r\n\r\n\r\n\r\nb')).toEqual(['a', 'b']);
+    expect(splitThinkingBlocks('\n\n   \n')).toEqual([]);
+    expect(splitThinkingBlocks(undefined)).toEqual([]);
+  });
+});
+
+describe('splitTextLinks', () => {
+  it('把 http(s) 链接从文本里摘出来（含中文/括号边界）', () => {
+    const segments = splitTextLinks('见 https://github.com/settings/tokens?type=beta 去开权限');
+    expect(segments).toEqual([
+      { type: 'text', value: '见 ' },
+      { type: 'link', value: 'https://github.com/settings/tokens?type=beta' },
+      { type: 'text', value: ' 去开权限' },
+    ]);
+  });
+
+  it('中文全角括号紧跟链接时不会吞进 URL', () => {
+    const segments = splitTextLinks('设置页（https://github.com/settings/tokens）里改');
+    expect(segments.map((segment) => segment.value)).toEqual([
+      '设置页（',
+      'https://github.com/settings/tokens',
+      '）里改',
+    ]);
+  });
+
+  it('没有链接就只回一段文本；空值回空数组', () => {
+    expect(splitTextLinks('纯文本，无链接')).toEqual([{ type: 'text', value: '纯文本，无链接' }]);
+    expect(splitTextLinks('')).toEqual([]);
+    expect(splitTextLinks(undefined)).toEqual([]);
   });
 });

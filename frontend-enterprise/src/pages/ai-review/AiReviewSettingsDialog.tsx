@@ -89,11 +89,26 @@ function CredentialForm({ platform }: { platform: AiReviewPlatform }) {
           </span>
         )}
       </div>
-      <p className="text-[11.5px] leading-[17px] text-[#757f9c]">
-        {platform === 'github'
-          ? 'GitHub PAT（repo / pulls 读权限即可），用于拉取 open PR 列表与克隆仓库。'
-          : 'GitLab PAT（api 读权限）；自托管实例请在下一栏填实例根地址。'}
-      </p>
+      <div className="flex flex-col gap-[4px] text-[11.5px] leading-[17px] text-[#757f9c]">
+        <p>
+          {platform === 'github'
+            ? 'GitHub PAT：拉取 PR 列表与克隆仓库用读权限即可；要把评审结果回写到评论区，还需要写权限。'
+            : 'GitLab PAT：拉取 MR 与克隆用 read_api 即可；回写评论需要 api 权限，自托管实例请在下一栏填实例根地址。'}
+        </p>
+        {platform === 'github' && (
+          <p>
+            回写评论需要写权限：fine-grained token 给目标仓库勾上 Repository permissions → Issues = Read and write（回写走 issues 评论接口），classic token 需要 repo 权限。
+            <a
+              href="https://github.com/settings/tokens?type=beta"
+              target="_blank"
+              rel="noreferrer"
+              className="ml-[4px] text-[#1a71ff] underline underline-offset-2"
+            >
+              打开 token 设置
+            </a>
+          </p>
+        )}
+      </div>
       <div className="flex items-center gap-[8px]">
         <Input
           type={showToken ? 'text' : 'password'}

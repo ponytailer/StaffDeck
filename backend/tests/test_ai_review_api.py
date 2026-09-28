@@ -550,6 +550,133 @@ def test_task_retry_and_delete() -> None:
     assert db.get(AiReviewTask, task.id) is None
 
 
+def _mk_task(db: Session, workspace_id: str, *, mr_number: int, status: str) -> AiReviewTask:
+    task = AiReviewTask(
+        tenant_id=TENANT, workspace_id=workspace_id, status=status, mr_number=mr_number
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def test_retry_blocked_when_another_task_is_inflight() -> None:
+    """重试也要守「同一 PR/MR 只能有一个进行中任务」这道闸门。"""
+    db = _session()
+    user = _seed_tenant(db)
+    workspace = ai_review.create_workspace(
+        ai_review.WorkspaceCreateRequest(
+            tenant_id=TENANT, name="ws", platform="github", repo_url="https://github.com/foo/bar.git"
+        ),
+        current_user=user,
+        db=db,
+    )
+    failed = _mk_task(db, workspace["id"], mr_number=5, status="failed")
+    # 同一 PR/MR 上另有一条正在跑的任务（例如失败后用户又发起了一次）
+    running = _mk_task(db, workspace["id"], mr_number=5, status="running")
+
+    with pytest.raises(HTTPException) as exc:
+        ai_review.retry_task(failed.id, tenant_id=TENANT, current_user=user, db=db)
+    assert exc.value.status_code == 409
+    assert "已有进行中的评审任务" in str(exc.value.detail)
+    assert db.get(AiReviewTask, failed.id).status == "failed"  # 未被改成 queued
+
+    # 另一条收尾后即可重试
+    running.status = "succeeded"
+    db.add(running)
+    db.commit()
+    retried = ai_review.retry_task(failed.id, tenant_id=TENANT, current_user=user, db=db)
+    assert retried["status"] == "queued"
+
+    # 别的 PR/MR 不受影响（按编号隔离）
+    other = _mk_task(db, workspace["id"], mr_number=6, status="failed")
+    assert ai_review.retry_task(other.id, tenant_id=TENANT, current_user=user, db=db)["status"] == "queued"
+
+
+def test_create_task_survives_lost_race_via_unique_index(monkeypatch) -> None:
+    """应用层检查被绕过（并发窗口）时，由部分唯一索引兜底成 409，而不是 500。"""
+    db = _session()
+    user = _seed_tenant(db)
+    ai_review.upsert_credential(
+        ai_review.CredentialUpsertRequest(tenant_id=TENANT, platform="github", token="ghp_ok"),
+        current_user=user,
+        db=db,
+    )
+    workspace = ai_review.create_workspace(
+        ai_review.WorkspaceCreateRequest(
+            tenant_id=TENANT, name="ws", platform="github", repo_url="https://github.com/foo/bar.git"
+        ),
+        current_user=user,
+        db=db,
+    )
+    _mk_task(db, workspace["id"], mr_number=42, status="queued")
+    monkeypatch.setattr(ai_review, "get_merge_request", lambda *a, **k: _fake_mr())
+    monkeypatch.setattr("app.ai_review.jobs.schedule_ai_review", lambda *a, **k: True)
+    # 模拟「两个请求同时通过了前置检查」
+    monkeypatch.setattr(ai_review, "_find_in_flight_task", lambda *a, **k: None)
+
+    with pytest.raises(HTTPException) as exc:
+        ai_review.create_task(
+            ai_review.TaskCreateRequest(tenant_id=TENANT, workspace_id=workspace["id"], mr_number=42),
+            current_user=user,
+            db=db,
+        )
+    assert exc.value.status_code == 409
+    assert "已有进行中的评审任务" in str(exc.value.detail)
+    # 回滚干净：没有多出第二条任务
+    assert len(db.exec(select(AiReviewTask).where(AiReviewTask.mr_number == 42)).all()) == 1
+
+
+def test_merge_request_list_marks_inflight_reviews(monkeypatch) -> None:
+    """MR 列表带上进行中任务标记，前端才能提前禁用「发起评审」。"""
+    from app.ai_review.platform_client import PlatformMergeRequest
+
+    db = _session()
+    user = _seed_tenant(db)
+    ai_review.upsert_credential(
+        ai_review.CredentialUpsertRequest(tenant_id=TENANT, platform="github", token="ghp_ok"),
+        current_user=user,
+        db=db,
+    )
+    workspace = ai_review.create_workspace(
+        ai_review.WorkspaceCreateRequest(
+            tenant_id=TENANT, name="ws", platform="github", repo_url="https://github.com/foo/bar.git"
+        ),
+        current_user=user,
+        db=db,
+    )
+    task = _mk_task(db, workspace["id"], mr_number=42, status="running")
+
+    def fake_list(credential, repo_path, *, page=1, page_size=20, search="") -> tuple[list[Any], int, bool]:
+        rows = [
+            PlatformMergeRequest(
+                number=number,
+                title=f"MR {number}",
+                description="",
+                source_branch="feat",
+                target_branch="main",
+                author="ponytailer",
+                web_url=f"https://github.com/foo/bar/pull/{number}",
+            )
+            for number in (42, 43)
+        ]
+        return rows, 2, False
+
+    monkeypatch.setattr(ai_review, "list_merge_requests", fake_list)
+
+    page = ai_review.list_workspace_merge_requests(
+        workspace["id"], tenant_id=TENANT, current_user=user, db=db
+    )
+    by_number = {row["number"]: row for row in page["items"]}
+    assert by_number[42]["in_flight_status"] == "running"
+    assert by_number[42]["in_flight_task_id"] == task.id
+    assert by_number[42]["in_flight_since"]  # 有开始时间
+    # 没有任务的 PR/MR 保持空标记（前端按 '' 判定可发起）
+    assert by_number[43]["in_flight_status"] == ""
+    assert by_number[43]["in_flight_task_id"] == ""
+    assert by_number[43]["in_flight_since"] is None
+
+
 # ---------------------------------------------------------------------------
 # 自定义规则文件（ocr rule.json）：结构校验 + 三条路由
 # ---------------------------------------------------------------------------
@@ -955,3 +1082,114 @@ def test_routes_are_registered_and_reject_anonymous() -> None:
     assert client.get("/api/enterprise/ai-review/rules-file").status_code == 401
     assert client.get("/api/enterprise/ai-review/tasks").status_code == 401
     assert client.post("/api/enterprise/ai-review/tasks/any/sync-to-platform").status_code == 401
+
+
+def test_sync_to_platform_reports_missing_write_permission(monkeypatch) -> None:
+    """token 能读不能写：回写返回稳定错误码，前端据此渲染「去平台设置补权限」。
+
+    真实案例：fine-grained PAT 只给了读权限，GitHub 对 issue 评论接口回
+    403 Resource not accessible by personal access token。
+    """
+    from app.ai_review.platform_client import PlatformWriteDeniedError, write_denied_message
+
+    db = _session()
+    user = _seed_tenant(db)
+    ai_review.upsert_credential(
+        ai_review.CredentialUpsertRequest(
+            tenant_id=TENANT, platform="github", token="github_pat_readonly"
+        ),
+        current_user=user,
+        db=db,
+    )
+    workspace = ai_review.create_workspace(
+        ai_review.WorkspaceCreateRequest(
+            tenant_id=TENANT, name="ws", platform="github", repo_url="https://github.com/foo/bar.git"
+        ),
+        current_user=user,
+        db=db,
+    )
+    task = AiReviewTask(
+        tenant_id=TENANT,
+        workspace_id=workspace["id"],
+        status="succeeded",
+        mr_number=7,
+        result_json=[{"path": "src/a.go", "content": "缺少错误处理"}],
+        summary_json={"ocr_status": "succeeded", "files_reviewed": 1},
+    )
+    db.add(task)
+    db.commit()
+
+    message = write_denied_message(
+        "github", 403, '{"message": "Resource not accessible by personal access token"}'
+    )
+
+    def fake_post(*_args, **_kwargs):
+        raise PlatformWriteDeniedError(message, platform="github", status=403)
+
+    monkeypatch.setattr(ai_review, "post_merge_request_comment", fake_post)
+
+    with pytest.raises(HTTPException) as exc:
+        ai_review.sync_task_to_platform(
+            task.id,
+            request=ai_review.SyncToPlatformRequest(tenant_id=TENANT),
+            current_user=user,
+            db=db,
+        )
+    assert exc.value.status_code == 502
+    # 结构化 detail：前端按 code 决定是否渲染「去平台设置」引导
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail["code"] == ai_review.PLATFORM_WRITE_DENIED_CODE
+    assert "Issues" in exc.value.detail["message"]
+    assert "Read and write" in exc.value.detail["message"]
+    # 失败不能留下回写时间戳
+    assert db.get(AiReviewTask, task.id).platform_synced_at is None
+
+
+def test_write_denied_message_points_at_the_right_switch() -> None:
+    """报错要指到具体开关上，而不是笼统的「token 无效或权限不足」。"""
+    from app.ai_review.platform_client import write_denied_message
+
+    github = write_denied_message(
+        "github", 403, "Resource not accessible by personal access token"
+    )
+    assert "能读仓库" in github
+    assert "Issues = Read and write" in github
+    assert "repo 权限" in github
+
+    expired = write_denied_message("github", 401, '{"message": "Bad credentials"}')
+    assert "过期" in expired
+
+    gitlab = write_denied_message("gitlab", 403, '{"error": "insufficient_scope"}')
+    assert "api 权限" in gitlab
+    assert "read_api" in gitlab
+
+
+def test_post_comment_maps_platform_403_to_write_denied(monkeypatch) -> None:
+    """写接口 403 必须落地成 PlatformWriteDeniedError（而不是笼统 PlatformError）。"""
+    from app.ai_review import platform_client
+
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        status_code = 403
+        text = '{"message": "Resource not accessible by personal access token"}'
+
+        def json(self):  # pragma: no cover - 403 不会走解析
+            raise ValueError("no json")
+
+    def fake_post(url, headers=None, json=None, timeout=None, follow_redirects=None):
+        captured.update(url=url, payload=json)
+        return FakeResponse()
+
+    monkeypatch.setattr(platform_client.httpx, "post", fake_post)
+
+    with pytest.raises(platform_client.PlatformWriteDeniedError) as exc:
+        platform_client.post_merge_request_comment(
+            platform_client.PlatformCredential(platform="github", token="t"), "foo/bar", 7, "body"
+        )
+    assert exc.value.status == 403
+    assert exc.value.platform == "github"
+    assert "Issues = Read and write" in str(exc.value)
+    # 仍然打到 issues 评论接口（GitHub 的 PR 评论入口）
+    assert captured["url"].endswith("/repos/foo/bar/issues/7/comments")
+    assert captured["payload"] == {"body": "body"}

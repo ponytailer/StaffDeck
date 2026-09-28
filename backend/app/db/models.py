@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint
+from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -2038,6 +2038,20 @@ class AiReviewTask(SQLModel, table=True):
     """
 
     __tablename__ = "ai_review_tasks"
+    # 同一 PR/MR 同时只允许一条进行中任务（部分唯一索引，PG 与 SQLite 都支持
+    # WHERE 子句）。应用层在创建 / 重试时已拦一道，这里是并发写入的兜底；
+    # 已存在的表由 database._migrate_ai_review_schema() 补建同名索引。
+    __table_args__ = (
+        Index(
+            "uq_ai_review_task_in_flight",
+            "tenant_id",
+            "workspace_id",
+            "mr_number",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+            sqlite_where=text("status IN ('queued', 'running')"),
+        ),
+    )
 
     id: str = Field(default_factory=lambda: new_id("airevtask"), primary_key=True)
     tenant_id: str = Field(index=True)

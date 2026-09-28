@@ -1,16 +1,19 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AiReviewTaskDetail } from '../../api/aiReview';
+import { ApiError } from '../../api/client';
 import ReviewResultDialog from './ReviewResultDialog';
 
 const fetchDetail = vi.fn();
+const syncTask = vi.fn();
 
 vi.mock('../../api/aiReview', () => ({
+  AI_REVIEW_PLATFORM_WRITE_DENIED_CODE: 'AI_REVIEW_PLATFORM_WRITE_DENIED',
   fetchAiReviewTaskDetail: (...args: unknown[]) => fetchDetail(...args),
-  syncAiReviewTaskToPlatform: vi.fn(),
+  syncAiReviewTaskToPlatform: (...args: unknown[]) => syncTask(...args),
 }));
 
 vi.mock('@/components/ui/app-toast', () => ({
@@ -47,6 +50,7 @@ function makeDetail(overrides: Partial<AiReviewTaskDetail> = {}): AiReviewTaskDe
 afterEach(() => {
   cleanup();
   fetchDetail.mockReset();
+  syncTask.mockReset();
 });
 
 describe('ReviewResultDialog · ocr skipped 语义化', () => {
@@ -82,5 +86,128 @@ describe('ReviewResultDialog · ocr skipped 语义化', () => {
     expect(screen.getByText('缺少错误处理')).toBeTruthy();
     expect(screen.getByText('回写到 PR / MR')).toBeTruthy();
     expect(screen.queryByText(/实际评审文件数/)).toBeNull();
+  });
+});
+
+describe('ReviewResultDialog · 评审思路可读性', () => {
+  // 故意做成「段落 + 列表 + 段落」：原来的实现会把它们糊成一整段
+  const thinking = 'First paragraph spans\none wrapped line.\n\n- item a\n- item b\n\nLast paragraph.';
+
+  function renderWithThinking() {
+    fetchDetail.mockResolvedValue(
+      makeDetail({
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        summary_json: { ocr_status: 'succeeded', files_reviewed: 1 },
+        result_json: [{ path: 'src/a.py', start_line: 1, end_line: 2, content: '问题', thinking }],
+      }),
+    );
+    return render(<ReviewResultDialog taskId="task-1" onClose={() => {}} />);
+  }
+
+  it('默认收起，并标注体量，避免上万字符默认铺开', async () => {
+    renderWithThinking();
+    await waitFor(() => expect(screen.getByText('评审思路')).toBeTruthy());
+
+    const details = document.querySelector('details');
+    expect(details).toBeTruthy();
+    expect(details?.open).toBe(false);
+    expect(screen.getByText(/^\d+ 字符$/)).toBeTruthy();
+    expect(screen.getByText('模型内部推理，未做整理')).toBeTruthy();
+  });
+
+  it('展开后按空行分段：段内压换行、列表段保结构', async () => {
+    renderWithThinking();
+    await waitFor(() => expect(screen.getByText('评审思路')).toBeTruthy());
+
+    const blocks = Array.from(document.querySelectorAll('details p')).map((node) => node.textContent);
+    expect(blocks).toEqual([
+      'First paragraph spans one wrapped line.',
+      '- item a\n- item b',
+      'Last paragraph.',
+    ]);
+  });
+
+  it('没有 thinking 时不渲染这一块', async () => {
+    fetchDetail.mockResolvedValue(
+      makeDetail({
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        summary_json: { ocr_status: 'succeeded', files_reviewed: 1 },
+        result_json: [{ path: 'src/a.py', start_line: 1, end_line: 2, content: '问题' }],
+      }),
+    );
+    render(<ReviewResultDialog taskId="task-1" onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText('问题')).toBeTruthy());
+    expect(screen.queryByText('评审思路')).toBeNull();
+    expect(document.querySelector('details')).toBeNull();
+  });
+});
+
+describe('ReviewResultDialog · 回写失败引导', () => {
+  function primeSyncableDetail() {
+    fetchDetail.mockResolvedValue(
+      makeDetail({
+        source_branch: 'feature/x',
+        target_branch: 'main',
+        summary_json: { ocr_status: 'succeeded', files_reviewed: 1 },
+        result_json: [{ path: 'src/a.py', start_line: 3, end_line: 5, content: '缺少错误处理' }],
+      }),
+    );
+  }
+
+  async function triggerSync() {
+    await waitFor(() => expect(screen.getByText('回写到 PR / MR')).toBeTruthy());
+    fireEvent.click(screen.getByText('回写到 PR / MR'));
+    await waitFor(() => expect(screen.getByText('回写')).toBeTruthy());
+    fireEvent.click(screen.getByText('回写'));
+  }
+
+  it('token 缺写权限：常驻引导 + 可点的设置页链接 + 可跳转平台设置', async () => {
+    primeSyncableDetail();
+    syncTask.mockRejectedValue(
+      new ApiError(
+        502,
+        JSON.stringify({
+          detail: {
+            code: 'AI_REVIEW_PLATFORM_WRITE_DENIED',
+            message:
+              '回写 PR 评论被 GitHub 拒绝：这个 token 能读仓库、但没有写权限。见 https://github.com/settings/tokens?type=beta',
+          },
+        }),
+        'Bad Gateway',
+      ),
+    );
+    const onOpenSettings = vi.fn();
+    render(
+      <ReviewResultDialog taskId="task-1" onClose={() => {}} onOpenSettings={onOpenSettings} />,
+    );
+    await triggerSync();
+
+    await waitFor(() =>
+      expect(screen.getByText('回写被代码平台拒绝：token 缺少写权限')).toBeTruthy(),
+    );
+    expect(screen.getByText(/这个 token 能读仓库、但没有写权限/)).toBeTruthy();
+    // 报错里的设置页地址渲染成可点链接，而不是纯文本
+    const link = screen.getByText('https://github.com/settings/tokens?type=beta');
+    expect(link.tagName).toBe('A');
+    expect(link.getAttribute('href')).toBe('https://github.com/settings/tokens?type=beta');
+
+    fireEvent.click(screen.getByText('去平台设置补权限'));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('其它回写失败只留提示，不给「去平台设置」按钮', async () => {
+    primeSyncableDetail();
+    syncTask.mockRejectedValue(
+      new ApiError(502, JSON.stringify({ detail: '平台暂时不可用' }), 'Bad Gateway'),
+    );
+    render(<ReviewResultDialog taskId="task-1" onClose={() => {}} onOpenSettings={vi.fn()} />);
+    await triggerSync();
+
+    await waitFor(() => expect(screen.getByText('回写失败')).toBeTruthy());
+    expect(screen.getByText('平台暂时不可用')).toBeTruthy();
+    expect(screen.queryByText('去平台设置补权限')).toBeNull();
   });
 });
