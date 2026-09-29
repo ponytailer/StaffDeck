@@ -9,6 +9,10 @@ Agent 广场里的 Agent（清单由前端 `src/data/agent-catalog.json` 管理�
 - ``slides`` —— AI 幻灯片生成。把「模板标题 + 页面文字 + 正文口述」整理成一套结构化 deck，
   前端负责按固定主题渲染成预览与 HTML 源码；`slides:export` 再把同一份 deck 落成 pptx。
 
+- ``doc-review`` —— AI 文档审阅。上传 .docx 解析成段落块，支持一键审阅（问题清单）与
+  对话式修改（错别字/归纳总结/润色），导出时在原文档上做段落级文本替换（保留原格式）。
+  核心逻辑在 `app.core.doc_review`。
+
 模型归属是本模块的硬约束：生成必须使用**当前用户自己**在「模型配置」里配置并启用的模型，
 缺省不回落租户/管理员的默认模型（与 `model_for_agent` 的宽松策略不同），否则同一个 Agent 会
 用别人的额度出内容。
@@ -21,10 +25,24 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
+from app.core.doc_review import (
+    CHAT_SYSTEM_PROMPT,
+    DOCX_MEDIA_TYPE,
+    DocBlock,
+    REVIEW_SYSTEM_PROMPT,
+    apply_blocks_to_document,
+    document_to_bytes,
+    get_stored_document,
+    parse_docx,
+    review_batch_size,
+    sanitize_actions,
+    sanitize_issues,
+    store_document,
+)
 from app.core.slides_deck import (
     SLIDES_OPERATION,
     SlidesDeck,
@@ -221,5 +239,196 @@ def export_slides(request: SlidesExportRequest) -> Response:
             "Content-Length": str(len(data)),
             # 前端要读文件名时不必再解析 Content-Disposition
             "X-File-Name": quote(file_name),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# doc-review：AI 文档审阅（解析 / 审阅 / 对话修改 / 导出）
+# ---------------------------------------------------------------------------
+
+#: 审阅最多跑多少批（每批 40 段）：控制长文档的 LLM 调用次数与等待时间。
+_MAX_REVIEW_BATCHES = 10
+
+
+class DocReviewRequest(BaseModel):
+    tenant_id: str
+    model_config_id: str
+    doc_id: str
+    #: blocks 的唯一事实来源在前端（用户可能已应用/撤销过修改），随请求带回
+    blocks: list[DocBlock] = Field(default_factory=list)
+
+
+class DocChatRequest(BaseModel):
+    tenant_id: str
+    model_config_id: str
+    doc_id: str
+    message: str
+    #: 最近几轮对话（不含本轮），让 AI 知道之前做过什么
+    history: list[dict[str, str]] = Field(default_factory=list)
+    blocks: list[DocBlock] = Field(default_factory=list)
+
+
+class DocExportRequest(BaseModel):
+    tenant_id: str
+    doc_id: str
+    blocks: list[DocBlock] = Field(default_factory=list)
+    file_name: str = ""
+
+
+def _load_stored_doc(doc_id: str) -> dict:
+    entry = get_stored_document(doc_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="文档已过期，请重新上传")
+    return entry
+
+
+def _validate_blocks(blocks: list[DocBlock]) -> list[DocBlock]:
+    if not blocks:
+        raise HTTPException(status_code=400, detail="文档内容为空")
+    for block in blocks:
+        if len(block.text) > 20000:
+            raise HTTPException(status_code=400, detail="单段文本过长，请检查文档")
+        # 批注超长直接截断（核心层 MAX_COMMENT_CHARS 兜底，这里提前收敛）
+        if block.comment:
+            block.comment = block.comment.strip()[:2000]
+    return blocks
+
+
+@router.post("/doc:parse")
+def parse_doc(
+    tenant_id: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """上传 .docx 并解析成段落块。文档对象留在服务端内存（doc_id 寻址），导出时在其上回写。"""
+    ensure_tenant(db, tenant_id)
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="上传的文件为空")
+    original_name = file.filename or "document.docx"
+    if not original_name.lower().endswith(".docx"):
+        raise HTTPException(status_code=400, detail="目前只支持 .docx 文件（老 .doc 请先用 Word 另存为 .docx）")
+
+    try:
+        title, blocks, document, paragraphs = parse_docx(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    doc_id = store_document(original_name, document, paragraphs)
+    return {
+        "doc_id": doc_id,
+        "doc_name": original_name,
+        "title": title,
+        "blocks": [block.model_dump() for block in blocks],
+    }
+
+
+@router.post("/doc:review")
+def review_doc(request: DocReviewRequest, db: Session = Depends(get_session), current_user: User = Depends(get_current_user)) -> dict:
+    """一键审阅：分段调模型找问题，返回问题清单（可带逐段 fixes）。"""
+    ensure_tenant(db, request.tenant_id)
+    blocks = _validate_blocks(request.blocks)
+    model = _resolve_own_model(db, request.tenant_id, request.model_config_id, current_user)
+
+    batch_size = review_batch_size()
+    batches = [blocks[i : i + batch_size] for i in range(0, len(blocks), batch_size)][:_MAX_REVIEW_BATCHES]
+    issues = []
+    try:
+        for batch in batches:
+            payload = {
+                "文档块": [{"id": block.id, "text": block.text} for block in batch],
+            }
+            with llm_operation("doc_review"):
+                raw = LLMClient(model).generate_json(REVIEW_SYSTEM_PROMPT, payload)
+            issues.extend(sanitize_issues(raw, blocks))
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=f"模型调用失败：{exc}。可以换一个模型或稍后重试。") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"文档审阅失败：{exc}") from exc
+
+    reviewed_count = sum(len(batch) for batch in batches)
+    notes: list[str] = []
+    if len(batches) * batch_size < len(blocks):
+        notes.append(f"文档较长，本次已审阅前 {reviewed_count} 段，其余部分未覆盖。")
+    return {"issues": [issue.model_dump() for issue in issues], "reviewed_blocks": reviewed_count, "notes": notes}
+
+
+@router.post("/doc:chat")
+def chat_doc(request: DocChatRequest, db: Session = Depends(get_session), current_user: User = Depends(get_current_user)) -> dict:
+    """对话式修改：模型只产出「段落替换」操作，前端应用后成为新的 blocks 事实来源。"""
+    ensure_tenant(db, request.tenant_id)
+    blocks = _validate_blocks(request.blocks)
+    message = (request.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="请输入修改需求")
+    model = _resolve_own_model(db, request.tenant_id, request.model_config_id, current_user)
+
+    # 全量块文本可能很长：单块截断，整体超限再按比例收紧（保住 AI 的寻址能力）
+    rows = [{"id": block.id, "text": block.text[:300]} for block in blocks]
+    if sum(len(row["text"]) for row in rows) > 24000:
+        rows = [{"id": block.id, "text": block.text[:120]} for block in blocks]
+
+    history = [
+        {"role": str(row.get("role") or "user"), "content": str(row.get("content") or "")[:1500]}
+        for row in (request.history or [])[-8:]
+    ]
+    payload = {
+        "修改指令": message,
+        "历史对话": history,
+        "文档块": rows,
+    }
+    try:
+        with llm_operation("doc_review_chat"):
+            raw = LLMClient(model).generate_json(CHAT_SYSTEM_PROMPT, payload)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=f"模型调用失败：{exc}。可以换一个模型或稍后重试。") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"文档修改失败：{exc}") from exc
+
+    outcome = sanitize_actions(raw, blocks)
+    return {
+        "reply": outcome.reply,
+        "actions": [action.model_dump() for action in outcome.actions],
+    }
+
+
+def _fallback_doc_name(name: str) -> str:
+    cleaned = " ".join(str(name or "").split())
+    for bad in ('/', "\\", '"', "'", "\r", "\n", "\t"):
+        cleaned = cleaned.replace(bad, "_")
+    cleaned = cleaned.strip(" ._")
+    return cleaned[:_MAX_FILE_NAME_CHARS] or "document"
+
+
+def _ensure_docx(name: str) -> str:
+    return name if name.lower().endswith(".docx") else f"{name}.docx"
+
+
+@router.post("/doc:export")
+def export_doc(request: DocExportRequest, db: Session = Depends(get_session), current_user: User = Depends(get_current_user)) -> Response:
+    """把当前 blocks 回写进原始 docx 并下载 —— 不调模型，不消耗额度。"""
+    ensure_tenant(db, request.tenant_id)
+    blocks = _validate_blocks(request.blocks)
+    entry = _load_stored_doc(request.doc_id)
+
+    try:
+        changed = apply_blocks_to_document(entry, blocks)
+        data = document_to_bytes(entry)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"生成 Word 失败：{exc}") from exc
+
+    base_name = request.file_name or entry["name"] or "document"
+    file_name = _ensure_docx(_fallback_doc_name(base_name[:-5] if base_name.lower().endswith(".docx") else base_name))
+
+    return Response(
+        content=data,
+        media_type=DOCX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": _content_disposition(file_name),
+            "Content-Length": str(len(data)),
+            "X-File-Name": quote(file_name),
+            "X-Doc-Changed": str(changed),
         },
     )

@@ -274,7 +274,7 @@ describe('AgentAppPage', () => {
     expect(document.querySelector('[data-sd-path="p0.title"]')?.textContent).toBe('改过的标题');
   });
 
-  it('「旅文汇报样式」勾了才把清单里的 prompt 随请求下发', async () => {
+  it('「汇报样式」勾选项已下线：生成请求不再携带 style_prompt', async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -291,17 +291,12 @@ describe('AgentAppPage', () => {
     const user1 = userEvent.setup();
     const textarea = await screen.findByPlaceholderText(/把汇报正文整段贴进来即可/);
 
-    // 未勾选：不带 style_prompt
     fireEvent.change(textarea, { target: { value: '第一版正文' } });
     await user1.click(screen.getByRole('button', { name: /生成幻灯片/ }));
     await waitFor(() => expect(bodies).toHaveLength(1));
-    expect(bodies[0].style_prompt).toBe('');
-
-    // 勾选后：带上清单里的口径
-    await user1.click(screen.getByRole('checkbox', { name: '旅文汇报样式' }));
-    await user1.click(screen.getByRole('button', { name: /生成幻灯片/ }));
-    await waitFor(() => expect(bodies).toHaveLength(2));
-    expect(String(bodies[1].style_prompt)).toContain('旅文汇报口径');
+    expect(bodies[0]).not.toHaveProperty('style_prompt');
+    expect(screen.queryByRole('checkbox', { name: '旅文汇报样式' })).toBeNull();
+    expect(screen.queryByText('汇报样式')).toBeNull();
   });
 
   it('导出 PPTX：未生成置灰，生成后可用并触发下载', async () => {

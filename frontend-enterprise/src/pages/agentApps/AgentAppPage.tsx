@@ -6,6 +6,7 @@ import type { EnterpriseAuthUser } from '@/auth';
 import { findAgentCatalogEntry } from '@/lib/agentCatalog';
 import DecisionAssistantPage from '@/pages/decision/DecisionAssistantPage';
 
+import DocReviewWorkspace from './DocReviewWorkspace';
 import SlidesMakerWorkspace from './SlidesMakerWorkspace';
 
 export type AgentAppPageProps = {
@@ -27,6 +28,11 @@ export default function AgentAppPage({ currentUser, onLogout }: AgentAppPageProp
 
   if (entry && entry.capability === 'slides') {
     return <SlidesMakerWorkspace entry={entry} currentUser={currentUser} onLogout={onLogout} />;
+  }
+
+  // AI 文档审阅：上传 docx → 一键审阅 / 对话修改 → 导出保留原格式的 Word。
+  if (entry && entry.capability === 'doc-review') {
+    return <DocReviewWorkspace entry={entry} currentUser={currentUser} onLogout={onLogout} />;
   }
 
   // 决策助手：原独立页面整体搬进 Agent 广场，渲染外壳已与 PPT Studio 统一（页头 + 返回按钮 + 定高工作卡）。

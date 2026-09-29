@@ -46,10 +46,6 @@ const MAX_PAGE_COUNT = 30;
 const NARRATIVE_PLACEHOLDER =
   '把汇报正文整段贴进来即可 —— 背景、进展、成果、数据、下一步……';
 
-const NARRATIVE_EXAMPLE =
-  'AI 先锋项目本月完成全球招募，共有 397 位大使加入，覆盖 20+ 国家和地区。'
-  + '已产生 12 场 AI 应用案例，形成四步路径：招募、培训、实践、认证。';
-
 const FIELD_LABEL_CLASS = 'flex items-center gap-[6px] text-[12px] font-medium leading-none text-[#18181a]';
 const FIELD_INPUT_CLASS =
   'h-[34px] w-full rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#18181a] outline-none transition-colors placeholder:text-[#a3aab9] focus:border-[#18181a]';
@@ -95,7 +91,7 @@ export type SlidesMakerWorkspaceProps = {
 /**
  * AI 幻灯片生成工作台。
  *
- * 左栏是生成参数（模板标题 / 页面文字 / 正文口述 / 页数 / 汇报样式），底部固定一栏收「骨架页 +
+ * 左栏是生成参数（模板标题 / 页面文字 / 正文口述 / 页数），底部固定一栏收「骨架页 +
  * 模型 +『导出 PPTX | 生成幻灯片』」——参数区自身可滚动，保证这两个动作按钮永远在可视区。
  * 右栏是「幻灯片预览 | HTML 源码」两个视图，都由 `slidesDeck.ts` 里同一个渲染函数产出，
  * 不会出现预览与源码不一致。
@@ -110,9 +106,6 @@ export type SlidesMakerWorkspaceProps = {
  *
  * 模型：只用当前用户在「模型配置」里配置并启用的模型；一个都没有时按钮不可点，
  * 并给出直达模型配置的入口（不能用别人的模型代跑）。
- *
- * 汇报样式：清单 JSON 的 `prompt` 是该 Agent 自带的固定口径，勾上「旅文汇报样式」才随请求
- * 下发；不勾则完全走通用 prompt，两者互不干扰。
  */
 export default function SlidesMakerWorkspace({ entry, currentUser, onLogout }: SlidesMakerWorkspaceProps) {
   const navigate = useNavigate();
@@ -131,7 +124,6 @@ export default function SlidesMakerWorkspace({ entry, currentUser, onLogout }: S
   const [modelId, setModelId] = useState('');
   const [generating, setGenerating] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [useReportStyle, setUseReportStyle] = useState(false);
   const [deck, setDeck] = useState<SlidesDeck | null>(null);
   /** 预览的 HTML 快照：只在生成完 / 切回预览时更新，编辑过程中不重算（见组件注释）。 */
   const [previewHtml, setPreviewHtml] = useState('');
@@ -168,9 +160,7 @@ export default function SlidesMakerWorkspace({ entry, currentUser, onLogout }: S
     () => models.find((row) => row.id === modelId) || null,
     [modelId, models],
   );
-  /** 清单里给这个 Agent 配的固定口径（如「旅文汇报样式」）；为空则不展示勾选项。 */
-  const stylePrompt = (entry.prompt || '').trim();
-  const hasStylePrompt = stylePrompt.length > 0;
+  /** 骨架页勾选数；总页数扣掉它，至少留 1 张内容页。 */
   const skeletonCount = SKELETON_OPTIONS.filter((option) => skeleton[option.key]).length;
   /** 总页数扣掉勾选的骨架页，至少留 1 张内容页。 */
   const contentPages = Math.max(1, pageCount - skeletonCount);
@@ -221,8 +211,6 @@ export default function SlidesMakerWorkspace({ entry, currentUser, onLogout }: S
         // 「页数」是总页数（含骨架页），内容张数由服务端换算
         page_count: pageCountMode === 'auto' ? 0 : pageCount,
         skeleton_pages: SKELETON_OPTIONS.filter((option) => skeleton[option.key]).map((option) => option.key),
-        // 勾了「旅文汇报样式」才把清单里的固定口径带上；不勾则完全走通用 prompt
-        style_prompt: useReportStyle ? stylePrompt : '',
       });
       setDeck(result);
       setPreviewHtml(renderDeckBody(result, { editable: true }));
@@ -242,9 +230,7 @@ export default function SlidesMakerWorkspace({ entry, currentUser, onLogout }: S
     pageCountMode,
     pageLabel,
     skeleton,
-    stylePrompt,
     templateTitle,
-    useReportStyle,
   ]);
 
   /** 导出的是当前展示的这一份 deck（含鼠标改动；后端只做渲染，不再调模型）。 */
@@ -360,13 +346,6 @@ export default function SlidesMakerWorkspace({ entry, currentUser, onLogout }: S
                     {narrative.length} 字
                   </span>
                 </div>
-                <div className="rounded-[8px] bg-[#f6f7f9] p-[8px]">
-                  {/* 两行封顶：示例只是提示，别把参数区挤到需要滚动 */}
-                  <p className="line-clamp-2 text-[11px] leading-[1.6] text-[#858b9c]">
-                    <span className="mr-[4px] text-[#757f9c]">例</span>
-                    {NARRATIVE_EXAMPLE}
-                  </p>
-                </div>
               </Field>
 
               <Field label="页数" hint={pageCountHint}>
@@ -412,26 +391,6 @@ export default function SlidesMakerWorkspace({ entry, currentUser, onLogout }: S
                   )}
                 </div>
               </Field>
-
-              {/* 清单里配了固定口径才出现；勾上才随请求下发，不勾走通用 prompt */}
-              {hasStylePrompt && (
-                <Field label="汇报样式" hint="勾选后按该 Agent 自带的固定口径生成内容">
-                  <label
-                    htmlFor="slides-report-style"
-                    className="flex cursor-pointer items-center justify-between gap-[8px]"
-                  >
-                    <span className="flex items-center gap-[8px]">
-                      <Checkbox
-                        id="slides-report-style"
-                        aria-label="旅文汇报样式"
-                        checked={useReportStyle}
-                        onCheckedChange={() => setUseReportStyle((current) => !current)}
-                      />
-                      <span className="text-[12px] text-[#4f5669]">旅文汇报样式</span>
-                    </span>
-                  </label>
-                </Field>
-              )}
             </div>
 
             {/* 底部一栏（固定在栏底）：骨架页 + 模型独占一行 + 「导出 PPTX | 生成幻灯片」一行 */}

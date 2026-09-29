@@ -27,10 +27,10 @@ export type AgentCatalogEntry = {
   /** 服务端能力标识，前端据此选择工作台实现（`slides` / `decision`，未知能力给提示页）。 */
   capability: string;
   /**
-   * 该 Agent 自带的固定口径 prompt（如「旅文汇报样式」）。
+   * 该 Agent 预留的固定口径 prompt（如「旅文汇报样式」）。
    *
-   * 只在清单里维护一份，**由使用页面上的勾选项决定是否随生成请求下发**（后端把它拼进
-   * system prompt 的「样式要求」段）。为空表示该 Agent 没有可选样式。
+   * 只在清单里维护一份；当前使用页面不展示样式勾选项、不随生成请求下发。
+   * 后端 `slides:generate` 仍接受 `style_prompt`（默认空串），如需恢复勾选项只需接回清单字段。
    */
   prompt: string;
   status: 'active' | 'offline';

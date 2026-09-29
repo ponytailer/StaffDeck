@@ -10,6 +10,9 @@ const resolveApiBase = () => {
 
 const API_BASE = resolveApiBase();
 
+/** 同源部署时为空串；独立域名部署时指向后端。供 FormData / blob 等非 JSON 请求复用。 */
+export const API_BASE_URL = API_BASE;
+
 export const TENANT_ID = import.meta.env.VITE_TENANT_ID || 'tenant_demo';
 export const SHOW_DEBUG = import.meta.env.VITE_SHOW_DEBUG === 'true';
 
@@ -67,7 +70,7 @@ async function keepalivePost<T>(path: string, body?: unknown): Promise<T> {
   return (text ? JSON.parse(text) : {}) as T;
 }
 
-function authHeader(): Record<string, string> {
+export function authHeader(): Record<string, string> {
   const session = getEnterpriseAuthSession();
   return session?.token ? { Authorization: `Bearer ${session.token}` } : {};
 }
