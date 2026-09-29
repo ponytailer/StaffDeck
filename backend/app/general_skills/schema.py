@@ -89,6 +89,8 @@ class GeneralSkillRead(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     status: str
     capability_scope: CapabilityScope
+    #: 技能包累计下载次数（广场下载 + 免登录分享下载都 +1）。
+    download_count: int = 0
     permissions: dict[str, Any] = Field(default_factory=dict)
     runtime_config: dict[str, Any] = Field(default_factory=dict)
     created_at: str

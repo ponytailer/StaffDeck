@@ -460,6 +460,8 @@ class GeneralSkill(SQLModel, table=True):
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     status: str = Field(default="draft", index=True)
     capability_scope: str = Field(default="general", index=True)
+    #: 技能包累计下载次数（广场下载 + 免登录分享下载都 +1）。
+    download_count: int = Field(default=0)
     permissions_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     runtime_config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)

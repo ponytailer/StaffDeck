@@ -137,6 +137,7 @@ def general_skill_read(
         metadata=dict(row.metadata_json or {}),
         status=status_override or row.status,
         capability_scope=normalize_capability_scope(row.capability_scope),
+        download_count=row.download_count or 0,
         permissions=row.permissions_json or {},
         runtime_config=row.runtime_config_json or {},
         created_at=row.created_at.isoformat(),
@@ -156,6 +157,7 @@ _GENERAL_SKILL_SLIM_COLUMNS = (
     "metadata_json",
     "status",
     "capability_scope",
+    "download_count",
     "permissions_json",
     "runtime_config_json",
     "created_at",
@@ -829,6 +831,10 @@ def download_general_skill_package(
     """下载技能 zip 包；包内容与导入格式同构，可直接再导入。"""
     row = _get_general_skill(db, tenant_id, slug)
     _ensure_general_skill_visible(db, tenant_id, row, agent_id)
+    # 累计下载次数：广场下载与免登录分享下载都计数
+    row.download_count = (row.download_count or 0) + 1
+    db.add(row)
+    db.commit()
     archive = _general_skill_package_archive(row)
     # 中文技能名不能进 `filename=`（latin-1 头会炸），故用 slug 兜底 + RFC 5987 的
     # `filename*=` 携带真实名，浏览器优先取后者。

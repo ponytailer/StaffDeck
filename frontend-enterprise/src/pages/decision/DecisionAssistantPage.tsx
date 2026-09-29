@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Blocks,
   Code2,
   Gauge,
   HelpCircle,
@@ -543,14 +544,31 @@ export default function DecisionAssistantPage({
                     title="决策背景"
                     hint="必填 · 描述这次要决策的事情"
                   />
-                  <UIButton
-                    type="button"
-                    onClick={() => setApiDialogOpen(true)}
-                    className="h-[30px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] border-[#cfe0ff] bg-[#f4f8ff] px-[12px] text-[12px] font-normal text-[#1a71ff] hover:bg-[#e9f1ff]"
-                  >
-                    <Code2 className="size-[13px]" />
-                    API 接入
-                  </UIButton>
+                  <div className="flex shrink-0 items-center gap-[8px]">
+                    {/* Skill 接入：新开 tab 跳技能广场并预填「Laya决策」搜索（与分享页 ?q= 深链同款） */}
+                    <a
+                      href={`/enterprise/platform/general-skills?q=${encodeURIComponent('Laya决策')}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="在技能广场查看 Laya决策 技能"
+                    >
+                      <UIButton
+                        type="button"
+                        className="h-[30px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6]"
+                      >
+                        <Blocks className="size-[13px]" />
+                        Skill 接入
+                      </UIButton>
+                    </a>
+                    <UIButton
+                      type="button"
+                      onClick={() => setApiDialogOpen(true)}
+                      className="h-[30px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] border-[#cfe0ff] bg-[#f4f8ff] px-[12px] text-[12px] font-normal text-[#1a71ff] hover:bg-[#e9f1ff]"
+                    >
+                      <Code2 className="size-[13px]" />
+                      API 接入
+                    </UIButton>
+                  </div>
                 </div>
                 <Textarea
                   rows={4}

@@ -80,6 +80,8 @@ type PlatformItem = {
   description: string;
   meta: string;
   tags: string[];
+  /** 技能包累计下载次数（仅技能广场条目带）。 */
+  downloadCount?: number;
   agent?: AgentProfileRead;
   /** Agent 广场条目（来自本地清单，不落库）。 */
   agentEntry?: AgentCatalogEntry;
@@ -437,7 +439,10 @@ export default function OpenPlatformPage({
         title: resourceDisplayNameWithCreator(item.name, item),
         description: item.description || '可复制到当前数字员工的技能。',
         meta: item.slug,
-        tags: [item.homepage ? '外部能力' : '内置能力', '已启用'],
+        downloadCount: item.download_count ?? 0,
+        // 「N 次下载」放第 2 位：列表卡片只渲染前两个 tag（resourceDrawerBadge 读 tags[0]，
+        // 顺序不能动 tags[0]），这样技能广场列表卡上直接能看到下载次数。
+        tags: [item.homepage ? '外部能力' : '内置能力', `${item.download_count ?? 0} 次下载`, '已启用'],
       })),
     skills: skills
       .filter((item) => item.status === 'published')
@@ -547,6 +552,8 @@ export default function OpenPlatformPage({
         },
       });
       notify.success(`已下载技能包：${slug}`);
+      // 下载次数 +1 发生在后端，强刷技能列表让卡片上的「N 次下载」立即更新
+      void loadKindData('general-skills', { force: true });
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '技能包下载失败');
     } finally {
@@ -713,7 +720,9 @@ export default function OpenPlatformPage({
         categoryMetaLabel={detailItem.kind === 'agent-apps' ? '作者 / 更新时间' : undefined}
         detailText={item.agentEntry
           ? `能力：${item.agentEntry.capability}｜由平台统一维护，所有成员只能使用、不能编辑或删除。`
-          : config.detail}
+          : detailItem.kind === 'general-skills'
+            ? `累计下载 ${item.downloadCount ?? 0} 次；${config.detail}`
+            : config.detail}
         useLabel={config.useLabel}
         // Agent 广场对所有成员一律只读：不暴露删除/下线入口。
         canManage={detailItem.kind === 'agent-apps' ? false : canManagePlatform}

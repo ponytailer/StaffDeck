@@ -65,6 +65,7 @@ def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     _migrate_ai_review_schema()
     _migrate_mcp_server_timeout()
+    _migrate_general_skill_download_count()
     # _migrate_sqlite_skill_schema()
     # _migrate_pg_api_key_schema()
     # _migrate_user_ldap_schema()
@@ -3332,6 +3333,23 @@ def _migrate_mcp_server_timeout() -> None:
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN timeout_seconds FLOAT"))
+
+
+def _migrate_general_skill_download_count() -> None:
+    """general_skills 补 download_count：技能包累计下载次数（广场 + 分享链接）。
+
+    新表由 create_all 直接建；这里是给**已存在**的表补新列，历史技能从 0 起算。
+    """
+    inspector = inspect(engine)
+    if "general_skills" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("general_skills")}
+    if "download_count" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE general_skills ADD COLUMN download_count INTEGER NOT NULL DEFAULT 0")
+        )
 
 
 def get_session() -> Generator[Session, None, None]:

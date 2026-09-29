@@ -309,6 +309,7 @@ export type GeneralSkillRead = {
   skill_directories?: string[];
   metadata: Record<string, unknown> & { owner_user_id?: string };
   status: 'draft' | 'published' | 'archived';
+  download_count?: number;
   permissions: Record<string, unknown>;
   runtime_config: Record<string, unknown>;
   created_at: string;

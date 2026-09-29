@@ -6,6 +6,7 @@ from zipfile import ZipFile
 
 import pytest
 from fastapi import HTTPException
+from sqlmodel import select
 
 from app.api.general_skill_shares import (
     create_general_skill_share,
@@ -13,7 +14,10 @@ from app.api.general_skill_shares import (
     read_general_skill_share,
     revoke_general_skill_share,
 )
-from app.api.general_skills import import_general_skill_package
+from app.api.general_skills import (
+    download_general_skill_package,
+    import_general_skill_package,
+)
 from app.db.models import (
     AgentProfile,
     GeneralSkillShareLink,
@@ -102,6 +106,27 @@ def test_public_download_returns_zip_without_login() -> None:
             __import__("sqlmodel").select(GeneralSkillShareLink)
         ).first()
         assert link.access_count == 1
+        # 分享下载同样累计到技能本身的 download_count
+        skill = db.exec(select(GeneralSkill).where(GeneralSkill.slug == "weather-skill")).first()
+        assert skill is not None
+        assert skill.download_count == 1
+
+
+def test_plaza_download_increments_skill_download_count() -> None:
+    """技能广场的包下载端点每调一次，技能 download_count +1。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True)
+        )
+        _import_published_skill(db)
+
+        download_general_skill_package("weather-skill", tenant_id="tenant_demo", db=db)
+        download_general_skill_package("weather-skill", tenant_id="tenant_demo", db=db)
+
+        skill = db.exec(select(GeneralSkill).where(GeneralSkill.slug == "weather-skill")).first()
+        assert skill is not None
+        assert skill.download_count == 2
 
 
 def test_revoked_share_link_is_rejected() -> None:

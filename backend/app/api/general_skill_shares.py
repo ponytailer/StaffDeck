@@ -228,6 +228,9 @@ def download_shared_general_skill_package(
     link.access_count += 1
     link.last_access_at = utc_now()
     db.add(link)
+    # 分享链接下载同样累计到技能本身的下载次数
+    skill.download_count = (skill.download_count or 0) + 1
+    db.add(skill)
     db.commit()
     fallback_filename = f"{skill.slug}.zip"
     filename = f"{skill.name or skill.slug}.zip"
