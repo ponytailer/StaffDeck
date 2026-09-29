@@ -136,6 +136,7 @@ const PLATFORM_CONFIGS: PlatformConfig[] = [
     signals: ['流程推进', '执行规范', '可复制'],
     icon: <ProfileOutlined />,
   },
+/*
   {
     kind: 'tools',
     title: '工具广场',
@@ -146,6 +147,7 @@ const PLATFORM_CONFIGS: PlatformConfig[] = [
     signals: ['调用权限', '测试可用', '工具配置'],
     icon: <ToolOutlined />,
   },
+  */
 ];
 
 const PLATFORM_BY_KIND = new Map(PLATFORM_CONFIGS.map((item) => [item.kind, item]));
