@@ -1111,6 +1111,11 @@ class MCPServer(SQLModel, table=True):
     args_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     env_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     cwd: Optional[str] = None
+    # 该 server 派生工具（Tool.tool_type == "mcp"）的默认调用超时（秒）。
+    # None = 沿用全局 settings.tool_timeout_seconds。MCP 子工具在界面上不可单独编辑，
+    # 所以这是唯一的入口：远程 MCP 里的慢操作（渲染、转 PDF、图片生成、联网搜索）
+    # 远超全局默认的 8 秒，必须能在这里按 server 调大。
+    timeout_seconds: Optional[float] = None
     # MCP Apps is opt-in so legacy standard MCP servers retain identical behavior.
     apps_mode: str = Field(default="disabled", index=True)
     negotiated_capabilities_json: dict[str, Any] = Field(

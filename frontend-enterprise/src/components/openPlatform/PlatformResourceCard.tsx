@@ -5,13 +5,15 @@ import { cn } from '@/lib/utils';
 import IconFolder from '../../assets/icons/cap-folder.svg?react';
 
 /** Per-module accent used for the meta line and tag pills (SD1 232:4634 family). */
-export type PlatformResourceAccent = 'green' | 'blue' | 'indigo' | 'orange';
+export type PlatformResourceAccent = 'green' | 'blue' | 'indigo' | 'orange' | 'violet';
 
 const ACCENT_STYLES: Record<PlatformResourceAccent, { meta: string; tag: string }> = {
   green: { meta: 'text-[#2cb360]', tag: 'bg-[#e9f7ef] text-[#2cb360]' },
   blue: { meta: 'text-[#27c9ff]', tag: 'bg-[#c4f1ff] text-[#25c7ff]' },
   indigo: { meta: 'text-[#1a71ff]', tag: 'bg-[#e8f0ff] text-[#1a71ff]' },
   orange: { meta: 'text-[#ff7f00]', tag: 'bg-[#fff2e5] text-[#ff7f00]' },
+  // Agent 广场：与其它模块区分开的紫罗兰色（同一 232:4634 色阶体系内新增）
+  violet: { meta: 'text-[#6d3fd4]', tag: 'bg-[#f1eaff] text-[#6d3fd4]' },
 };
 
 export const platformResourceAccentStyles = ACCENT_STYLES;

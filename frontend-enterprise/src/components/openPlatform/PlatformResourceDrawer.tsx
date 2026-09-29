@@ -18,6 +18,11 @@ export type PlatformResourceDrawerProps = {
   description: ReactNode;
   badge: ReactNode;
   categoryMeta: ReactNode;
+  /**
+   * 第二个信息格的标题。默认「分类」；Agent 广场这类没有分类的资源传「作者 / 更新时间」，
+   * 避免两格都写「分类」把作者信息说成分类。
+   */
+  categoryMetaLabel?: string;
   detailText: ReactNode;
   useLabel: string;
   canManage?: boolean;
@@ -84,6 +89,7 @@ export default function PlatformResourceDrawer({
   description,
   badge,
   categoryMeta,
+  categoryMetaLabel,
   detailText,
   useLabel,
   canManage = false,
@@ -155,7 +161,7 @@ export default function PlatformResourceDrawer({
               </strong>
             </div>
             <div className="flex min-h-[60px] flex-col justify-center gap-[4px] rounded-[14px] border-[0.5px] border-[#e3e7f1] px-[16px] py-[8px]">
-              <span className="text-[10px] leading-[13px] text-[#464c5e]">分类</span>
+              <span className="text-[10px] leading-[13px] text-[#464c5e]">{categoryMetaLabel || '分类'}</span>
               <strong className={cn('truncate text-[12px] leading-[16px] font-medium', accentStyles.meta)}>
                 {categoryMeta}
               </strong>

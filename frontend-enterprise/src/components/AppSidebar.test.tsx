@@ -238,7 +238,10 @@ describe('AppSidebar chat variant group conversations', () => {
 });
 
 describe('AppSidebar primary navigation', () => {
-  function renderManagementSidebar(onNavigate: (route: string) => void = () => {}) {
+  function renderManagementSidebar(
+    onNavigate: (route: string) => void = () => {},
+    { isAdmin = false }: { isAdmin?: boolean } = {},
+  ) {
     return render(
       <I18nProvider>
         <TooltipProvider>
@@ -246,7 +249,7 @@ describe('AppSidebar primary navigation', () => {
             <AppSidebar
               selected="/enterprise/dashboard"
               onNavigate={onNavigate}
-              isAdmin={false}
+              isAdmin={isAdmin}
               scopeAgents={[agent]}
               scopeTeams={[team]}
               selectedAgentId="agent-1"
@@ -259,24 +262,27 @@ describe('AppSidebar primary navigation', () => {
     );
   }
 
-  it('exposes the 决策助手 entry and emits its route on click', async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    renderManagementSidebar(onNavigate);
-
-    await user.click(screen.getByText('决策助手'));
-    expect(onNavigate).toHaveBeenCalledWith('/enterprise/decision-assistant');
+  it('决策助手不在侧边栏：入口已移入 Agent 广场清单', () => {
+    renderManagementSidebar();
+    expect(screen.queryByText('决策助手')).toBeNull();
   });
 
-  it('marks only the 决策助手 entry with the hot flame badge', () => {
-    renderManagementSidebar();
+  it('AI CodeReviewer 对普通成员隐藏，对管理员可见', () => {
+    renderManagementSidebar(undefined, { isAdmin: false });
+    expect(screen.queryByText('AI CodeReviewer')).toBeNull();
 
-    const decisionRow = screen.getByText('决策助手').closest('[data-guide-target]') as HTMLElement;
-    expect(decisionRow).toBeTruthy();
-    const flame = within(decisionRow).getByTestId('nav-hot-flame');
-    expect(flame.getAttribute('aria-label')).toMatch(/热门|Hot/);
+    cleanup();
+    renderManagementSidebar(undefined, { isAdmin: true });
+    expect(screen.getByText('AI CodeReviewer')).toBeTruthy();
+  });
 
-    const teamsRow = screen.getByText('我的团队').closest('[data-guide-target]') as HTMLElement;
-    expect(within(teamsRow).queryByTestId('nav-hot-flame')).toBeNull();
+  it('账号管理不在侧边栏：已并入 API Key 审批页的用户管理 tab', () => {
+    renderManagementSidebar(undefined, { isAdmin: false });
+    expect(screen.queryByText('账号管理')).toBeNull();
+
+    cleanup();
+    renderManagementSidebar(undefined, { isAdmin: true });
+    expect(screen.queryByText('账号管理')).toBeNull();
+    expect(screen.getByText('API Key 审批')).toBeTruthy();
   });
 });

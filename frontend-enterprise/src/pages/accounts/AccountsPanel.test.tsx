@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import { AccountRoleBadge } from './AccountsPage';
+import { AccountRoleBadge } from './AccountsPanel';
 
 describe('AccountRoleBadge', () => {
   it('uses the blue status treatment for administrators', () => {

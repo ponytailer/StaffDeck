@@ -41,7 +41,6 @@ import IconBriefcase from '../assets/icons/cap-briefcase.svg?react';
 import IconChat from '../assets/icons/action-chat.svg?react';
 import IconToggle from '../assets/icons/action-toggle.svg?react';
 import IconHeaderCollapse from '../assets/icons/header-collapse.svg?react';
-import IconAccounts from '../assets/icons/sys-accounts.svg?react';
 import IconModels from '../assets/icons/sys-models.svg?react';
 import IconListBulleted from '../assets/icons/list-bulleted.svg?react';
 import IconSettings from '../assets/icons/action-toggle.svg?react';
@@ -62,16 +61,17 @@ type NavItem = {
   Icon: IconComponent;
   /** 挂一枚「火热」火苗角标（新上线 / 主推功能）。 */
   hot?: boolean;
+  /** 仅管理员可见（页面路由也会挡一层，这里只管入口展示）。 */
+  adminOnly?: boolean;
 };
 
 const PRIMARY_NAV: NavItem[] = [
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
   { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },
-  // 决策助手：Laya 决策头驱动的表单式决策（分类 / 评分 / 是非）
-  { route: EnterpriseRoute.DecisionAssistant, label: '决策助手', Icon: IconDecision, hot: true },
-  // AI Reviewer：异步代码评审（open-code-review + rq 队列）
-  { route: EnterpriseRoute.AiReviewer, label: 'AI CodeReviewer', Icon: IconAiReview },
+  // 决策助手已移入「Agent 广场」清单（agent-catalog.json），入口随广场走，侧边栏不再单列
+  // AI Reviewer：异步代码评审（open-code-review + rq 队列），暂只对管理员开放
+  { route: EnterpriseRoute.AiReviewer, label: 'AI CodeReviewer', Icon: IconAiReview, adminOnly: true },
   // 暂时隐藏渠道接入入口（页面与路由保留，需要时恢复下行即可）
   // { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
   { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
@@ -94,35 +94,10 @@ const CAPABILITY_NAV: NavItem[] = [
 ];
 
 const SYSTEM_NAV: NavItem[] = [
-  { route: EnterpriseRoute.Accounts, label: '账号管理', Icon: IconAccounts },
+  // 账号管理已并入「API Key 审批」页的用户管理 tab，侧边栏不再单列
   { route: EnterpriseRoute.ApiKeyApprovals, label: 'API Key 审批', Icon: IconApiKey },
   { route: EnterpriseRoute.RuntimeSettings, label: '超级管理员', Icon: IconSettings },
 ];
-
-function IconDecision({ className, ...props }: { className?: string } & SVGProps<SVGSVGElement>) {
-  // 决策树：一个问题分叉到多个待判结论
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      {...props}
-    >
-      <circle cx="12" cy="4.2" r="1.9" />
-      <path d="M12 6.1v2.4" />
-      <path d="M12 8.5 6.6 11.2M12 8.5l5.4 2.7" />
-      <circle cx="5.4" cy="13" r="1.9" />
-      <circle cx="18.6" cy="13" r="1.9" />
-      <path d="M5.4 14.9v2.2M18.6 14.9v2.2" />
-      <rect x="3.4" y="17.1" width="4" height="3.4" rx="1.2" />
-      <rect x="16.6" y="17.1" width="4" height="3.4" rx="1.2" />
-    </svg>
-  );
-}
 
 /** 「火热」火苗角标：双色实心，自带轻微呼吸动效（见 .sd1-hot-flame）。 */
 function HotFlame({ className, decorative }: { className?: string; decorative?: boolean }) {
@@ -194,7 +169,9 @@ function IconApiKey({ className, ...props }: { className?: string } & SVGProps<S
 }
 
 function primaryNavItems(isAdmin: boolean): NavItem[] {
-  return isAdmin ? [...PRIMARY_NAV, ...SYSTEM_NAV] : PRIMARY_NAV;
+  // adminOnly 条目对普通成员整行隐藏；管理员额外拼上系统管理组
+  const primary = PRIMARY_NAV.filter((item) => !item.adminOnly || isAdmin);
+  return isAdmin ? [...primary, ...SYSTEM_NAV] : primary;
 }
 
 export type AppSidebarManagementProps = {

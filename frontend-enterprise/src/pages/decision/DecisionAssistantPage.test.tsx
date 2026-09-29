@@ -46,6 +46,7 @@ vi.mock('@/lib/clipboard', () => ({
 }));
 
 import { I18nProvider } from '@/i18n';
+import { MemoryRouter } from 'react-router-dom';
 
 import DecisionAssistantPage from './DecisionAssistantPage';
 
@@ -69,7 +70,10 @@ const LEVEL_PLACEHOLDER = '档位文案，如 很急，涉及钱 / 违约 / 取�
 function renderPage() {
   return render(
     <I18nProvider>
-      <DecisionAssistantPage />
+      {/* 页面里的「返回 Agent 广场」按钮走 react-router 导航，测试里补一层内存路由 */}
+      <MemoryRouter>
+        <DecisionAssistantPage />
+      </MemoryRouter>
     </I18nProvider>,
   );
 }

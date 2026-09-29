@@ -810,6 +810,7 @@ def _server_connection(row: MCPServer) -> MCPServerConnection:
         args=row.args_json or [],
         env=row.env_json or {},
         cwd=row.cwd,
+        timeout_seconds=row.timeout_seconds,
     )
 
 
@@ -872,6 +873,20 @@ def _update_inherited_mcp_tool_scopes(db: Session, server: MCPServer) -> None:
         db.add(tool)
 
 
+def _mcp_server_timeout_seconds(server: MCPServer) -> float:
+    """server 的默认调用超时：设了就用它，否则沿用全局 settings.tool_timeout_seconds。
+
+    注意这里的角色是**缺省值**而不是覆盖值：派生工具的 config_json.execution 一旦显式
+    指定 timeout_seconds，就以它为准（见 tool_executor._execution_policy）。因此
+    MCP 子工具虽然不可编辑，server 仍然是「调大慢工具超时」的唯一入口。
+    """
+
+    configured = server.timeout_seconds
+    if configured is None:
+        return get_settings().tool_timeout_seconds
+    return max(1.0, min(3600.0, float(configured)))
+
+
 @mcp_router.get(
     "", response_model=list[MCPServerRead], dependencies=[Depends(require_tenant_admin)]
 )
@@ -916,6 +931,7 @@ def create_mcp_server(
         args_json=conn.args,
         env_json=conn.env,
         cwd=conn.cwd,
+        timeout_seconds=conn.timeout_seconds,
         apps_mode=request.apps_mode,
         negotiated_capabilities_json={},
         capability_scope=request.capability_scope,
@@ -958,7 +974,7 @@ def get_mcp_app_resource(
         result = read_mcp_resource(
             _server_client_config(server),
             uri,
-            timeout_seconds=get_settings().tool_timeout_seconds,
+            timeout_seconds=_mcp_server_timeout_seconds(server),
         )
         content, meta = _extract_app_resource(result, uri)
     except MCPClientError as exc:
@@ -1059,6 +1075,7 @@ def update_mcp_server(
     row.args_json = conn.args
     row.env_json = conn.env
     row.cwd = conn.cwd
+    row.timeout_seconds = conn.timeout_seconds
     if row.apps_mode != request.apps_mode:
         row.negotiated_capabilities_json = {}
     row.apps_mode = request.apps_mode
@@ -1290,7 +1307,8 @@ def _discover_response(
     try:
         discovery = discover_mcp_server(
             config,
-            timeout_seconds=get_settings().tool_timeout_seconds,
+            # 连接自带超时（MCP 服务器上的默认调用超时）优先，否则沿用全局默认
+            timeout_seconds=connection.timeout_seconds or get_settings().tool_timeout_seconds,
         )
     except MCPClientError as exc:
         return MCPDiscoverResponse(

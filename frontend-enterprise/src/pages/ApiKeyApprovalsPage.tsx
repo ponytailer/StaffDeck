@@ -36,6 +36,7 @@ import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import { UnderlineTabs } from '@/components/ui/underline-tabs';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
+import AccountsPanel from './accounts/AccountsPanel';
 import { formatDateTime } from '@/lib/enterprise-ui';
 import { cn } from '@/lib/utils';
 
@@ -194,7 +195,7 @@ const SUGGESTION_META: Record<string, { label: string; tone: 'red' | 'orange' | 
   unknown: { label: '未知', tone: 'gray' },
 };
 
-type TabValue = 'pending' | 'issued' | 'history' | 'quota' | 'groups';
+type TabValue = 'pending' | 'issued' | 'history' | 'quota' | 'groups' | 'users';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1373,7 +1374,7 @@ export default function ApiKeyApprovalsPage({
         onLogout={onLogout}
         userName={currentUser?.username}
         title="API Key 审批"
-        description="管理 API Key 申请审批、消费组、配额规则与用量分析"
+        description="管理 API Key 申请审批、消费组、配额规则、用量分析与用户账号"
       />
 
       {/* Stats cards */}
@@ -1414,6 +1415,7 @@ export default function ApiKeyApprovalsPage({
           { value: 'history', label: '审核历史' },
           { value: 'quota', label: '配额管理' },
           { value: 'groups', label: '消费组管理' },
+          { value: 'users', label: '用户管理' },
         ]}
       />
 
@@ -1685,6 +1687,9 @@ export default function ApiKeyApprovalsPage({
             />
           </>
         )}
+
+        {/* User management（原「账号管理」页面并入） */}
+        {tab === 'users' && <AccountsPanel currentUser={currentUser} />}
       </div>
 
       {/* ----------------------------------------------------------------- */}

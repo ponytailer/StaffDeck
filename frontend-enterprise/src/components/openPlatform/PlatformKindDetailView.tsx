@@ -24,7 +24,13 @@ import PlatformEmployeeCard, { type PlatformStat } from './PlatformEmployeeCard'
 import PlatformResourceCard, { type PlatformResourceAccent } from './PlatformResourceCard';
 import { PlatformGridSkeleton } from './PlatformSkeletons';
 
-export type PlatformDetailKind = 'agents' | 'knowledge' | 'general-skills' | 'skills' | 'tools';
+export type PlatformDetailKind =
+  | 'agent-apps'
+  | 'agents'
+  | 'knowledge'
+  | 'general-skills'
+  | 'skills'
+  | 'tools';
 
 export type PlatformDetailItem = {
   id: string;

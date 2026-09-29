@@ -17,6 +17,7 @@ from app.api.tools import (
     get_mcp_app_resource,
     list_tools,
     sync_mcp_tools,
+    update_mcp_server,
 )
 from app.db.models import MCPServer, Tenant, Tool, User
 from app.db.models import AgentProfile, AgentResourceBinding
@@ -32,6 +33,7 @@ from app.tools.tool_schema import (
     MCPAppToolCallRequest,
     MCPServerConnection,
     MCPServerCreateRequest,
+    MCPServerUpdateRequest,
     MCPSyncRequest,
     ToolCall,
 )
@@ -837,6 +839,192 @@ def test_delete_mcp_server_in_employee_scope_without_tools_returns_404() -> None
                 current_user=_admin_user(),
             )
         assert exc.value.status_code == 404
+
+
+def test_synced_mcp_tool_inherits_server_call_timeout() -> None:
+    """MCP 服务器上的默认调用超时必须生效在派生工具上。
+
+    MCP 子工具在界面上不可单独编辑，所以 server 是唯一入口。少了这条链路，
+    远程 MCP 的慢操作（渲染、转 PDF、图片生成）会被全局 tool_timeout_seconds（8 秒）
+    卡死，而且没有任何办法调大。超时在**执行期**解析，所以改 server 立刻生效。
+    """
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        server = create_mcp_server(
+            MCPServerCreateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin", timeout_seconds=180),
+            ),
+            db,
+            _admin_user(),
+        )
+        assert server.connection.timeout_seconds == 180
+
+        sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
+            db,
+            current_user=_admin_user(),
+        )
+
+        tool = db.exec(select(Tool).where(Tool.mcp_server_id == server.id)).first()
+        assert tool is not None
+        # 同步本身不往工具上写 execution——server 提供的是缺省值
+        assert tool.config_json == {"tool": "echo"}
+        assert ToolExecutor(db)._execution_policy(tool).timeout_seconds == 180.0
+
+
+def test_updating_server_timeout_takes_effect_immediately() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        server = create_mcp_server(
+            MCPServerCreateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin", timeout_seconds=120),
+            ),
+            db,
+            _admin_user(),
+        )
+        sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
+            db,
+            current_user=_admin_user(),
+        )
+        tool = db.exec(select(Tool).where(Tool.mcp_server_id == server.id)).first()
+        assert tool is not None
+        assert ToolExecutor(db)._execution_policy(tool).timeout_seconds == 120.0
+
+        # 调大
+        update_mcp_server(
+            server.id,
+            MCPServerUpdateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin", timeout_seconds=300),
+            ),
+            db,
+            _admin_user(),
+        )
+        assert ToolExecutor(db)._execution_policy(tool).timeout_seconds == 300.0
+
+        # 清空：立刻回到全局默认，不残留 300
+        update_mcp_server(
+            server.id,
+            MCPServerUpdateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin", timeout_seconds=None),
+            ),
+            db,
+            _admin_user(),
+        )
+        executor = ToolExecutor(db)
+        assert executor._execution_policy(tool).timeout_seconds == (
+            executor.settings.tool_timeout_seconds
+        )
+
+
+def test_explicit_tool_execution_policy_beats_the_server_default() -> None:
+    """server 超时是缺省值，工具上显式写的 execution 仍然优先。"""
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        server = MCPServer(
+            id="server_timeout_policy",
+            tenant_id="tenant_demo",
+            name="builtin-policy",
+            transport="builtin",
+            timeout_seconds=300,
+        )
+        db.add(server)
+        db.add(
+            Tool(
+                id="tool_policy",
+                tenant_id="tenant_demo",
+                name="mcp.builtin-policy.echo",
+                tool_type="mcp",
+                method="POST",
+                url="mcp://builtin-policy/echo",
+                mcp_server_id=server.id,
+                config_json={"tool": "echo", "execution": {"timeout_seconds": 20}},
+            )
+        )
+        db.commit()
+
+        tool = db.get(Tool, "tool_policy")
+        assert tool is not None
+        assert ToolExecutor(db)._execution_policy(tool).timeout_seconds == 20.0
+
+
+def test_synced_mcp_tool_without_server_timeout_keeps_global_default() -> None:
+    """历史行为不能变：server 没设超时时，工具仍走全局默认。"""
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        server = create_mcp_server(
+            MCPServerCreateRequest(
+                tenant_id="tenant_demo",
+                name="builtin_demo",
+                connection=MCPServerConnection(transport="builtin"),
+            ),
+            db,
+            _admin_user(),
+        )
+        sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
+            db,
+            current_user=_admin_user(),
+        )
+        tool = db.exec(select(Tool).where(Tool.mcp_server_id == server.id)).first()
+        assert tool is not None
+        assert tool.config_json == {"tool": "echo"}
+        executor = ToolExecutor(db)
+        assert executor._execution_policy(tool).timeout_seconds == (
+            executor.settings.tool_timeout_seconds
+        )
+
+
+def test_mcp_server_timeout_is_rejected_out_of_range() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+
+        with pytest.raises(Exception):
+            create_mcp_server(
+                MCPServerCreateRequest(
+                    tenant_id="tenant_demo",
+                    name="too_long",
+                    connection=MCPServerConnection(transport="builtin", timeout_seconds=3601),
+                ),
+                db,
+                _admin_user(),
+            )
 
 
 def _mock_mcp_server_path() -> Path:

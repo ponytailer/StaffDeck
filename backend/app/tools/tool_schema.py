@@ -148,6 +148,10 @@ class MCPServerConnection(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     cwd: Optional[str] = None
+    # 该 server 派生工具的默认调用超时（秒）。None = 沿用 settings.tool_timeout_seconds。
+    # 同步工具时会写进每个 Tool 的 config_json.execution；因为 MCP 子工具在界面上
+    # 不可单独编辑，慢操作（渲染/转 PDF/图片生成/联网搜索）只能靠这里调大。
+    timeout_seconds: Optional[float] = Field(default=None, ge=1, le=3600)
 
 
 class MCPServerCreateRequest(BaseModel):

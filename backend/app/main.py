@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
 from app.api import (
+    agent_apps,
     agent_shares,
     agents,
     ai_review,
@@ -189,6 +190,7 @@ app.include_router(teams.threads_router)
 app.include_router(tools.router)
 app.include_router(tools.mcp_router)
 app.include_router(gallery.router)
+app.include_router(agent_apps.router)
 app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)

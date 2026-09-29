@@ -606,7 +606,7 @@ class _HttpSession(_MCPSession):
             response = client.post(self._endpoint(), headers=self._headers(), json=payload)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise MCPClientError(f"HTTP MCP 返回异常状态码：{exc.response.status_code}") from exc
+            raise MCPClientError(_http_status_error_message(exc)) from exc
         except Exception as exc:
             raise MCPClientError(str(exc)) from exc
         session_id = response.headers.get("mcp-session-id")
@@ -642,6 +642,55 @@ def _parse_http_mcp_response(response: httpx.Response) -> Any:
         return response.json()
     except Exception as exc:
         raise MCPClientError(f"HTTP MCP 响应解析失败：{exc}") from exc
+
+
+def _response_body_preview(response: httpx.Response, *, limit: int = 300) -> str:
+    """取响应体摘要，用于把服务端的真实原因带进错误信息。
+
+    MCP 服务端的鉴权失败通常只写在响应体里（例如
+    `{"error":"missing or invalid bearer token"}`）；只报状态码会让配置者无从下手。
+    """
+
+    try:
+        text = response.text or ""
+    except Exception:  # noqa: BLE001 - 流式响应可能已关闭，摘要不是必需信息
+        return ""
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}…"
+
+
+def _http_status_error_message(exc: httpx.HTTPStatusError) -> str:
+    """把 MCP HTTP 层的状态码错误翻译成可操作的排查提示。
+
+    两类高频配置错误在这里被点名，否则用户只能看到「异常状态码：301/401」：
+
+    - **3xx**：连接配置写成了 `http://`，反向代理 301 到 `https://`。httpx 默认不跟随
+      重定向，POST 的 JSON-RPC 请求会直接失败，所以只能提示改 URL，不能自作主张跟随
+      （跟随会把 POST 降级成 GET，反而丢掉请求体）。
+    - **401 / 403**：缺少或写错 `Authorization` 头。
+    """
+
+    response = exc.response
+    status = response.status_code
+    if 300 <= status < 400:
+        location = str(response.headers.get("location") or "").strip()
+        target = f"，重定向到 {location}" if location else ""
+        return (
+            f"HTTP MCP 返回重定向（{status}{target}）。"
+            "请把 MCP 服务器配置里的 url 改成重定向后的地址"
+            "（通常是把 http:// 换成 https://）。"
+        )
+    preview = _response_body_preview(response)
+    detail = f"：{preview}" if preview else ""
+    if status in (401, 403):
+        return (
+            f"HTTP MCP 鉴权失败（{status}）{detail}。"
+            "请检查 Headers JSON 中的 Authorization"
+            "（形如 {\"Authorization\": \"Bearer <token>\"}）。"
+        )
+    return f"HTTP MCP 返回异常状态码：{status}{detail}"
 
 
 # --------------------------------------------------------------------------- #
@@ -710,7 +759,7 @@ class _SseSession(_MCPSession):
             posted = client.post(str(self._message_url), headers=self._post_headers(), json=payload)
             posted.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise MCPClientError(f"SSE MCP 返回异常状态码：{exc.response.status_code}") from exc
+            raise MCPClientError(_http_status_error_message(exc)) from exc
         except Exception as exc:
             raise MCPClientError(str(exc)) from exc
         body = self._await_response(request_id)

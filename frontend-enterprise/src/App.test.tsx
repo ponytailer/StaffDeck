@@ -234,7 +234,7 @@ describe('App default landing route', () => {
       JSON.stringify({ token: 'token-1', user: memberUser }),
     );
     stubAppFetch(memberUser);
-    window.history.pushState({}, '', '/enterprise/accounts');
+    window.history.pushState({}, '', '/enterprise/api-key-approvals');
     render(<I18nProvider><App /></I18nProvider>);
 
     await waitFor(() => {

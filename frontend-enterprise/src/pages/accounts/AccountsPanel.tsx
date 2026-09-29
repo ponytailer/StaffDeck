@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { User } from 'lucide-react';
 
-import AppHeader from '@/components/AppHeader';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import { Paginator } from '@/components/Paginator';
@@ -27,17 +26,17 @@ import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_ITEM_DANGER_CLASS, MOBILE_CARD_CLASS, formatDateTime } from '@/lib/enterprise-ui';
 
-import { api, TENANT_ID } from '../api/client';
-import IconAccounts from '../assets/icons/sys-accounts.svg?react';
-import IconClear from '../assets/icons/field-clear.svg?react';
-import IconEdit from '../assets/icons/edit.svg?react';
-import IconMore from '../assets/icons/more.svg?react';
-import IconRefresh from '../assets/icons/refresh.svg?react';
-import IconSearch from '../assets/icons/search.svg?react';
-import IconTrash from '../assets/icons/trash.svg?react';
-import type { EnterpriseAuthUser } from '../auth';
-import { useClientPagination } from '../hooks/useClientPagination';
-import { StatusBadge } from './scheduled-tasks/StatusBadge';
+import { api, TENANT_ID } from '../../api/client';
+import IconAccounts from '../../assets/icons/sys-accounts.svg?react';
+import IconClear from '../../assets/icons/field-clear.svg?react';
+import IconEdit from '../../assets/icons/edit.svg?react';
+import IconMore from '../../assets/icons/more.svg?react';
+import IconRefresh from '../../assets/icons/refresh.svg?react';
+import IconSearch from '../../assets/icons/search.svg?react';
+import IconTrash from '../../assets/icons/trash.svg?react';
+import type { EnterpriseAuthUser } from '../../auth';
+import { useClientPagination } from '../../hooks/useClientPagination';
+import { StatusBadge } from '../scheduled-tasks/StatusBadge';
 
 type EmployeeAccount = {
   id: string;
@@ -67,12 +66,14 @@ export function AccountRoleBadge({ role }: { role: EmployeeAccount['role'] }) {
   );
 }
 
-export default function AccountsPage({
+/**
+ * 账号管理面板：原先的独立「账号管理」页面已并入 API Key 审批页（用户管理 tab）。
+ * 本组件只负责账号列表本体，不含 AppHeader / 页面外壳。
+ */
+export default function AccountsPanel({
   currentUser,
-  onLogout,
 }: {
   currentUser?: EnterpriseAuthUser;
-  onLogout?: () => void;
 } = {}) {
   const [rows, setRows] = useState<EmployeeAccount[]>([]);
   const [loading, setLoading] = useState(false);
@@ -260,81 +261,76 @@ export default function AccountsPage({
   );
 
   return (
-    <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
-      <AppHeader onLogout={onLogout} userName={currentUser?.username} title="账号管理" />
-
-      <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
-        <UIButton
-          variant="outline"
-          onClick={() => void load()}
-          disabled={loading}
-          className="h-[34px] gap-[4px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[20px] text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
-        >
-          <IconRefresh className={cn('size-[14px]', loading && 'animate-spin')} />
-          刷新
-        </UIButton>
-      </div>
-
-      <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
-        <div className="flex flex-col gap-[18px]">
-          <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
+    <div aria-busy={loading}>
+      <div className="flex flex-col gap-[18px]">
+        <div className="flex items-center justify-between gap-[10px] px-[12px] text-[#757f9c]">
+          <span className="flex min-w-0 items-center gap-[6px]">
             <IconAccounts className="size-[14px] shrink-0" />
-            <span className="text-[14px] font-normal leading-none">账号列表</span>
-          </div>
+            <span className="text-[14px] font-normal leading-none">用户列表</span>
+          </span>
+          <UIButton
+            variant="outline"
+            onClick={() => void load()}
+            disabled={loading}
+            className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[14px] text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
+          >
+            <IconRefresh className={cn('size-[13px]', loading && 'animate-spin')} />
+            刷新
+          </UIButton>
+        </div>
 
-          <label className="flex h-[34px] w-[300px] items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a] max-[900px]:w-full">
-            <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
-            <input
-              autoComplete="off"
-              data-1p-ignore="true"
-              data-lpignore="true"
-              data-bwignore="true"
-              value={searchText}
-              placeholder="搜索用户名或显示名"
-              onChange={(event) => setSearchText(event.target.value)}
-              className="h-full min-w-0 flex-1 bg-transparent text-[12px] text-[#17191f] outline-none placeholder:text-[#c0c6d4]"
-            />
-            {searchText && (
-              <button
-                type="button"
-                aria-label="清除搜索"
-                onClick={() => setSearchText('')}
-                className="grid size-[16px] shrink-0 place-items-center text-[#c0c6d4] hover:text-[#858b9c]"
-              >
-                <IconClear className="size-[14px]" />
-              </button>
-            )}
-          </label>
+        <label className="flex h-[34px] w-[300px] items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a] max-[900px]:w-full">
+          <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
+          <input
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-bwignore="true"
+            value={searchText}
+            placeholder="搜索用户名或显示名"
+            onChange={(event) => setSearchText(event.target.value)}
+            className="h-full min-w-0 flex-1 bg-transparent text-[12px] text-[#17191f] outline-none placeholder:text-[#c0c6d4]"
+          />
+          {searchText && (
+            <button
+              type="button"
+              aria-label="清除搜索"
+              onClick={() => setSearchText('')}
+              className="grid size-[16px] shrink-0 place-items-center text-[#c0c6d4] hover:text-[#858b9c]"
+            >
+              <IconClear className="size-[14px]" />
+            </button>
+          )}
+        </label>
 
-          <div className="grid gap-[10px] md:hidden">
-            {filteredRows.length ? (
-              pagination.pagedItems.map(renderMobileCard)
-            ) : (
-              <div className="py-[40px] text-center text-[13px] text-[#858b9c]">暂无账号</div>
-            )}
-          </div>
-
-          <div className="hidden md:block">
-            <DataTable
-              aria-label="账号列表"
-              columns={columns}
-              data={pagination.pagedItems}
-              rowKey={(row) => row.id}
-              loading={loading}
-              emptyText="暂无账号"
-            />
-          </div>
-
-          {filteredRows.length > 0 && (
-            <Paginator
-              aria-label="账号分页"
-              className="mt-0 mb-[6px]"
-              page={pagination.page}
-              pageCount={pagination.pageCount}
-              onChange={pagination.setPage}
-            />
+        <div className="grid gap-[10px] md:hidden">
+          {filteredRows.length ? (
+            pagination.pagedItems.map(renderMobileCard)
+          ) : (
+            <div className="py-[40px] text-center text-[13px] text-[#858b9c]">暂无账号</div>
           )}
         </div>
+
+        <div className="hidden md:block">
+          <DataTable
+            aria-label="账号列表"
+            columns={columns}
+            data={pagination.pagedItems}
+            rowKey={(row) => row.id}
+            loading={loading}
+            emptyText="暂无账号"
+          />
+        </div>
+
+        {filteredRows.length > 0 && (
+          <Paginator
+            aria-label="账号分页"
+            className="mt-0 mb-[6px]"
+            page={pagination.page}
+            pageCount={pagination.pageCount}
+            onChange={pagination.setPage}
+          />
+        )}
       </div>
 
       <AccountDialog

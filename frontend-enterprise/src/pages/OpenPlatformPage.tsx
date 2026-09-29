@@ -1,6 +1,7 @@
 import {
   FileSearchOutlined,
   ProfileOutlined,
+  RobotOutlined,
   SolutionOutlined,
   ToolOutlined,
   UsergroupAddOutlined,
@@ -23,6 +24,7 @@ import IconSearch from '../assets/icons/search.svg?react';
 import IconRefresh from '../assets/icons/refresh.svg?react';
 import IconAdd from '../assets/icons/add.svg?react';
 import plazaKnowledgeIcon from '../assets/icons/plaza-knowledge.svg';
+import plazaAgentIcon from '../assets/icons/plaza-agent.svg';
 import plazaSkillIcon from '../assets/icons/plaza-skill.svg';
 import plazaSopIcon from '../assets/icons/plaza-sop.svg';
 import plazaToolIcon from '../assets/icons/plaza-tool.svg';
@@ -49,6 +51,7 @@ import {
   type PlatformStat,
 } from '@/components/openPlatform';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
+import { agentCatalogMeta, listAgentCatalog, type AgentCatalogEntry } from '@/lib/agentCatalog';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
@@ -78,6 +81,8 @@ type PlatformItem = {
   meta: string;
   tags: string[];
   agent?: AgentProfileRead;
+  /** Agent 广场条目（来自本地清单，不落库）。 */
+  agentEntry?: AgentCatalogEntry;
 };
 
 const PLATFORM_CONFIGS: PlatformConfig[] = [
@@ -90,6 +95,16 @@ const PLATFORM_CONFIGS: PlatformConfig[] = [
     metricLabel: '数字员工',
     signals: ['聊天可用', '支持对话', '查看能力'],
     icon: <UsergroupAddOutlined />,
+  },
+  {
+    kind: 'agent-apps',
+    title: 'Agent 广场',
+    subtitle: '平台统一定制的 Agent，直接使用，不需要配置。',
+    detail: '这类 Agent 由平台统一维护，成员只能使用、不能编辑。',
+    useLabel: '立即使用',
+    metricLabel: 'Agent',
+    signals: ['开箱即用', '只读不可编辑', '模型可选'],
+    icon: <RobotOutlined />,
   },
   {
     kind: 'knowledge',
@@ -136,7 +151,14 @@ const PLATFORM_CONFIGS: PlatformConfig[] = [
 const PLATFORM_BY_KIND = new Map(PLATFORM_CONFIGS.map((item) => [item.kind, item]));
 
 // SD1 line glyph shown in each column header, matching the sidebar mapping.
+// 广场 tab 头部字号图标用的是 SVG 组件签名，而 `icons.tsx` 里的 ant 风格图标是
+// `(props: IconProps) => JSX`（rotate 收窄成 number，与 SVGProps 不兼容），这里薄包一层。
+const AgentAppsIcon: ComponentType<SVGProps<SVGSVGElement>> = ({ className }) => (
+  <RobotOutlined className={typeof className === 'string' ? className : undefined} />
+);
+
 const PLATFORM_ICON: Record<PlatformKind, ComponentType<SVGProps<SVGSVGElement>>> = {
+  'agent-apps': AgentAppsIcon,
   agents: IconAgents,
   knowledge: IconFolder,
   'general-skills': IconMagicWand,
@@ -146,6 +168,7 @@ const PLATFORM_ICON: Record<PlatformKind, ComponentType<SVGProps<SVGSVGElement>>
 
 // Colorful 3D module icon shown on each广场 resource card (agents use avatars instead).
 const PLATFORM_RESOURCE_ICON: Partial<Record<PlatformKind, string>> = {
+  'agent-apps': plazaAgentIcon,
   knowledge: plazaKnowledgeIcon,
   'general-skills': plazaSkillIcon,
   skills: plazaSopIcon,
@@ -154,6 +177,7 @@ const PLATFORM_RESOURCE_ICON: Partial<Record<PlatformKind, string>> = {
 
 // Per-module accent color for the resource card meta line and tag pills (SD1 232:4634).
 const PLATFORM_ACCENT: Partial<Record<PlatformKind, PlatformResourceAccent>> = {
+  'agent-apps': 'violet',
   knowledge: 'green',
   'general-skills': 'indigo',
   skills: 'blue',
@@ -162,7 +186,9 @@ const PLATFORM_ACCENT: Partial<Record<PlatformKind, PlatformResourceAccent>> = {
 
 // Unit rendered after the header count, e.g. "12 员工" / "12 内容".
 function platformCountLabel(kind: PlatformKind): string {
-  return kind === 'agents' ? '员工' : '内容';
+  if (kind === 'agents') return '员工';
+  if (kind === 'agent-apps') return 'Agent';
+  return '内容';
 }
 
 // 广场资源挂在 is_overall 的宿主数字员工下，模块接口都要带它的 agent_id 取广场作用域。
@@ -316,6 +342,11 @@ export default function OpenPlatformPage({
     if (options?.force && target === 'agents') agentsCacheRef.current = null;
     setKindState(target, 'loading');
     try {
+      // Agent 广场的数据在本地清单里，不需要任何网络请求，直接落终态。
+      if (target === 'agent-apps') {
+        setKindState(target, 'ready');
+        return;
+      }
       const agentRows = await fetchAgents();
       if (target === 'knowledge') {
         setKnowledgeBases(await api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}`));
@@ -359,6 +390,17 @@ export default function OpenPlatformPage({
     : agents.find((item) => canManageEmployeeAgent(item, currentUser) && !item.is_overall);
 
   const platformItems = useMemo<Record<PlatformKind, PlatformItem[]>>(() => ({
+    // Agent 广场的数据来自本地清单文件（src/data/agent-catalog.json），不请求后端：
+    // 这批 Agent 是平台统一定制的，成员只能使用不能编辑，列表口径不随用户变化。
+    'agent-apps': listAgentCatalog().map((entry) => ({
+      id: entry.entry,
+      deleteKey: entry.entry,
+      title: entry.name,
+      description: entry.summary || entry.description || '平台定制的 Agent，可直接使用。',
+      meta: agentCatalogMeta(entry),
+      tags: [entry.category, ...entry.tags],
+      agentEntry: entry,
+    })),
     agents: visibleAgents.map((item) => {
       const profile = employeeProfile(item);
       return {
@@ -437,11 +479,14 @@ export default function OpenPlatformPage({
         // 模块自身加载就绪时用本地列表长度（最准且随增删变化）；
         // 否则用聚合计数接口的数字填满未访问模块的角标；两者都不可用则不显示。
         count:
-          kindStates[config.kind] === 'ready'
-            ? platformItems[config.kind].length
-            : galleryCounts && galleryCounts[config.kind] !== undefined
-              ? galleryCounts[config.kind]
-              : undefined,
+          // Agent 广场是本地清单，永远即时可得，不依赖懒加载状态与聚合计数
+          config.kind === 'agent-apps'
+            ? platformItems['agent-apps'].length
+            : kindStates[config.kind] === 'ready'
+              ? platformItems[config.kind].length
+              : galleryCounts && galleryCounts[config.kind] !== undefined
+                ? galleryCounts[config.kind]
+                : undefined,
       })),
     [galleryCounts, kindStates, platformItems],
   );
@@ -509,6 +554,16 @@ export default function OpenPlatformPage({
   }
 
   async function usePlatformItem(platformKind: PlatformKind, itemId?: string) {
+    // Agent 广场：直接进该 Agent 的工作台，不做「复制到员工」这一步（Agent 本体不可编辑）。
+    if (platformKind === 'agent-apps') {
+      const entryId = itemId || platformItems['agent-apps'][0]?.id;
+      if (!entryId) {
+        notify.warning('Agent 广场暂无可用 Agent');
+        return;
+      }
+      navigate(`/enterprise/agent-apps/${encodeURIComponent(entryId)}`);
+      return;
+    }
     if (platformKind === 'agents') {
       const agent = visibleAgents.find((item) => item.id === itemId) || visibleAgents[0];
       if (!agent) {
@@ -548,6 +603,11 @@ export default function OpenPlatformPage({
   async function runDelete() {
     if (!confirmTarget) return;
     const { kind: platformKind, item } = confirmTarget;
+    // Agent 广场对所有人只读（抽屉不暴露删除入口），这里再兜一层，防止将来误接。
+    if (platformKind === 'agent-apps') {
+      setConfirmTarget(null);
+      return;
+    }
     const key = platformItemDeleteKey(platformKind, item);
     setDeletingItemKey(key);
     try {
@@ -645,19 +705,25 @@ export default function OpenPlatformPage({
           : <span className="grid size-[36px] place-items-center text-[#757f9c]">{config.icon}</span>}
         accent={PLATFORM_ACCENT[detailItem.kind]}
         title={item.title}
-        description={item.description}
+        description={item.agentEntry?.description || item.description}
         badge={resourceDrawerBadge(detailItem.kind, item)}
         categoryMeta={item.meta}
-        detailText={config.detail}
+        categoryMetaLabel={detailItem.kind === 'agent-apps' ? '作者 / 更新时间' : undefined}
+        detailText={item.agentEntry
+          ? `能力：${item.agentEntry.capability}｜由平台统一维护，所有成员只能使用、不能编辑或删除。`
+          : config.detail}
         useLabel={config.useLabel}
-        canManage={canManagePlatform}
+        // Agent 广场对所有成员一律只读：不暴露删除/下线入口。
+        canManage={detailItem.kind === 'agent-apps' ? false : canManagePlatform}
         deleting={deletingItemKey === deleteKey}
         hasPrev={drawerIndex > 0}
         hasNext={drawerIndex >= 0 && drawerIndex < drawerItems.length - 1}
         onClose={() => setDetailItem(null)}
         onPrev={() => navigateDetailItem(-1)}
         onNext={() => navigateDetailItem(1)}
-        onDelete={() => setConfirmTarget({ kind: detailItem.kind, item })}
+        onDelete={detailItem.kind === 'agent-apps'
+          ? undefined
+          : () => setConfirmTarget({ kind: detailItem.kind, item })}
         onDownload={
           detailItem.kind === 'general-skills'
             ? () => void downloadPlazaSkillPackage(item)

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
 import type { EnterpriseAuthUser } from '@/auth';
+import { findAgentCatalogEntry } from '@/lib/agentCatalog';
 import type { AgentProfileRead } from '@/types';
 
 import OpenPlatformPage from './OpenPlatformPage';
@@ -215,6 +216,48 @@ describe('OpenPlatformPage 懒加载', () => {
     const paths = requestedPaths(fetchMock);
     expect(paths.some((url) => url.includes('/api/enterprise/knowledge-bases'))).toBe(true);
     expect(paths.some((url) => url.includes('/api/enterprise/general-skills'))).toBe(false);
+    expect(paths.some((url) => url.includes('/api/enterprise/tools'))).toBe(false);
+  });
+});
+
+describe('Agent 广场', () => {
+  // 清单里的名字 / 作者会被平台维护者随时改，断言从清单取值而不是硬编码
+  const slidesEntry = findAgentCatalogEntry('slides-maker')!;
+
+  it('把本地清单里的 Agent 渲染成只读卡片', async () => {
+    stubPlatformFetch();
+    renderPlatform('/enterprise/platform/agent-apps');
+
+    expect(await screen.findByText(slidesEntry.name)).toBeTruthy();
+    // 决策助手已并入清单，两张卡片都在
+    expect(screen.getByText('决策助手')).toBeTruthy();
+    // meta 行是「作者 · 更新于 日期」；两个 Agent 可能同作者，断言用 getAllByText
+    const metas = screen.getAllByText(new RegExp(`${slidesEntry.author} · 更新于`));
+    expect(metas.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('详情抽屉给「立即使用」，且不暴露任何编辑/删除入口', async () => {
+    const user = userEvent.setup();
+    stubPlatformFetch();
+    renderPlatform('/enterprise/platform/agent-apps');
+
+    await screen.findByText(slidesEntry.name);
+    await user.click(screen.getByRole('button', { name: new RegExp(slidesEntry.name) }));
+
+    expect(await screen.findByRole('button', { name: '立即使用' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '删除' })).toBeNull();
+    expect(screen.getByText(/只能使用、不能编辑或删除/)).toBeTruthy();
+  });
+
+  it('Agent 广场是纯本地数据，不请求后端列表接口', async () => {
+    const fetchMock = stubPlatformFetch();
+    renderPlatform('/enterprise/platform/agent-apps');
+
+    await screen.findByText(slidesEntry.name);
+
+    const paths = requestedPaths(fetchMock);
+    expect(paths.some((url) => url.includes('/api/enterprise/agents'))).toBe(false);
+    expect(paths.some((url) => url.includes('/api/enterprise/knowledge-bases'))).toBe(false);
     expect(paths.some((url) => url.includes('/api/enterprise/tools'))).toBe(false);
   });
 });

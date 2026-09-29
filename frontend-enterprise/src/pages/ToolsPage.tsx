@@ -1461,6 +1461,8 @@ type McpFormValues = {
   apps_mode: MCPAppsMode;
   capability_scope: CapabilityScope;
   enabled: boolean;
+  /** 空字符串 = 沿用系统默认超时 */
+  timeout_seconds: string;
 };
 
 const MCP_FORM_INITIAL_VALUES: McpFormValues = {
@@ -1478,6 +1480,7 @@ const MCP_FORM_INITIAL_VALUES: McpFormValues = {
   apps_mode: 'disabled',
   capability_scope: 'general',
   enabled: true,
+  timeout_seconds: '',
 };
 
 type DiscoveredRow = MCPDiscoverResponse['tools'][number] & { selected: boolean };
@@ -1531,6 +1534,11 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
       return null;
     }
     const args = parseMcpArgs(values.args);
+    const timeout = parseMcpTimeoutSeconds(values.timeout_seconds);
+    if (!timeout.valid) {
+      notify.error('默认调用超时需为 1–3600 之间的秒数，或留空沿用系统默认');
+      return null;
+    }
     if (isStdio) {
       return {
         transport: values.transport,
@@ -1540,6 +1548,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
         args,
         env,
         cwd: String(values.cwd || '').trim() || null,
+        timeout_seconds: timeout.value,
       };
     }
     return {
@@ -1550,6 +1559,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
       args,
       env,
       cwd: null,
+      timeout_seconds: timeout.value,
     };
   }
 
@@ -1852,6 +1862,23 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
                   ))}
                 </SelectContent>
               </UISelect>
+            </Field>
+
+            <Field
+              label="默认调用超时（秒）"
+              htmlFor="mcp-timeout-seconds"
+              hint="该服务器派生工具的调用超时，留空则沿用系统默认。同步进来的 MCP 工具不支持单独编辑，所以渲染、转 PDF、图片生成、联网搜索这类慢操作必须在这里调大（1–3600）。"
+            >
+              <Input
+                id="mcp-timeout-seconds"
+                type="number"
+                min={1}
+                max={3600}
+                step={1}
+                placeholder="留空沿用系统默认"
+                value={values.timeout_seconds}
+                onChange={(event) => setField('timeout_seconds', event.target.value)}
+              />
             </Field>
 
             {isRemote && (
@@ -2513,7 +2540,23 @@ function serverToFormValues(row: MCPServerRead): McpFormValues {
     apps_mode: row.apps_mode || 'disabled',
     capability_scope: normalizeCapabilityScope(row.capability_scope),
     enabled: row.enabled,
+    timeout_seconds:
+      typeof connection.timeout_seconds === 'number' ? String(connection.timeout_seconds) : '',
   };
+}
+
+/**
+ * 解析「默认调用超时」输入：留空 → null（沿用系统默认），非法值 → null 并返回错误标记。
+ * 后端 schema 的约束是 1–3600 秒，这里先挡一道，避免把 400 交给用户看。
+ */
+export function parseMcpTimeoutSeconds(value: string): { value: number | null; valid: boolean } {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return { value: null, valid: true };
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 3600) {
+    return { value: null, valid: false };
+  }
+  return { value: parsed, valid: true };
 }
 
 export function parseMcpArgs(value: string): string[] {

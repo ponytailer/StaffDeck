@@ -37,14 +37,13 @@ import {
   employeeProfile,
   preferredEmployeeAgent,
 } from "./employee";
-import AccountsPage from "./pages/AccountsPage";
 import AgentsPage from "./pages/AgentsPage";
 import ChannelsPage from "./pages/ChannelsPage";
 import ChatPage from "./pages/chat/ChatPage";
 import ChatGalleryPage from "./pages/chat/ChatGalleryPage";
 import DashboardPage from "./pages/dashboard/DashboardPage";
-import DecisionAssistantPage from "./pages/decision/DecisionAssistantPage";
 import AiReviewerPage from "./pages/ai-review/AiReviewerPage";
+import AgentAppPage from "./pages/agentApps/AgentAppPage";
 import EmptyEmployeeState from "./components/EmptyEmployeeState";
 import DistillPage from "./pages/DistillPage";
 import GeneralSkillsPage, {
@@ -772,13 +771,8 @@ function Shell({
               />
               <Route
                 path="/enterprise/accounts"
-                element={
-                  isAdmin ? (
-                    <AccountsPage currentUser={auth.user} onLogout={onLogout} />
-                  ) : (
-                    <Navigate to={EnterpriseRoute.Platform} replace />
-                  )
-                }
+                // 账号管理已并入 API Key 审批页（用户管理 tab）；旧地址保留一层重定向，兼容收藏链接
+                element={<Navigate to={EnterpriseRoute.ApiKeyApprovals} replace />}
               />
               <Route
                 path="/enterprise/models"
@@ -806,8 +800,13 @@ function Shell({
               />
               <Route
                 path="/enterprise/decision-assistant"
+                // 决策助手已移入 Agent 广场清单；旧地址保留一层重定向，兼容收藏链接与引导文案
+                element={<Navigate to="/enterprise/agent-apps/decision-assistant" replace />}
+              />
+              <Route
+                path="/enterprise/agent-apps/:entryId"
                 element={
-                  <DecisionAssistantPage
+                  <AgentAppPage
                     currentUser={auth.user}
                     onLogout={onLogout}
                   />
@@ -815,7 +814,14 @@ function Shell({
               />
               <Route
                 path="/enterprise/ai-reviewer"
-                element={<AiReviewerPage currentUser={auth.user} onLogout={onLogout} />}
+                // AI CodeReviewer 暂只对管理员开放：侧边栏隐藏入口 + 路由挡一层
+                element={
+                  isAdmin ? (
+                    <AiReviewerPage currentUser={auth.user} onLogout={onLogout} />
+                  ) : (
+                    <Navigate to={EnterpriseRoute.Platform} replace />
+                  )
+                }
               />
               <Route
                 path="/enterprise/tools"

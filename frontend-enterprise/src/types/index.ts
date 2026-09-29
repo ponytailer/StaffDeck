@@ -476,6 +476,12 @@ export type MCPServerConnection = {
   args: string[];
   env: Record<string, string>;
   cwd?: string | null;
+  /**
+   * 该 MCP 服务器派生工具的默认调用超时（秒）。
+   * 留空 / null 表示沿用系统默认；MCP 子工具在界面上不可单独编辑，
+   * 所以长耗时工具（渲染、转 PDF、图片生成）只能在这里调大。
+   */
+  timeout_seconds?: number | null;
 };
 
 export type MCPServerRead = {

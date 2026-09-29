@@ -38,6 +38,11 @@ OPERATION_JSON_REPAIR_ATTEMPTS: dict[str, int] = {
     # discovery 只产出「可确认的 SOP/工具建议」，失败直接跳过，不值得重试。
     "knowledge.ingest_bucket": 1,
     "knowledge.discovery": 0,
+    # Agent 广场·AI 幻灯片生成：一次输出整套 deck 的结构化 JSON（5~8 页），
+    # 是用户显式点击后的前台创作型调用，没有确定性兜底，失败只能靠重发。
+    # 保持 1 次修复：3 次整包重发在长输出上会把「点一次等 1 分钟」放大成 3 分钟，
+    # 而失败时前端会给出换模型/重试提示。
+    "agent_app.slides": 1,
 }
 
 
@@ -68,6 +73,9 @@ OPERATION_TIMEOUT_SECONDS: dict[str, float] = {
     # 切片与知识页，只是主题更粗），discovery 本就可选（只影响 SOP/工具建议）。
     "knowledge.ingest_bucket": 120.0,
     "knowledge.discovery": 90.0,
+    # Agent 广场·AI 幻灯片生成：整套 deck（5~8 页、每页含卡片与要点）比单个控制面调用
+    # 输出量大得多，120s 会被慢模型顶穿；给 180s 且只在用户显式点击时发生。
+    "agent_app.slides": 180.0,
 }
 
 

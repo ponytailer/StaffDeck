@@ -23,6 +23,7 @@ import { checkLayaHealth, predictLayaQuestions, type LayaHealth } from '../../ap
 import type { EnterpriseAuthUser } from '../../auth';
 import { ApiError } from '../../api/client';
 import { cn } from '@/lib/utils';
+import AgentAppBackButton from '../agentApps/AgentAppBackButton';
 import {
   QUESTION_TYPE_META,
   QUESTION_TYPE_ORDER,
@@ -56,19 +57,6 @@ const CONFIDENCE_TONE: Record<string, string> = {
   低: 'bg-[#fff7e8] text-[#8a4b00]',
   未知: 'bg-[#f3f4f6] text-[#757f9c]',
 };
-
-function SectionCard({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <section
-      className={cn(
-        'flex flex-col gap-[16px] rounded-[20px] border-[0.5px] border-[#e3e7f1] bg-white px-[20px] py-[18px]',
-        className,
-      )}
-    >
-      {children}
-    </section>
-  );
-}
 
 function GroupTitle({ icon, title, hint }: { icon: React.ReactNode; title: string; hint?: string }) {
   return (
@@ -512,7 +500,7 @@ export default function DecisionAssistantPage({
 
   return (
     <div
-      className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]"
+      className="min-h-full box-border px-[48px] pt-[20px] pb-[43px] max-[900px]:px-[16px]"
       onKeyDown={(event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
           event.preventDefault();
@@ -521,269 +509,284 @@ export default function DecisionAssistantPage({
       }}
     >
       <AppHeader
-        className="items-center"
+        className="mb-[16px]"
         onLogout={onLogout}
         userName={currentUser?.username}
-        title="决策助手"
-        description="把决策背景与待判问题交给 Laya，一次得到分类、评分与是非结论"
+        title="Agent 广场 · 决策助手"
       />
 
-      {health && !health.reachable && (
-        <div className="mt-[16px] flex items-start gap-[10px] rounded-[12px] border border-[#f3d28b] bg-[#fff8e8] px-[16px] py-[10px] text-[12px] leading-[18px] text-[#6f4500]">
-          <AlertTriangle className="mt-[2px] size-[14px] shrink-0" />
-          <span>
-            决策服务当前不可达（{health.upstream_url}）。{health.message ? `原因：${health.message}` : ''}
-            请确认 Laya 服务已启动后重试。
-          </span>
+      {/* 与 PPT Studio（SlidesMakerWorkspace）统一的工作台外壳：一张定高大白卡，栏内各自滚动 */}
+      <div className="flex h-[calc(100vh-190px)] min-h-[560px] flex-col gap-[14px] rounded-[20px] bg-white p-[16px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+        {/* 标题信息交给页头，卡片内只留右上角返回入口 */}
+        <div className="flex flex-wrap items-center justify-end gap-[10px]">
+          <AgentAppBackButton />
         </div>
-      )}
 
-      <div className="mt-[20px] grid items-start gap-[16px] xl:grid-cols-[minmax(0,1fr)_440px]">
-        <SectionCard>
-          <div className="flex flex-wrap items-center justify-between gap-[10px]">
-            <GroupTitle
-              icon={<Sparkles className="size-[14px] shrink-0" />}
-              title="决策背景"
-              hint="必填 · 描述这次要决策的事情"
-            />
-            <UIButton
-              type="button"
-              onClick={() => setApiDialogOpen(true)}
-              className="h-[30px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] border-[#cfe0ff] bg-[#f4f8ff] px-[12px] text-[12px] font-normal text-[#1a71ff] hover:bg-[#e9f1ff]"
-            >
-              <Code2 className="size-[13px]" />
-              API 接入
-            </UIButton>
-          </div>
-          <Textarea
-            rows={4}
-            value={background}
-            disabled={running}
-            placeholder="例如：客户来电反馈账单被重复扣款，情绪激动，明确要求退款并威胁投诉"
-            onChange={(event) => setBackground(event.target.value)}
-            className="min-h-[96px] resize-y text-[13px]"
-          />
-
-          <div className="flex items-center justify-between gap-[10px]">
-            <GroupTitle
-              icon={<ListTree className="size-[14px] shrink-0" />}
-              title="决策内容"
-              hint={`共 ${questions.length} 条 · 已填写 ${filledQuestionCount} 条`}
-            />
-            <UIButton
-              type="button"
-              disabled={running}
-              onClick={() => setQuestions((prev) => [...prev, createQuestion('noul')])}
-              className="h-[30px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
-            >
-              <Plus className="size-[13px]" />
-              添加决策内容
-            </UIButton>
-          </div>
-
-          <div className="flex flex-col gap-[10px]">
-            {questions.map((question, index) => (
-              <QuestionCard
-                key={question.id}
-                question={question}
-                index={index}
-                disabled={running}
-                onChange={(next) => {
-                  setQuestions((prev) => prev.map((item) => (item.id === next.id ? next : item)));
-                  if (next.type !== question.type) invalidateConclusion(next.key);
-                }}
-                onRemove={() =>
-                  setQuestions((prev) =>
-                    prev.length <= 1 ? prev : prev.filter((item) => item.id !== question.id),
-                  )
-                }
-              />
-            ))}
-            <span className="text-[11px] leading-[16px] text-[#a3aaba]">
-              切换题型不会清空已填内容：分类与评分各自保存自己的选项，来回切换互不覆盖。
+        {health && !health.reachable && (
+          <div className="flex shrink-0 items-start gap-[10px] rounded-[12px] border border-[#f3d28b] bg-[#fff8e8] px-[16px] py-[10px] text-[12px] leading-[18px] text-[#6f4500]">
+            <AlertTriangle className="mt-[2px] size-[14px] shrink-0" />
+            <span>
+              决策服务当前不可达（{health.upstream_url}）。{health.message ? `原因：${health.message}` : ''}
+              请确认 Laya 服务已启动后重试。
             </span>
-            {questions.length <= 1 && (
-              <span className="text-[11px] text-[#a3aaba]">至少保留一条决策内容</span>
-            )}
           </div>
+        )}
 
-          <div className="flex flex-wrap items-center justify-between gap-[10px] border-t-[0.5px] border-[#eef0f4] pt-[14px]">
-            <div className="flex flex-wrap items-center gap-[8px]">
-              <UIButton
-                type="button"
-                disabled={running}
-                onClick={() => importInputRef.current?.click()}
-                className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
-              >
-                <Upload className="size-[13px]" />
-                导入 JSON
-              </UIButton>
-              <input
-                ref={importInputRef}
-                type="file"
-                accept=".json,application/json"
-                data-testid="decision-import-input"
-                className="hidden"
-                onChange={importJsonFile}
-              />
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button
+        <div className="flex min-h-0 flex-1 flex-col gap-[14px] xl:flex-row">
+          {/* 左栏：表单区可滚动，操作条固定在栏底 */}
+          <div className="flex min-h-0 flex-1 flex-col gap-[12px] xl:border-r-[0.5px] xl:border-[#eef0f5] xl:pr-[16px]">
+            <div className="flex min-h-0 flex-1 flex-col gap-[16px] overflow-y-auto pr-[2px]">
+              <div className="flex flex-col gap-[10px]">
+                <div className="flex flex-wrap items-center justify-between gap-[10px]">
+                  <GroupTitle
+                    icon={<Sparkles className="size-[14px] shrink-0" />}
+                    title="决策背景"
+                    hint="必填 · 描述这次要决策的事情"
+                  />
+                  <UIButton
                     type="button"
-                    aria-label="查看可导入的 JSON 格式"
-                    className="grid size-[30px] shrink-0 place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-[#757f9c] transition-colors hover:bg-[#f6f6f6] hover:text-[#18181a]"
+                    onClick={() => setApiDialogOpen(true)}
+                    className="h-[30px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] border-[#cfe0ff] bg-[#f4f8ff] px-[12px] text-[12px] font-normal text-[#1a71ff] hover:bg-[#e9f1ff]"
                   >
-                    <HelpCircle className="size-[14px]" />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent
-                  side="top"
-                  align="start"
-                  className="w-[540px] max-w-[calc(100vw-48px)] p-[14px]"
+                    <Code2 className="size-[13px]" />
+                    API 接入
+                  </UIButton>
+                </div>
+                <Textarea
+                  rows={4}
+                  value={background}
+                  disabled={running}
+                  placeholder="例如：客户来电反馈账单被重复扣款，情绪激动，明确要求退款并威胁投诉"
+                  onChange={(event) => setBackground(event.target.value)}
+                  className="min-h-[96px] resize-y text-[13px]"
+                />
+              </div>
+
+              <div className="flex flex-col gap-[10px]">
+                <div className="flex items-center justify-between gap-[10px]">
+                  <GroupTitle
+                    icon={<ListTree className="size-[14px] shrink-0" />}
+                    title="决策内容"
+                    hint={`共 ${questions.length} 条 · 已填写 ${filledQuestionCount} 条`}
+                  />
+                  <UIButton
+                    type="button"
+                    disabled={running}
+                    onClick={() => setQuestions((prev) => [...prev, createQuestion('noul')])}
+                    className="h-[30px] shrink-0 gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
+                  >
+                    <Plus className="size-[13px]" />
+                    添加决策内容
+                  </UIButton>
+                </div>
+
+                <div className="flex flex-col gap-[10px]">
+                  {questions.map((question, index) => (
+                    <QuestionCard
+                      key={question.id}
+                      question={question}
+                      index={index}
+                      disabled={running}
+                      onChange={(next) => {
+                        setQuestions((prev) => prev.map((item) => (item.id === next.id ? next : item)));
+                        if (next.type !== question.type) invalidateConclusion(next.key);
+                      }}
+                      onRemove={() =>
+                        setQuestions((prev) =>
+                          prev.length <= 1 ? prev : prev.filter((item) => item.id !== question.id),
+                        )
+                      }
+                    />
+                  ))}
+                  <span className="text-[11px] leading-[16px] text-[#a3aaba]">
+                    切换题型不会清空已填内容：分类与评分各自保存自己的选项，来回切换互不覆盖。
+                  </span>
+                  {questions.length <= 1 && (
+                    <span className="text-[11px] text-[#a3aaba]">至少保留一条决策内容</span>
+                  )}
+                </div>
+              </div>
+
+              {error && (
+                <div className="flex items-start gap-[8px] rounded-[10px] border-[0.5px] border-[#f3d5d2] bg-[#fdf3f2] px-[12px] py-[9px] text-[12px] leading-[18px] text-[#c0392b]">
+                  <AlertTriangle className="mt-[2px] size-[13px] shrink-0" />
+                  <span className="break-all">{error}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-[10px] border-t-[0.5px] border-[#eef0f4] pt-[12px]">
+              <div className="flex flex-wrap items-center gap-[8px]">
+                <UIButton
+                  type="button"
+                  disabled={running}
+                  onClick={() => importInputRef.current?.click()}
+                  className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
                 >
-                  <div className="text-[12px] font-medium text-[#18181a]">可导入的 JSON 格式</div>
-                  <p className="mt-[6px] text-[11px] leading-[17px] text-[#757f9c]">
-                    与发给 Laya 的请求体一致：state.background 是决策背景；questions 里每个 key 是一道题。
-                    是非题只填 type 与 instructions；分类题的 criteria 是「选项名 → 说明」；评分题的
-                    criteria 是档位数组（由轻到重）。
-                  </p>
-                  <pre className="mt-[8px] max-h-[260px] overflow-auto rounded-[10px] bg-[#1d2027] p-[10px] font-mono text-[11px] leading-[16px] text-[#e7ebf3]">
-                    {JSON.stringify(importSample, null, 2)}
-                  </pre>
-                  <p className="mt-[8px] text-[11px] leading-[17px] text-[#a3aaba]">
-                    导入后可继续在左侧表单里修改；问题 key 沿用文件里的写法，回包按同一 key 返回。
-                  </p>
-                </PopoverContent>
-              </Popover>
-              <UIButton
-                type="button"
-                disabled={running}
-                onClick={() => {
-                  const sample = sampleQuestions();
-                  setBackground(sample.background);
-                  setQuestions(sample.questions);
-                  setConclusions([]);
-                  setResult(null);
-                  setError(null);
-                }}
-                className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
-              >
-                <Wand2 className="size-[13px]" />
-                填入示例
-              </UIButton>
-              <UIButton
-                type="button"
-                disabled={running}
-                onClick={() => {
-                  setBackground('');
-                  setQuestions([createQuestion('noul')]);
-                  setConclusions([]);
-                  setResult(null);
-                  setError(null);
-                }}
-                className="h-[30px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#757f9c] hover:bg-black/5 hover:text-[#18181a] disabled:opacity-60"
-              >
-                清空
-              </UIButton>
-            </div>
-            <div className="flex items-center gap-[10px]">
-              <span className="hidden text-[11px] text-[#a3aaba] sm:inline">⌘/Ctrl + Enter 直接提交</span>
-              <UIButton
-                type="button"
-                disabled={running}
-                onClick={() => void run()}
-                className="h-[34px] gap-[6px] rounded-[10px] bg-[#18181a] px-[18px] text-[13px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
-              >
-                {running ? <LoaderCircle className="size-[14px] animate-spin" /> : <Gauge className="size-[14px]" />}
-                {running ? '决策中…' : '开始决策'}
-              </UIButton>
-            </div>
-          </div>
-
-          {error && (
-            <div className="flex items-start gap-[8px] rounded-[10px] border-[0.5px] border-[#f3d5d2] bg-[#fdf3f2] px-[12px] py-[9px] text-[12px] leading-[18px] text-[#c0392b]">
-              <AlertTriangle className="mt-[2px] size-[13px] shrink-0" />
-              <span className="break-all">{error}</span>
-            </div>
-          )}
-        </SectionCard>
-
-        <div className="flex flex-col gap-[16px] xl:sticky xl:top-[24px]">
-          <SectionCard className="gap-[12px]">
-            <div className="flex items-center justify-between gap-[10px]">
-              <GroupTitle
-                icon={<Gauge className="size-[14px] shrink-0" />}
-                title="问题答案"
-                hint="按左侧表单顺序一一对应"
-              />
-              {result && (
+                  <Upload className="size-[13px]" />
+                  导入 JSON
+                </UIButton>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  data-testid="decision-import-input"
+                  className="hidden"
+                  onChange={importJsonFile}
+                />
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="查看可导入的 JSON 格式"
+                      className="grid size-[30px] shrink-0 place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-[#757f9c] transition-colors hover:bg-[#f6f6f6] hover:text-[#18181a]"
+                    >
+                      <HelpCircle className="size-[14px]" />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    side="top"
+                    align="start"
+                    className="w-[540px] max-w-[calc(100vw-48px)] p-[14px]"
+                  >
+                    <div className="text-[12px] font-medium text-[#18181a]">可导入的 JSON 格式</div>
+                    <p className="mt-[6px] text-[11px] leading-[17px] text-[#757f9c]">
+                      与发给 Laya 的请求体一致：state.background 是决策背景；questions 里每个 key 是一道题。
+                      是非题只填 type 与 instructions；分类题的 criteria 是「选项名 → 说明」；评分题的
+                      criteria 是档位数组（由轻到重）。
+                    </p>
+                    <pre className="mt-[8px] max-h-[260px] overflow-auto rounded-[10px] bg-[#1d2027] p-[10px] font-mono text-[11px] leading-[16px] text-[#e7ebf3]">
+                      {JSON.stringify(importSample, null, 2)}
+                    </pre>
+                    <p className="mt-[8px] text-[11px] leading-[17px] text-[#a3aaba]">
+                      导入后可继续在左侧表单里修改；问题 key 沿用文件里的写法，回包按同一 key 返回。
+                    </p>
+                  </PopoverContent>
+                </Popover>
+                <UIButton
+                  type="button"
+                  disabled={running}
+                  onClick={() => {
+                    const sample = sampleQuestions();
+                    setBackground(sample.background);
+                    setQuestions(sample.questions);
+                    setConclusions([]);
+                    setResult(null);
+                    setError(null);
+                  }}
+                  className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
+                >
+                  <Wand2 className="size-[13px]" />
+                  填入示例
+                </UIButton>
+                <UIButton
+                  type="button"
+                  disabled={running}
+                  onClick={() => {
+                    setBackground('');
+                    setQuestions([createQuestion('noul')]);
+                    setConclusions([]);
+                    setResult(null);
+                    setError(null);
+                  }}
+                  className="h-[30px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[12px] font-normal text-[#757f9c] hover:bg-black/5 hover:text-[#18181a] disabled:opacity-60"
+                >
+                  清空
+                </UIButton>
+              </div>
+              <div className="flex items-center gap-[10px]">
+                <span className="hidden text-[11px] text-[#a3aaba] sm:inline">⌘/Ctrl + Enter 直接提交</span>
                 <UIButton
                   type="button"
                   disabled={running}
                   onClick={() => void run()}
-                  className="h-[28px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[10px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
+                  className="h-[34px] gap-[6px] rounded-[10px] bg-[#18181a] px-[18px] text-[13px] font-normal text-white hover:bg-[#303030] disabled:opacity-60"
                 >
-                  <RefreshCw className={cn('size-[12px]', running && 'animate-spin')} />
-                  重跑
+                  {running ? <LoaderCircle className="size-[14px] animate-spin" /> : <Gauge className="size-[14px]" />}
+                  {running ? '决策中…' : '开始决策'}
                 </UIButton>
-              )}
+              </div>
             </div>
+          </div>
 
-            {!result && !running && (
-              <div className="flex flex-col items-center gap-[8px] rounded-[14px] border-[0.5px] border-dashed border-[#e3e7f1] px-[16px] py-[20px] text-center">
-                <HelpCircle className="size-[22px] text-[#c0c6d4]" />
-                <span className="text-[13px] text-[#858b9c]">还没有结论</span>
-                <span className="max-w-[300px] text-[12px] leading-[18px] text-[#a3aaba]">
-                  下方按左侧表单顺序列出待决策的问题；点击「开始决策」后，每个问题右侧会渲染出 Laya 的结论、置信度与概率分布。
-                </span>
+          {/* 右栏：问题答案，随左栏一起在卡内各自滚动 */}
+          <div className="flex min-h-0 w-full shrink-0 flex-col gap-[12px] xl:w-[440px]">
+            <div className="flex min-h-0 flex-1 flex-col gap-[12px] overflow-y-auto">
+              <div className="flex items-center justify-between gap-[10px]">
+                <GroupTitle
+                  icon={<Gauge className="size-[14px] shrink-0" />}
+                  title="问题答案"
+                  hint="按左侧表单顺序一一对应"
+                />
+                {result && (
+                  <UIButton
+                    type="button"
+                    disabled={running}
+                    onClick={() => void run()}
+                    className="h-[28px] gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[10px] text-[12px] font-normal text-[#464c5e] hover:bg-[#f6f6f6] disabled:opacity-60"
+                  >
+                    <RefreshCw className={cn('size-[12px]', running && 'animate-spin')} />
+                    重跑
+                  </UIButton>
+                )}
               </div>
-            )}
 
-            {running && !result && (
-              <div className="flex items-center justify-center gap-[8px] rounded-[14px] border-[0.5px] border-[#e3e7f1] px-[16px] py-[20px] text-[13px] text-[#858b9c]">
-                <LoaderCircle className="size-[14px] animate-spin" />
-                Laya 正在推理…
-              </div>
-            )}
-
-            {result && (
-              <div className="flex flex-wrap items-center gap-[8px] text-[11px] text-[#a3aaba]">
-                {typeof result.elapsed_ms === 'number' && (
-                  <span className="rounded-full bg-[#f3f4f6] px-[8px] py-[2px]">
-                    耗时 {Math.round(result.elapsed_ms)} ms
+              {!result && !running && (
+                <div className="flex flex-col items-center gap-[8px] rounded-[14px] border-[0.5px] border-dashed border-[#e3e7f1] px-[16px] py-[20px] text-center">
+                  <HelpCircle className="size-[22px] text-[#c0c6d4]" />
+                  <span className="text-[13px] text-[#858b9c]">还没有结论</span>
+                  <span className="max-w-[300px] text-[12px] leading-[18px] text-[#a3aaba]">
+                    下方按左侧表单顺序列出待决策的问题；点击「开始决策」后，每个问题右侧会渲染出 Laya 的结论、置信度与概率分布。
                   </span>
-                )}
-                {result.routing?.model && (
-                  <span className="rounded-full bg-[#f3f4f6] px-[8px] py-[2px]">模型 {result.routing.model}</span>
-                )}
-                <span className="rounded-full bg-[#f3f4f6] px-[8px] py-[2px]">共 {conclusions.length} 项结论</span>
-              </div>
-            )}
+                </div>
+              )}
 
-            <div className="flex flex-col gap-[10px]">
-              {[...answerRows, ...extraRows].map((row) =>
-                row.conclusion ? (
-                  <ConclusionCard key={row.key} conclusion={row.conclusion} index={row.index} />
-                ) : (
-                  <PendingCard
-                    key={row.key}
-                    index={row.index}
-                    kindLabel={row.kindLabel}
-                    question={row.question}
-                  />
-                ),
+              {running && !result && (
+                <div className="flex items-center justify-center gap-[8px] rounded-[14px] border-[0.5px] border-[#e3e7f1] px-[16px] py-[20px] text-[13px] text-[#858b9c]">
+                  <LoaderCircle className="size-[14px] animate-spin" />
+                  Laya 正在推理…
+                </div>
+              )}
+
+              {result && (
+                <div className="flex flex-wrap items-center gap-[8px] text-[11px] text-[#a3aaba]">
+                  {typeof result.elapsed_ms === 'number' && (
+                    <span className="rounded-full bg-[#f3f4f6] px-[8px] py-[2px]">
+                      耗时 {Math.round(result.elapsed_ms)} ms
+                    </span>
+                  )}
+                  {result.routing?.model && (
+                    <span className="rounded-full bg-[#f3f4f6] px-[8px] py-[2px]">模型 {result.routing.model}</span>
+                  )}
+                  <span className="rounded-full bg-[#f3f4f6] px-[8px] py-[2px]">共 {conclusions.length} 项结论</span>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-[10px]">
+                {[...answerRows, ...extraRows].map((row) =>
+                  row.conclusion ? (
+                    <ConclusionCard key={row.key} conclusion={row.conclusion} index={row.index} />
+                  ) : (
+                    <PendingCard
+                      key={row.key}
+                      index={row.index}
+                      kindLabel={row.kindLabel}
+                      question={row.question}
+                    />
+                  ),
+                )}
+              </div>
+
+              {rawResult && (
+                <details className="rounded-[10px] border-[0.5px] border-[#eef0f4] bg-[#fafbfd] px-[12px] py-[8px]">
+                  <summary className="cursor-pointer text-[12px] text-[#757f9c]">查看原始返回</summary>
+                  <pre className="mt-[8px] max-h-[280px] overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-[16px] text-[#464c5e]">
+                    {JSON.stringify(rawResult, null, 2)}
+                  </pre>
+                </details>
               )}
             </div>
-
-            {rawResult && (
-              <details className="rounded-[10px] border-[0.5px] border-[#eef0f4] bg-[#fafbfd] px-[12px] py-[8px]">
-                <summary className="cursor-pointer text-[12px] text-[#757f9c]">查看原始返回</summary>
-                <pre className="mt-[8px] max-h-[280px] overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-[16px] text-[#464c5e]">
-                  {JSON.stringify(rawResult, null, 2)}
-                </pre>
-              </details>
-            )}
-          </SectionCard>
+          </div>
         </div>
       </div>
 

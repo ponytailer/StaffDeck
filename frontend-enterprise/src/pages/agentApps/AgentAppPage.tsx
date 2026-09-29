@@ -1,0 +1,56 @@
+import { useNavigate, useParams } from 'react-router-dom';
+
+import AppHeader from '@/components/AppHeader';
+import { Button as UIButton } from '@/components/ui/button';
+import type { EnterpriseAuthUser } from '@/auth';
+import { findAgentCatalogEntry } from '@/lib/agentCatalog';
+import DecisionAssistantPage from '@/pages/decision/DecisionAssistantPage';
+
+import SlidesMakerWorkspace from './SlidesMakerWorkspace';
+
+export type AgentAppPageProps = {
+  currentUser?: EnterpriseAuthUser;
+  onLogout?: () => void;
+};
+
+/**
+ * Agent 广场工作台入口（`/enterprise/agent-apps/:entryId`）。
+ *
+ * 一个 Agent = 清单里的一条记录 + 一个前端实现；`capability` 决定用哪个工作台组件。
+ * 未知 entry / 未知 capability 都退化成同一张「无法打开」卡片，而不是白屏 ——
+ * 清单是手写的 JSON，写错一个字段不应该把整个路由打挂。
+ */
+export default function AgentAppPage({ currentUser, onLogout }: AgentAppPageProps) {
+  const { entryId } = useParams<{ entryId: string }>();
+  const navigate = useNavigate();
+  const entry = findAgentCatalogEntry(entryId);
+
+  if (entry && entry.capability === 'slides') {
+    return <SlidesMakerWorkspace entry={entry} currentUser={currentUser} onLogout={onLogout} />;
+  }
+
+  // 决策助手：原独立页面整体搬进 Agent 广场，渲染外壳已与 PPT Studio 统一（页头 + 返回按钮 + 定高工作卡）。
+  if (entry && entry.capability === 'decision') {
+    return <DecisionAssistantPage currentUser={currentUser} onLogout={onLogout} />;
+  }
+
+  return (
+    <div className="min-h-full box-border px-[48px] pt-[20px] pb-[43px] max-[900px]:px-[16px]">
+      <AppHeader className="mb-[16px]" onLogout={onLogout} userName={currentUser?.username} title="Agent 广场" />
+      <div className="grid min-h-[320px] place-items-center content-center gap-[12px] rounded-[20px] bg-white px-[20px] py-[48px] text-center shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+        <span className="text-[15px] font-medium text-[#18181a]">该 Agent 暂时无法打开</span>
+        <span className="text-[12px] leading-[1.7] text-[#858b9c]">
+          {entry
+            ? `Agent「${entry.name}」声明了未知的能力「${entry.capability || '空'}」，请联系平台维护者确认清单配置。`
+            : '清单里没有这个 Agent，可能已被移除。'}
+        </span>
+        <UIButton
+          onClick={() => navigate('/enterprise/platform/agent-apps')}
+          className="h-8 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]"
+        >
+          返回 Agent 广场
+        </UIButton>
+      </div>
+    </div>
+  );
+}

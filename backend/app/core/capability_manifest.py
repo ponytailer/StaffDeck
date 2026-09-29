@@ -541,6 +541,9 @@ def tool_snapshot_digest(db: Session, tool: Tool) -> str:
                 "args": server.args_json or [],
                 "env": server.env_json or {},
                 "cwd": server.cwd,
+                # 派生工具的调用超时取自 server，属于调用语义的一部分，
+                # 中途变更要让已冻结的能力快照失效。
+                "timeout_seconds": server.timeout_seconds,
                 "enabled": server.enabled,
             }
     payload = {

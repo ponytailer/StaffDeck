@@ -254,12 +254,29 @@ class ToolExecutor:
         try:
             timeout_seconds = float(raw_timeout)
         except (TypeError, ValueError):
-            timeout_seconds = self.settings.tool_timeout_seconds
+            # MCP 派生工具没有自己的 execution 时，用所属 MCP 服务器的默认调用超时。
+            # MCP 子工具在界面上不可单独编辑，所以 server 是「调大慢操作超时」的唯一入口；
+            # 显式写在工具上的 execution 仍然优先，语义是「server 提供缺省值」而非覆盖。
+            timeout_seconds = self._mcp_server_timeout_seconds(tool)
         if not 1 <= timeout_seconds <= 3600:
             timeout_seconds = self.settings.tool_timeout_seconds
         if timeout_seconds_override is not None:
             timeout_seconds = min(timeout_seconds, max(float(timeout_seconds_override), 0.1))
         return ToolExecutionPolicy(timeout_seconds=timeout_seconds)
+
+    def _mcp_server_timeout_seconds(self, tool: Tool) -> float:
+        fallback = self.settings.tool_timeout_seconds
+        if not tool.mcp_server_id:
+            return fallback
+        server = self.db.get(MCPServer, tool.mcp_server_id)
+        configured = getattr(server, "timeout_seconds", None) if server else None
+        if configured is None:
+            return fallback
+        try:
+            value = float(configured)
+        except (TypeError, ValueError):
+            return fallback
+        return value if 1 <= value <= 3600 else fallback
 
     def _resolve_mcp_config(self, tool: Tool) -> tuple[dict[str, Any], str | None]:
         """Resolve an MCP tool through its persisted MCP server relation."""

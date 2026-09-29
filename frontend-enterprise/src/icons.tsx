@@ -62,6 +62,7 @@ export const PlayCircleOutlined = (props: IconProps) => <Sd1AntIcon name="play" 
 export const PlusOutlined = (props: IconProps) => <Sd1AntIcon name="plus" {...props} />;
 export const ProfileOutlined = (props: IconProps) => <Sd1AntIcon name="filter" {...props} />;
 export const ReloadOutlined = (props: IconProps) => <Sd1AntIcon name="refresh" {...props} />;
+export const RobotOutlined = (props: IconProps) => <Sd1AntIcon name="robot" {...props} />;
 export const RightOutlined = (props: IconProps) => <Sd1AntIcon name="arrow" {...props} />;
 export const RollbackOutlined = (props: IconProps) => <Sd1AntIcon name="history" {...props} />;
 export const SaveOutlined = (props: IconProps) => <Sd1AntIcon name="save" {...props} />;

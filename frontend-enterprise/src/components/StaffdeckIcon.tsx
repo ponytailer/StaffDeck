@@ -33,6 +33,7 @@ export type StaffdeckIconName =
   | 'play'
   | 'plus'
   | 'refresh'
+  | 'robot'
   | 'save'
   | 'search'
   | 'send'
@@ -89,6 +90,16 @@ const iconPaths: Record<StaffdeckIconName, string[]> = {
   play: ['M8 5v14l11-7L8 5Z'],
   plus: ['M12 5v14', 'M5 12h14'],
   refresh: ['M19 8a7 7 0 0 0-12.2-2.4L5 8', 'M5 5v3h3', 'M5 16a7 7 0 0 0 12.2 2.4L19 16', 'M19 19v-3h-3'],
+  robot: [
+    'M12 8.2V5.6',
+    'M12 4.4h.1',
+    'M6.6 8.6h10.8a2.4 2.4 0 0 1 2.4 2.4v5.6a2.4 2.4 0 0 1-2.4 2.4H6.6a2.4 2.4 0 0 1-2.4-2.4V11a2.4 2.4 0 0 1 2.4-2.4Z',
+    'M9.2 13.4h.1',
+    'M14.8 13.4h.1',
+    'M9.8 16.4h4.4',
+    'M3 12.4v3.2',
+    'M21 12.4v3.2',
+  ],
   save: ['M5 4h12l2 2v14H5V4Z', 'M8 4v6h8V4', 'M8 20v-6h8v6'],
   search: ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Z', 'M16.5 16.5 21 21'],
   send: ['M4 12 20 5l-7 14-2-6-7-1Z', 'M11 13l9-8'],

@@ -64,6 +64,7 @@ def init_db() -> None:
     # _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
     _migrate_ai_review_schema()
+    _migrate_mcp_server_timeout()
     # _migrate_sqlite_skill_schema()
     # _migrate_pg_api_key_schema()
     # _migrate_user_ldap_schema()
@@ -3313,6 +3314,24 @@ def _migrate_ai_review_schema() -> None:
         print(
             f"[init_db] uq_ai_review_task_in_flight 创建失败（可能存在重复的进行中任务）：{exc}"
         )
+
+
+def _migrate_mcp_server_timeout() -> None:
+    """mcp_servers 补 timeout_seconds：MCP 派生工具的默认调用超时。
+
+    新表由 create_all 直接建；这里是给**已存在**的表补新列。
+    留 NULL 表示沿用全局 ``settings.tool_timeout_seconds``，因此历史数据行为不变。
+    没有它时，远程 MCP 的慢操作（渲染、转 PDF、图片生成）会被全局 8 秒卡死，
+    而 MCP 子工具在界面上不可单独编辑，等于无解。
+    """
+    inspector = inspect(engine)
+    if "mcp_servers" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("mcp_servers")}
+    if "timeout_seconds" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN timeout_seconds FLOAT"))
 
 
 def get_session() -> Generator[Session, None, None]:
