@@ -1,13 +1,17 @@
-import { useNavigate, useParams } from 'react-router-dom';
+import { Navigate, useNavigate, useParams } from 'react-router-dom';
 
 import AppHeader from '@/components/AppHeader';
 import { Button as UIButton } from '@/components/ui/button';
-import type { EnterpriseAuthUser } from '@/auth';
+import { isEnterpriseAdmin, type EnterpriseAuthUser } from '@/auth';
 import { findAgentCatalogEntry } from '@/lib/agentCatalog';
+import AiReviewerPage from '@/pages/ai-review/AiReviewerPage';
 import DecisionAssistantPage from '@/pages/decision/DecisionAssistantPage';
 
 import DocReviewWorkspace from './DocReviewWorkspace';
 import SlidesMakerWorkspace from './SlidesMakerWorkspace';
+
+/** adminOnly Agent 的深链回退地址（与返回按钮一致）。 */
+const AGENT_APPS_PLAZA_PATH = '/enterprise/platform/agent-apps';
 
 export type AgentAppPageProps = {
   currentUser?: EnterpriseAuthUser;
@@ -26,6 +30,12 @@ export default function AgentAppPage({ currentUser, onLogout }: AgentAppPageProp
   const navigate = useNavigate();
   const entry = findAgentCatalogEntry(entryId);
 
+  // adminOnly 条目（如 AI CodeReviewer）在这里再挡一层：广场列表看不见了，
+  // 深链 / 收藏链接也不能进 —— 宁可跳回广场也不能给成员露出管理员工具。
+  if (entry?.adminOnly && !isEnterpriseAdmin(currentUser)) {
+    return <Navigate to={AGENT_APPS_PLAZA_PATH} replace />;
+  }
+
   if (entry && entry.capability === 'slides') {
     return <SlidesMakerWorkspace entry={entry} currentUser={currentUser} onLogout={onLogout} />;
   }
@@ -40,6 +50,11 @@ export default function AgentAppPage({ currentUser, onLogout }: AgentAppPageProp
     return <DecisionAssistantPage currentUser={currentUser} onLogout={onLogout} />;
   }
 
+  // AI CodeReviewer：原独立页面整体搬进 Agent 广场，外壳同样统一；仅管理员可见（上面已挡）。
+  if (entry && entry.capability === 'code-review') {
+    return <AiReviewerPage currentUser={currentUser} onLogout={onLogout} />;
+  }
+
   return (
     <div className="min-h-full box-border px-[48px] pt-[20px] pb-[43px] max-[900px]:px-[16px]">
       <AppHeader className="mb-[16px]" onLogout={onLogout} userName={currentUser?.username} title="Agent 广场" />
@@ -51,7 +66,7 @@ export default function AgentAppPage({ currentUser, onLogout }: AgentAppPageProp
             : '清单里没有这个 Agent，可能已被移除。'}
         </span>
         <UIButton
-          onClick={() => navigate('/enterprise/platform/agent-apps')}
+          onClick={() => navigate(AGENT_APPS_PLAZA_PATH)}
           className="h-8 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]"
         >
           返回 Agent 广场

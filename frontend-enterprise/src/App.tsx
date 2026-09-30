@@ -42,7 +42,6 @@ import ChannelsPage from "./pages/ChannelsPage";
 import ChatPage from "./pages/chat/ChatPage";
 import ChatGalleryPage from "./pages/chat/ChatGalleryPage";
 import DashboardPage from "./pages/dashboard/DashboardPage";
-import AiReviewerPage from "./pages/ai-review/AiReviewerPage";
 import AgentAppPage from "./pages/agentApps/AgentAppPage";
 import EmptyEmployeeState from "./components/EmptyEmployeeState";
 import DistillPage from "./pages/DistillPage";
@@ -814,14 +813,9 @@ function Shell({
               />
               <Route
                 path="/enterprise/ai-reviewer"
-                // AI CodeReviewer 暂只对管理员开放：侧边栏隐藏入口 + 路由挡一层
-                element={
-                  isAdmin ? (
-                    <AiReviewerPage currentUser={auth.user} onLogout={onLogout} />
-                  ) : (
-                    <Navigate to={EnterpriseRoute.Platform} replace />
-                  )
-                }
+                // AI CodeReviewer 已移入 Agent 广场清单（adminOnly 条目）；旧地址保留一层重定向，
+                // 管理员可见性由 AgentAppPage 里的 adminOnly 守卫兜底
+                element={<Navigate to="/enterprise/agent-apps/code-reviewer" replace />}
               />
               <Route
                 path="/enterprise/tools"

@@ -64,6 +64,32 @@ describe('Agent 清单', () => {
     expect(entry?.prompt).toBe('');
   });
 
+  it('随包发布包含 AI CodeReviewer（code-review 能力，adminOnly）', () => {
+    const entry = findAgentCatalogEntry('code-reviewer');
+    expect(entry).not.toBeNull();
+    expect(entry?.capability).toBe('code-review');
+    expect(entry?.adminOnly).toBe(true);
+  });
+
+  it('adminOnly 条目只进管理员视角的列表', () => {
+    const memberList = listAgentCatalog(false);
+    const adminList = listAgentCatalog(true);
+    expect(memberList.some((row) => row.entry === 'code-reviewer')).toBe(false);
+    expect(adminList.some((row) => row.entry === 'code-reviewer')).toBe(true);
+    // 非条目级别的过滤对两个视角一致：都是在线条目
+    expect(memberList.every((row) => row.status === 'active')).toBe(true);
+    expect(adminList.every((row) => row.status === 'active')).toBe(true);
+  });
+
+  it('adminOnly 字段缺失时按普通条目处理', () => {
+    const [row] = normalizeAgentCatalog([{ id: 'a', name: 'A', entry: 'a' }]);
+    expect(row.adminOnly).toBe(false);
+    const [explicit] = normalizeAgentCatalog([
+      { id: 'b', name: 'B', entry: 'b', admin_only: true },
+    ]);
+    expect(explicit.adminOnly).toBe(true);
+  });
+
   it('entry 与 id 都能命中同一条目', () => {
     const byEntry = findAgentCatalogEntry('slides-maker');
     const byId = findAgentCatalogEntry(byEntry!.id);

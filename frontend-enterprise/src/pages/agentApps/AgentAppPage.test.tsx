@@ -19,6 +19,8 @@ const user: EnterpriseAuthUser = {
   role: 'member',
 };
 
+const adminUser: EnterpriseAuthUser = { ...user, id: 'user-admin', username: 'admin', role: 'admin' };
+
 function modelConfig(overrides: Partial<ModelConfigRead> = {}): ModelConfigRead {
   return {
     id: 'model-1',
@@ -56,12 +58,14 @@ function jsonResponse(body: unknown): Response {
   } as Response;
 }
 
-function renderPage(entryId = 'slides-maker') {
+function renderPage(entryId = 'slides-maker', currentUser: EnterpriseAuthUser = user) {
   return render(
     <I18nProvider>
       <MemoryRouter initialEntries={[`/enterprise/agent-apps/${entryId}`]}>
         <Routes>
-          <Route path="/enterprise/agent-apps/:entryId" element={<AgentAppPage currentUser={user} />} />
+          <Route path="/enterprise/agent-apps/:entryId" element={<AgentAppPage currentUser={currentUser} />} />
+          {/* adminOnly 深链守卫会把普通成员弹回广场，这里给个落点方便断言 */}
+          <Route path="/enterprise/platform/agent-apps" element={<div>Agent 广场列表</div>} />
         </Routes>
       </MemoryRouter>
     </I18nProvider>,
@@ -366,6 +370,23 @@ describe('AgentAppPage', () => {
     expect(await screen.findByText('Agent 广场 · 决策助手')).toBeTruthy();
     expect(await screen.findByRole('button', { name: /API 接入/ })).toBeTruthy();
     expect(await screen.findByText('← 返回 Agent 广场')).toBeTruthy();
+  });
+
+  it('AI CodeReviewer 走 code-review 能力分发，外壳与其他 Agent 统一', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([])));
+    renderPage('code-reviewer', adminUser);
+
+    // 页面标题（AppHeader，与其他 Agent 统一口径）与右上角返回入口都在
+    expect(await screen.findByText('Agent 广场 · AI CodeReviewer')).toBeTruthy();
+    expect(await screen.findByText('← 返回 Agent 广场')).toBeTruthy();
+  });
+
+  it('AI CodeReviewer 是 adminOnly：普通成员深链直进会被弹回广场', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([])));
+    renderPage('code-reviewer');
+
+    expect(await screen.findByText('Agent 广场列表')).toBeTruthy();
+    expect(screen.queryByText('Agent 广场 · AI CodeReviewer')).toBeNull();
   });
 
   it('未知 entry 退化为提示页而不是白屏', async () => {

@@ -24,8 +24,15 @@ export type AgentCatalogEntry = {
   tags: string[];
   /** 工作台路由 key：`/enterprise/agent-apps/:entryId`。 */
   entry: string;
-  /** 服务端能力标识，前端据此选择工作台实现（`slides` / `decision`，未知能力给提示页）。 */
+  /** 服务端能力标识，前端据此选择工作台实现（`slides` / `doc-review` / `decision` / `code-review`，未知能力给提示页）。 */
   capability: string;
+  /**
+   * 仅管理员可见（如 AI CodeReviewer）。
+   *
+   * 广场列表按 `listAgentCatalog(isAdmin)` 过滤；工作台路由在 AgentAppPage 里再挡一层，
+   * 防止深链直进。普通成员对这类条目完全无感。
+   */
+  adminOnly: boolean;
   /**
    * 该 Agent 预留的固定口径 prompt（如「旅文汇报样式」）。
    *
@@ -83,6 +90,7 @@ export function normalizeAgentCatalog(input: unknown): AgentCatalogEntry[] {
       tags: asTags(record.tags),
       entry,
       capability: asText(record.capability),
+      adminOnly: record.admin_only === true,
       prompt: asText(record.prompt),
       status,
     });
@@ -92,9 +100,14 @@ export function normalizeAgentCatalog(input: unknown): AgentCatalogEntry[] {
 
 export const AGENT_CATALOG: AgentCatalogEntry[] = normalizeAgentCatalog(rawCatalog);
 
-/** 广场列表用：只展示在线的 Agent。 */
-export function listAgentCatalog(): AgentCatalogEntry[] {
-  return AGENT_CATALOG.filter((entry) => entry.status === 'active');
+/**
+ * 广场列表用：只展示在线的 Agent。
+ *
+ * `adminOnly` 条目只在管理员视角出现；调用方（开放广场页 / 使用页守卫）必须把当前用户的
+ * 管理员身份传进来，缺省按非管理员处理 —— 宁可少展示也不能多展示。
+ */
+export function listAgentCatalog(isAdmin = false): AgentCatalogEntry[] {
+  return AGENT_CATALOG.filter((entry) => entry.status === 'active' && (!entry.adminOnly || isAdmin));
 }
 
 export function findAgentCatalogEntry(entryId: string | undefined): AgentCatalogEntry | null {

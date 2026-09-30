@@ -41,6 +41,20 @@
       "entry": "decision-assistant",
       "capability": "decision",
       "status": "active"
+    },
+    {
+      "id": "code-reviewer",
+      "name": "AI CodeReviewer",
+      "summary": "把仓库的 PR / MR 交给异步评审队列，完成后查看逐行评审意见，可一键回写平台评论区。",
+      "description": "面向研发团队的代码评审 Agent。左侧配置 GitHub / GitLab workspace，右侧实时拉取 open 状态的 PR / MR 逐个发起异步评审；任务由后台队列执行，完成后查看逐行评审意见并支持回写平台。支持全局评审预设与自定义规则文件，仅管理员可见。",
+      "author": "黄松",
+      "updated_at": "2026-09-30",
+      "category": "代码评审",
+      "tags": ["PR/MR", "异步评审", "研发效能"],
+      "entry": "code-reviewer",
+      "capability": "code-review",
+      "admin_only": true,
+      "status": "active"
     }
   ]
 }

@@ -83,6 +83,7 @@ const entry = {
   tags: [],
   entry: 'doc-reviewer',
   capability: 'doc-review',
+  adminOnly: false,
   status: 'active' as const,
   prompt: '',
 };

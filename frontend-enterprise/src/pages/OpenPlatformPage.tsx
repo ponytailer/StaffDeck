@@ -396,7 +396,8 @@ export default function OpenPlatformPage({
   const platformItems = useMemo<Record<PlatformKind, PlatformItem[]>>(() => ({
     // Agent 广场的数据来自本地清单文件（src/data/agent-catalog.json），不请求后端：
     // 这批 Agent 是平台统一定制的，成员只能使用不能编辑，列表口径不随用户变化。
-    'agent-apps': listAgentCatalog().map((entry) => ({
+    // 唯一的例外是 adminOnly 条目（如 AI CodeReviewer），只进管理员视角。
+    'agent-apps': listAgentCatalog(isAdmin).map((entry) => ({
       id: entry.entry,
       deleteKey: entry.entry,
       title: entry.name,
@@ -464,7 +465,7 @@ export default function OpenPlatformPage({
         meta: `${item.bucket || '工具'} / ${item.tool_type.toUpperCase()}`,
         tags: [item.method, item.enabled ? '已启用' : '已停用'],
       })),
-  }), [generalSkills, knowledgeBases, skills, tools, visibleAgents]);
+  }), [generalSkills, knowledgeBases, isAdmin, skills, tools, visibleAgents]);
 
   const filteredItems = useMemo(() => {
     const items = platformItems[activeKind];

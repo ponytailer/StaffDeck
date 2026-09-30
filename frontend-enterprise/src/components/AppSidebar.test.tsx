@@ -267,13 +267,9 @@ describe('AppSidebar primary navigation', () => {
     expect(screen.queryByText('决策助手')).toBeNull();
   });
 
-  it('AI CodeReviewer 对普通成员隐藏，对管理员可见', () => {
-    renderManagementSidebar(undefined, { isAdmin: false });
-    expect(screen.queryByText('AI CodeReviewer')).toBeNull();
-
-    cleanup();
+  it('AI CodeReviewer 不在侧边栏：入口已移入 Agent 广场清单（adminOnly 条目）', () => {
     renderManagementSidebar(undefined, { isAdmin: true });
-    expect(screen.getByText('AI CodeReviewer')).toBeTruthy();
+    expect(screen.queryByText('AI CodeReviewer')).toBeNull();
   });
 
   it('账号管理不在侧边栏：已并入 API Key 审批页的用户管理 tab', () => {

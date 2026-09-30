@@ -82,14 +82,18 @@ function requestedPaths(fetchMock: ReturnType<typeof stubPlatformFetch>): string
   return fetchMock.mock.calls.map((call) => String(call[0]));
 }
 
-function renderPlatform(initialPath = '/enterprise/platform/agents', currentUser = admin) {
+function renderPlatform(
+  initialPath = '/enterprise/platform/agents',
+  currentUser = admin,
+  isAdmin = true,
+) {
   return render(
     <I18nProvider>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route
             path="/enterprise/platform/:kind"
-            element={<OpenPlatformPage currentUser={currentUser} isAdmin />}
+            element={<OpenPlatformPage currentUser={currentUser} isAdmin={isAdmin} />}
           />
         </Routes>
       </MemoryRouter>
@@ -247,6 +251,19 @@ describe('Agent 广场', () => {
     expect(await screen.findByRole('button', { name: '立即使用' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '删除' })).toBeNull();
     expect(screen.getByText(/只能使用、不能编辑或删除/)).toBeTruthy();
+  });
+
+  it('AI CodeReviewer 是 adminOnly 条目：管理员可见，普通成员看不到', async () => {
+    stubPlatformFetch();
+    renderPlatform('/enterprise/platform/agent-apps');
+    expect(await screen.findByText('AI CodeReviewer')).toBeTruthy();
+    cleanup();
+
+    const member: EnterpriseAuthUser = { ...admin, id: 'user-member', username: 'member', role: 'member' };
+    stubPlatformFetch();
+    renderPlatform('/enterprise/platform/agent-apps', member, false);
+    expect(await screen.findByText(slidesEntry.name)).toBeTruthy();
+    expect(screen.queryByText('AI CodeReviewer')).toBeNull();
   });
 
   it('Agent 广场是纯本地数据，不请求后端列表接口', async () => {

@@ -34,6 +34,7 @@ import {
 import { ApiError } from '../../api/client';
 import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import AgentAppBackButton from '../agentApps/AgentAppBackButton';
 import {
   PLATFORM_META,
   TASK_STATUS_META,
@@ -111,10 +112,11 @@ function ListPager({
 }
 
 export function SectionCard({ children, className }: { children: React.ReactNode; className?: string }) {
+  // Agent 广场工作台外壳里内容直接坐在定高大白卡上，这里只负责分组间距（原来是自带边框的独立小卡）。
   return (
     <section
       className={cn(
-        'flex flex-col gap-[14px] rounded-[20px] border-[0.5px] border-[#e3e7f1] bg-white px-[20px] py-[18px]',
+        'flex flex-col gap-[14px]',
         className,
       )}
     >
@@ -574,9 +576,9 @@ export default function AiReviewerPage({
   currentUser,
   onLogout,
 }: {
-  currentUser: EnterpriseAuthUser;
-  onLogout: () => void;
-}) {
+  currentUser?: EnterpriseAuthUser;
+  onLogout?: () => void;
+} = {}) {
   const [workspaces, setWorkspaces] = useState<AiReviewWorkspace[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -742,17 +744,25 @@ export default function AiReviewerPage({
   }, [inFlightSignature]);
 
   return (
-    <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
+    <div className="min-h-full box-border px-[48px] pt-[20px] pb-[43px] max-[900px]:px-[16px]">
       <AppHeader
-        className="items-center"
+        className="mb-[16px]"
         onLogout={onLogout}
         userName={currentUser?.username}
-        title="AI CodeReviewer"
-        description="把仓库的 PR / MR 交给异步评审队列，完成后回来查看逐行评审意见"
+        title="Agent 广场 · AI CodeReviewer"
       />
 
-      <div className="mt-[20px] grid items-start gap-[16px] xl:grid-cols-[300px_minmax(0,1fr)]">
-        <SectionCard>
+      {/* 与 PPT Studio / 决策助手统一的工作台外壳：一张定高大白卡，栏内各自滚动 */}
+      <div className="flex h-[calc(100vh-190px)] min-h-[560px] flex-col gap-[14px] rounded-[20px] bg-white p-[16px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+        {/* 标题信息交给页头，卡片内只留右上角返回入口 */}
+        <div className="flex flex-wrap items-center justify-end gap-[10px]">
+          <AgentAppBackButton />
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-[14px] xl:flex-row">
+          {/* 左栏：workspace 固定宽，栏内滚动 */}
+          <div className="flex min-h-0 flex-col xl:w-[300px] xl:shrink-0 xl:border-r-[0.5px] xl:border-[#eef0f5] xl:pr-[16px]">
+            <SectionCard className="min-h-0 flex-1 overflow-y-auto">
           <div className="flex flex-wrap items-center justify-between gap-[10px]">
             <GroupTitle
               icon={<GitBranch className="size-[14px] shrink-0" />}
@@ -809,7 +819,7 @@ export default function AiReviewerPage({
           )}
 
           {selected && (
-            <div className="rounded-[12px] bg-[#fafbfd] px-[12px] py-[10px] text-[11px] leading-[16px] text-[#a3aaba]">
+            <div className="shrink-0 rounded-[12px] bg-[#fafbfd] px-[12px] py-[10px] text-[11px] leading-[16px] text-[#a3aaba]">
               <span className="font-mono">{selected.repo_url}</span>
               <div className="mt-[2px]">
                 默认分支 <span className="font-mono text-[#757f9c]">{selected.default_branch}</span> ·{' '}
@@ -817,22 +827,24 @@ export default function AiReviewerPage({
               </div>
             </div>
           )}
-        </SectionCard>
+            </SectionCard>
+          </div>
 
-        {!selected ? (
-          <SectionCard className="items-center justify-center py-[60px]">
-            <div className="flex flex-col items-center gap-[10px] text-center">
-              <span className="grid size-[44px] place-items-center rounded-[14px] bg-[#f3f4f6] text-[#a3aaba]">
-                <GitBranch className="size-[20px]" />
-              </span>
-              <p className="text-[13px] font-medium text-[#464c5e]">选择左侧 workspace 后开始评审</p>
-              <p className="text-[12px] text-[#757f9c]">
-                右侧会展示该仓库 open 状态的 PR / MR，逐个发起异步评审。
-              </p>
-            </div>
-          </SectionCard>
-        ) : (
-          <div className="flex flex-col gap-[16px]">
+          {/* 右栏：待评审 PR/MR 与评审任务，栏内滚动 */}
+          {!selected ? (
+            <SectionCard className="min-h-0 flex-1 items-center justify-center py-[60px]">
+              <div className="flex flex-col items-center gap-[10px] text-center">
+                <span className="grid size-[44px] place-items-center rounded-[14px] bg-[#f3f4f6] text-[#a3aaba]">
+                  <GitBranch className="size-[20px]" />
+                </span>
+                <p className="text-[13px] font-medium text-[#464c5e]">选择左侧 workspace 后开始评审</p>
+                <p className="text-[12px] text-[#757f9c]">
+                  右侧会展示该仓库 open 状态的 PR / MR，逐个发起异步评审。
+                </p>
+              </div>
+            </SectionCard>
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col gap-[16px] overflow-y-auto">
             <SectionCard>
               <div className="flex flex-wrap items-center justify-between gap-[10px]">
                 <GroupTitle
@@ -926,8 +938,9 @@ export default function AiReviewerPage({
                 </>
               )}
             </SectionCard>
-          </div>
-        )}
+            </div>
+          )}
+      </div>
       </div>
 
       <AiReviewWorkspaceDialog
