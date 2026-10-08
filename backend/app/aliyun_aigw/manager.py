@@ -244,14 +244,12 @@ class AliyunApigClient:
         gateway_id: str,
         rule_id: str,
         rule_name: str | None = None,
-        period_type: str | None = None,
     ) -> None:
-        """更新配额规则元信息（名称/周期）。"""
+        """更新配额规则元信息（目前仅名称；periodType 创建后云端不可改）。"""
         quota.update_quota_rule(
             rule_id,
             gateway_id=gateway_id,
             rule_name=rule_name,
-            period_type=period_type,
         )
 
     def update_consumer(

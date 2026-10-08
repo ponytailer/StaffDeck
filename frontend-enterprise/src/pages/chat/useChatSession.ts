@@ -734,6 +734,23 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     void loadAgents();
   }, [loadAgents]);
 
+  // 免费员工对话完成后回填「今日剩余 X 问」：只刷新 free_model_remaining，不打扰花名册其余状态
+  const refreshFreeQuota = useCallback(async () => {
+    try {
+      const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`);
+      setAgents((current) => {
+        if (!current.some((row) => row.free_model_enabled)) return current;
+        return current.map((row) => {
+          if (!row.free_model_enabled) return row;
+          const match = rows.find((item) => item.id === row.id);
+          return match ? { ...row, free_model_remaining: match.free_model_remaining } : row;
+        });
+      });
+    } catch {
+      // 静默失败：剩余次数属附属展示信息
+    }
+  }, [tenantId]);
+
   // 团队花名册：用于侧栏团队会话行标明 TL 身份
   useEffect(() => {
     let cancelled = false;
@@ -903,14 +920,15 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [tenantId]);
 
   useEffect(() => {
-    if (!auth || modelConfigsLoading || modelConfigsLoadError || selectedModelConfig) return;
+    // 花名册未加载完时不判断：此时 displayedAgent 为空，免费标记读不到，会误弹对话框
+    if (!auth || !agentsLoaded || modelConfigsLoading || modelConfigsLoadError || selectedModelConfig) return;
     // 免费员工不弹模型配置对话框：无模型也能对话（后端走全局免费模型）
     if (displayedAgent?.free_model_enabled) return;
     const onboardingSeen = window.localStorage.getItem(ONBOARDING_SEEN_KEY);
     const quickStartSeen = window.localStorage.getItem(QUICK_START_SEEN_KEY);
     if (!onboardingSeen || !quickStartSeen) return;
     setModelSetupOpen(true);
-  }, [auth, modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, displayedAgent]);
+  }, [auth, agentsLoaded, modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, displayedAgent]);
 
   const toggleTrace = useCallback((turnId: string, isExpanded = false) => {
     if (isExpanded) {
@@ -2561,6 +2579,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       ));
       notifyStream();
       loadSessions();
+      void refreshFreeQuota();
       window.setTimeout(() => {
         loadMessages(eventSessionId);
         loadTraces(eventSessionId);
@@ -2612,6 +2631,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     loadTraces,
     notifyStore,
     notifyStream,
+    refreshFreeQuota,
     selectedModelConfigId,
     notifyTrace,
     ensureStreamingTraceMessage,
@@ -3666,7 +3686,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     if (!nextTurn) return;
     if (sessionsLoading) return;
     if (modelConfigsLoading || modelConfigsLoadError) return;
-    if (!selectedModelConfig) {
+    // 免费员工：无自己的模型也能继续排队消息（后端走全局免费模型），不弹配置对话框
+    if (!selectedModelConfig && displayedAgent?.free_model_enabled !== true) {
       if (canConfigureModels) setModelSetupOpen(true);
       return;
     }
@@ -3698,6 +3719,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     executePreparedTurn,
     getStreamSlot,
     canConfigureModels,
+    displayedAgent,
     modelConfigsLoadError,
     modelConfigsLoading,
     notifyQueue,

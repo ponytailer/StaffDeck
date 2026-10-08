@@ -619,7 +619,7 @@ export default function ApiKeyApprovalsPage({
         tenant_id: TENANT_ID,
         name: editRuleName.trim() || undefined,
         quota_limit: limit,
-        period_type: editRulePeriod,
+        // 周期创建后云端不可改（UpdateGatewayQuotaRule 无此字段），编辑不携带
         add_group_ids: addGroupIds,
         remove_group_ids: removeGroupIds,
       });
@@ -2202,16 +2202,11 @@ export default function ApiKeyApprovalsPage({
           </label>
           <label className="flex flex-col gap-[6px]">
             <span className="text-[12px] font-medium text-[#464c5e]">周期</span>
-            <Select value={editRulePeriod} onValueChange={(v) => setEditRulePeriod(v as 'day' | 'week' | 'month')}>
-              <SelectTrigger className="h-[34px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="day">自然日</SelectItem>
-                <SelectItem value="week">自然周</SelectItem>
-                <SelectItem value="month">自然月</SelectItem>
-              </SelectContent>
-            </Select>
+            {/* periodType 创建后云端不可改，编辑时只读展示 */}
+            <div className="flex h-[34px] items-center rounded-[8px] border border-[#eceef1] bg-[#f6f6f6] px-[12px] text-[12px] text-[#757f9c]">
+              {PERIOD_LABEL[editRulePeriod] ?? editRulePeriod}
+              <span className="ml-auto text-[11px] text-[#a3aaba]">创建后不可修改</span>
+            </div>
           </label>
           <div className="flex flex-col gap-[6px]">
             <span className="text-[12px] font-medium text-[#464c5e]">绑定消费组</span>

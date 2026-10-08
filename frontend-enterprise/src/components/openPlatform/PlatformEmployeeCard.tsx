@@ -61,7 +61,17 @@ export default function PlatformEmployeeCard({
                 {avatar}
               </div>
               <div className="flex min-w-0 flex-col items-start justify-center gap-[4px]">
-                <p className="truncate text-[14px] leading-[1.35] font-medium text-[#18181a]">{name}</p>
+                <p className="truncate text-[15px] leading-[1.35] font-medium text-[#18181a]">
+                  {typeof name === 'string' && name.includes(' @')
+                    ? (
+                      <>
+                        <span>{name.slice(0, name.indexOf(' @'))}</span>
+                        {/* 作者名比员工名小一号、弱化字重，仅作层级提示 */}
+                        <span className="text-[12px] font-normal">{name.slice(name.indexOf(' @'))}</span>
+                      </>
+                    )
+                    : name}
+                </p>
                 <p className="truncate text-[11px] leading-[1.6] text-[#757f9c]">{role}</p>
                 <span className="inline-flex w-[40px] items-center justify-center rounded-[90px] bg-white px-[5px] py-[2px]">
                   <span className="flex items-center gap-[3px]">

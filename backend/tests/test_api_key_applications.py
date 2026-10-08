@@ -212,9 +212,9 @@ class FakeApigClient:
         if rule_id in self.quota_rules:
             self.quota_rules[rule_id]["quotaLimit"] = quota_limit
 
-    def update_quota_rule_meta(self, gateway_id, rule_id, rule_name=None, period_type=None):
+    def update_quota_rule_meta(self, gateway_id, rule_id, rule_name=None):
         self.meta_updates.append(
-            {"gateway_id": gateway_id, "rule_id": rule_id, "rule_name": rule_name, "period_type": period_type}
+            {"gateway_id": gateway_id, "rule_id": rule_id, "rule_name": rule_name}
         )
 
     def delete_consumer(self, consumer_id):

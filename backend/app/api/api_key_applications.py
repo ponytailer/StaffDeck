@@ -1066,16 +1066,18 @@ def update_quota_rule_endpoint(
                 rule_id=rule_id,
                 quota_limit=request.quota_limit,
             )
-        if request.name is not None or request.period_type is not None:
+        # periodType 创建后云端不可改（UpdateGatewayQuotaRule 无此字段）：
+        # 请求想改周期 → 明确 400，而不是把不存在的参数透传出去炸 500
+        if request.period_type is not None and request.period_type != current.get("periodType"):
+            raise HTTPException(
+                status_code=400,
+                detail="配额周期创建后不可修改（阿里云网关限制）。如需变更周期，请删除该规则后重新创建",
+            )
+        if request.name is not None:
             client.update_quota_rule_meta(
                 gateway_id=gateway.gateway_id,
                 rule_id=rule_id,
-                rule_name=request.name if request.name is not None else current.get("ruleName"),
-                period_type=(
-                    request.period_type
-                    if request.period_type is not None
-                    else current.get("periodType")
-                ),
+                rule_name=request.name,
             )
         # 绑定消费组增删（组粒度主体；消费者主体请到阿里云控制台调整）
         for gid in request.add_group_ids:
