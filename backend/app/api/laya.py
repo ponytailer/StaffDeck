@@ -25,13 +25,13 @@ from __future__ import annotations
 
 import time
 from typing import Any, Literal
-from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from app.config import get_settings
+from app.core.laya_client import LayaError, health_url, predict_raw
 from app.security.auth import get_current_user
 
 router = APIRouter(
@@ -114,12 +114,15 @@ class LayaPredictResponse(BaseModel):
     answers: dict[str, Any]
     routing: dict[str, Any] | None = None
     elapsed_ms: float
+    # 上游地址回显，便于前端 / 排障确认这次请求到底打到了哪里
+    upstream_url: str | None = None
 
 
 class LayaHealthResponse(BaseModel):
     reachable: bool
     status: str | None = None
     message: str | None = None
+    upstream_url: str | None = None
 
 
 class LayaApiAccessResponse(BaseModel):
@@ -130,14 +133,6 @@ class LayaApiAccessResponse(BaseModel):
     docs_path: str
     # 来自 PUBLIC_BASE_URL；为空表示未配置，前端回退到当前 origin
     public_base_url: str
-
-
-def _health_url(predict_url: str) -> str:
-    parts = urlsplit(predict_url)
-    path = parts.path.rstrip("/")
-    if path.endswith("/predict"):
-        path = path[: -len("/predict")]
-    return urlunsplit((parts.scheme, parts.netloc, f"{path}/health", "", ""))
 
 
 def _upstream_payload(request: LayaPredictRequest) -> dict[str, Any]:
@@ -154,18 +149,6 @@ def _upstream_payload(request: LayaPredictRequest) -> dict[str, Any]:
     return payload
 
 
-def _describe_http_error(exc: httpx.HTTPStatusError) -> str:
-    detail = ""
-    try:
-        body = exc.response.json()
-        if isinstance(body, dict):
-            detail = str(body.get("detail") or body.get("message") or "")
-    except ValueError:
-        detail = exc.response.text[:300]
-    suffix = f"：{detail}" if detail else ""
-    return f"Laya 决策服务返回 {exc.response.status_code}{suffix}"
-
-
 @router.post("/predict", response_model=LayaPredictResponse)
 def predict(request: LayaPredictRequest) -> LayaPredictResponse:
     return execute_predict(request)
@@ -177,45 +160,32 @@ def execute_predict(request: LayaPredictRequest) -> LayaPredictResponse:
     企业端（登录态）与开放 API（`sd_live_*` 密钥）共用这一份实现：
     开放 API 侧的 HTTPException 会由 `public_http_error_handler` 转成
     RFC7807 problem+json，前端企业端则拿到既有格式。
+    真实出站实现收敛在 `app/core/laya_client.predict_raw`，与 SOP 走向旁路
+    (`app/core/laya_router.py`) 共享同一份网络层。
     """
     settings = get_settings()
-    url = settings.laya_predict_url
     payload = _upstream_payload(request)
     started = time.perf_counter()
     try:
-        with httpx.Client(timeout=settings.laya_timeout_seconds) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
-            body = response.json()
-    except httpx.TimeoutException as exc:
-        raise HTTPException(
-            status_code=504,
-            detail=f"Laya 决策服务超时（{settings.laya_timeout_seconds:g}s），可缩小问题范围后重试",
-        ) from exc
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=502, detail=_describe_http_error(exc)) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"无法连接 Laya 决策服务（{url}）：{exc}"
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="Laya 决策服务返回了非 JSON 响应") from exc
+        body = predict_raw(payload)
+    except LayaError as exc:
+        status_code = 504 if exc.kind == "timeout" else 502
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-    if not isinstance(body, dict) or not isinstance(body.get("answers"), dict):
-        raise HTTPException(status_code=502, detail="Laya 决策服务返回结构不符合预期")
     routing = body.get("routing")
     return LayaPredictResponse(
         answers=body["answers"],
         routing=routing if isinstance(routing, dict) else None,
         elapsed_ms=body.get("elapsed_ms") or elapsed_ms,
+        upstream_url=settings.laya_predict_url,
     )
 
 
 @router.get("/health", response_model=LayaHealthResponse)
 def health() -> LayaHealthResponse:
     settings = get_settings()
-    url = _health_url(settings.laya_predict_url)
+    url = health_url(settings.laya_predict_url)
     try:
         with httpx.Client(timeout=min(settings.laya_timeout_seconds, 10.0)) as client:
             response = client.get(url)
@@ -228,6 +198,7 @@ def health() -> LayaHealthResponse:
     return LayaHealthResponse(
         reachable=True,
         status=str(body.get("status")) if isinstance(body, dict) else "ok",
+        upstream_url=url,
     )
 
 

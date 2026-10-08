@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     # 会被预检拦掉；同时地址属服务端内网，不应出现在前端产物里。
     laya_predict_url: str = "http://8.153.146.109:8080/predict"
     laya_timeout_seconds: float = 60.0
+    # ---- Laya 决策头接入 SOP 走向决策 ----
+    # 默认关闭：不开启时场景 L 的 guard 不通过，运行路径与改造前完全一致。
+    laya_sop_routing_enabled: bool = False
+    # P0 影子模式：只计算并记录 Laya 的判定，不真正改变路由（用于先看一致率）。
+    laya_sop_shadow_mode: bool = True
+    # choice/score 赢家概率、noul 的 max(p,1-p)，低于该值一律回退主模型。
+    laya_min_confidence: float = 0.7
+    # 路由专用短超时：与页面「决策助手」的 60s 分开，避免拖慢对话链路。
+    laya_sop_timeout_seconds: float = 6.0
+    # 连续失败达到该次数后本帧熔断，后续节点直接回退 LLM。
+    laya_sop_circuit_breaker_failures: int = 3
     # 对外可访问的站点基址（`PUBLIC_BASE_URL`），用于生成开放 API 的调用示例。
     # 部署在域名 / 公网 IP 后面时填它，决策助手页面「API 接入」里的示例就会用该地址；
     # 留空则前端回退成浏览器当前 origin（本地开发即 http://127.0.0.1:5173）。

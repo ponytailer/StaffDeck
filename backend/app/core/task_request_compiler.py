@@ -266,19 +266,30 @@ def _transitions(skill: Skill | None, current_node: dict[str, Any] | None) -> li
     if skill is None or current_node is None:
         return []
     node_id = str(current_node.get("node_id") or current_node.get("step_id") or "").strip()
+    # 目标节点名：让 Laya 出边决策的 criteria 可读（「进入『二级审批』」
+    # 而不是裸露的 node_id）。纯增量字段，不参与任何现有判定。
+    content = skill.content_json or {}
+    node_names = {
+        str(node.get("node_id") or node.get("step_id") or "").strip(): str(node.get("name") or "").strip()
+        for node in (content.get("nodes") or [])
+        if isinstance(node, dict)
+    }
     transitions: list[dict[str, Any]] = []
-    for edge in (skill.content_json or {}).get("edges") or []:
+    for edge in content.get("edges") or []:
         if not isinstance(edge, dict):
             continue
         if str(edge.get("source_node_id") or "").strip() != node_id:
             continue
-        transitions.append(
-            {
-                key: edge.get(key)
-                for key in ("next_node_id", "condition", "label", "priority")
-                if edge.get(key) not in (None, "")
-            }
-        )
+        item = {
+            key: edge.get(key)
+            for key in ("next_node_id", "condition", "label", "priority")
+            if edge.get(key) not in (None, "")
+        }
+        next_node_id = str(edge.get("next_node_id") or "").strip()
+        next_node_name = node_names.get(next_node_id) or ""
+        if next_node_name:
+            item["next_node_name"] = next_node_name
+        transitions.append(item)
     return transitions
 
 

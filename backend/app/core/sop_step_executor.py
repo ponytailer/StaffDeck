@@ -64,6 +64,7 @@ def plan_sop_prefill_actions(
     slot_extraction_model: Any = None,
     edge_condition_specs: Mapping[str, Any] | None = None,
     slot_submission: Mapping[str, Any] | None = None,
+    laya_router: Any = None,
 ) -> list[dict[str, Any]]:
     """为 sop TaskRequirement 产出确定性动作序列；不可判定时返回空列表。
 
@@ -86,6 +87,9 @@ def plan_sop_prefill_actions(
     侧按技能加载（``app/skills/edge_condition_jobs`` 的编译产物）。**不放进
     TaskRequirement**——那份对象每轮都会整包发给模型，塞进去会白白撑大
     prompt。缺省/为空时全部退回场景 D 与 LLM 决策，行为与改造前一致。
+
+    laya_router：可选的 Laya 出边决策旁路（``app/core/laya_router.py``）。
+    为 None / 未启用时场景 L 的 guard 不通过，行为与改造前完全一致。
     """
 
     try:
@@ -111,6 +115,7 @@ def plan_sop_prefill_actions(
             slot_extraction_model=slot_extraction_model,
             edge_condition_specs=edge_condition_specs,
             slot_submission=slot_submission,
+            laya_router=laya_router,
         )
         for scene in SCENES:
             if not scene.guard(ctx):

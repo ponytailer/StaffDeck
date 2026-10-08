@@ -74,6 +74,8 @@ class SceneContext:
     slot_extraction_model: Any
     edge_condition_specs: Mapping[str, Any] | None
     slot_submission: Mapping[str, Any] | None
+    # 场景 L：Laya 出边决策旁路（未启用/影子模式时为 None 或 enabled=False）
+    laya_router: Any = None
 
     _fresh_slots: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _merged_slots: dict[str, Any] | None = field(default=None, init=False, repr=False)
@@ -836,6 +838,61 @@ class DDecision:
         )
 
 
+class LayaEdgeDecision:
+    """场景 L：确定性求值判不了时，用 Laya 决策头做一次出边抉择。
+
+    放在 D 之后、G/B 之前。guard 已复刻场景 G 的前提（能确定性唯一命中
+    就不打扰 Laya），所以这里只需处理「真正需要语义判断」的边。
+    影子模式返回 None（不改路由），只把判定结果写进 trace，供先看一致率。
+    """
+
+    name = "L_laya_edge_decision"
+
+    @classmethod
+    def guard(cls, ctx: SceneContext) -> bool:
+        router = ctx.laya_router
+        if router is None or not getattr(router, "enabled", False):
+            return False
+        # 缺槽由场景 A 负责；必检索未完成不能抢在检索前选路
+        if ctx.required_slots:
+            return False
+        satisfied = ctx.satisfied_required_knowledge_ids or set()
+        if any(kb not in satisfied for kb in ctx.required_knowledge_ids):
+            return False
+        edges = ctx.edge_conditions
+        # 没有条件边（只有无条件边）→ 交给 B；能唯一判定 → 交给 G，都不用 Laya
+        if not any(not item.is_always for item in edges):
+            return False
+        if _route_direct_next(edges):
+            return False
+        return True
+
+    @classmethod
+    def run(cls, ctx: SceneContext) -> list[dict[str, Any]] | None:
+        router = ctx.laya_router
+        outcome = router.route_edges(ctx.requirement, ctx.edge_conditions, ctx.step)
+        if outcome is None:
+            return None
+        shadow = bool(getattr(router, "shadow", False))
+        decision = outcome.decision
+        actions: list[dict[str, Any]] = []
+        if decision is not None and not shadow:
+            action = _passthrough_action(ctx.step, decision.next_node_id)
+            if ctx.fresh_slots:
+                # A2 新值随直判落库，避免旧槽位继续存活（与 D/G/B 同口径）
+                action["slot_updates"] = ctx.fresh_slots
+            actions = [action]
+        _emit(
+            ctx.trace_sink,
+            "laya_edge_decision",
+            actions,
+            shadow=shadow,
+            **outcome.as_trace_payload(),
+        )
+        # 影子模式 / 未命中 / 低置信 → 返回 None，继续走 G/B 与主模型 LLM
+        return actions or None
+
+
 class GBPassthrough:
     """场景 G（结构化条件求值直判，零 LLM）+ 场景 B（纯流转直通）——
     兜底表项。A2 抽到的新值随 slot_updates 落库覆盖旧值。"""
@@ -868,6 +925,7 @@ SCENES: tuple[type, ...] = (
     ASlotFill,
     FHandoff,
     DDecision,
+    LayaEdgeDecision,
     GBPassthrough,
 )
 

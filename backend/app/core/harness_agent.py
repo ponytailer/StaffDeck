@@ -125,6 +125,7 @@ class HarnessTaskAgent:
         lightweight_model_config: ModelConfig | None = None,
         edge_condition_specs: dict[str, Any] | None = None,
         slot_submission: Mapping[str, Any] | None = None,
+        laya_router: Any = None,
     ) -> TaskExecutionResult:
         max_actions = max(1, min(int(max_actions), 100))
         checkpoint = dict(checkpoint or {})
@@ -207,6 +208,7 @@ class HarnessTaskAgent:
             slot_extraction_model=lightweight_model_config or model_config,
             edge_condition_specs=edge_condition_specs,
             slot_submission=slot_submission,
+            laya_router=laya_router,
         )
         if prefill_actions:
             pending_actions.extend(

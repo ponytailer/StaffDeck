@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from app.aigw_cache import get_json, set_json
+from app.config import get_settings
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
@@ -1224,6 +1225,9 @@ class HarnessV2Engine:
             active_skill,
             frame.kind,
         )
+        # Laya 出边决策旁路（P0/P1）：仅 sop 帧、且配置开启时构造；
+        # 默认关闭 / 影子模式下不改路由，行为与改造前一致。
+        laya_router = _build_laya_router(frame.kind)
         self.events.record(
             request.tenant_id,
             session.id,
@@ -1378,6 +1382,7 @@ class HarnessV2Engine:
                 checkpoint=loop_checkpoint,
                 lightweight_model_config=lightweight_model_config,
                 edge_condition_specs=edge_condition_specs,
+                laya_router=laya_router,
                 # A2UI：只有「本帧就是当前用户消息的落点」时才认表单提交，
                 # 否则同一轮里被唤醒的其它帧会共用一份不属于它的槽位值。
                 slot_submission=(
@@ -2431,6 +2436,32 @@ def _restore_session_state(
     session.context_state_json = deepcopy(state.get("context_state_json") or {})
     session.summary = state.get("summary")
     session.last_agent_question = state.get("last_agent_question")
+
+
+def _build_laya_router(frame_kind: str) -> Any:
+    """按配置构造 Laya 出边决策旁路；未开启或非 sop 帧返回 None。
+
+    每帧（每次 _run_frame）构造一个实例，熔断状态因此限定在单帧内，
+    下一帧自动恢复；独立短超时不影响页面「决策助手」的 60s 配置。
+    """
+
+    if frame_kind != "sop":
+        return None
+    settings = get_settings()
+    if not settings.laya_sop_routing_enabled:
+        return None
+    try:
+        from app.core.laya_router import LayaRouter
+    except Exception:  # noqa: BLE001 - 旁路不可用不影响主链路
+        logger.debug("Laya 旁路加载失败", exc_info=True)
+        return None
+    return LayaRouter(
+        enabled=True,
+        shadow=settings.laya_sop_shadow_mode,
+        min_confidence=settings.laya_min_confidence,
+        timeout=settings.laya_sop_timeout_seconds,
+        max_failures=settings.laya_sop_circuit_breaker_failures,
+    )
 
 
 def _load_edge_condition_specs(
