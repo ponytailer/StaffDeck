@@ -102,6 +102,7 @@ import {
   toTeamScope,
 } from "@/lib/agent-scope-storage";
 import { cn } from "@/lib/utils";
+import { useRouteReveal } from "./lib/motion";
 import {
   SELECT_TRIGGER_CLASS,
   DIALOG_CANCEL_BUTTON_CLASS,
@@ -143,6 +144,9 @@ function Shell({
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useI18n();
+  // 路由切换时给内容区一次淡入，避免页面「硬切」。仅动 opacity，
+  // 不加 transform，以免给页面里的 fixed/sticky 元素创建包含块。
+  const contentRef = useRouteReveal<HTMLDivElement>(location.pathname);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [scopeTeams, setScopeTeams] = useState<TeamRead[]>([]);
@@ -528,6 +532,7 @@ function Shell({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="sd1-content-island" data-island="double">
         <div
+          ref={contentRef}
           className={`content flex-1 ${isDistillRoute ? "flex min-h-0 flex-col overflow-hidden p-0!" : ""} ${selected === "/enterprise/dashboard" ? "sd1-dashboard-content" : ""} ${selected !== "/enterprise/dashboard" && !isDistillRoute ? "sd1-management-content" : ""}`}
         >
           {showModelSetupNotice && (

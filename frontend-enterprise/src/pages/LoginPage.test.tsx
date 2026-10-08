@@ -2,7 +2,7 @@
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ENTERPRISE_AUTH_STORAGE_KEY,
@@ -11,6 +11,23 @@ import {
 import { I18nProvider } from '../i18n';
 
 import LoginPage from './LoginPage';
+
+// jsdom 不实现 matchMedia，而登录页/预览动效要靠它判断 prefers-reduced-motion
+// 与精细指针。补一个最小实现，保持测试环境与浏览器一致。
+beforeEach(() => {
+  if (!window.matchMedia) {
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+  }
+});
 
 const session: EnterpriseAuthSession = {
   token: 'token-1',
@@ -78,6 +95,19 @@ describe('LoginPage', () => {
     // 无障碍名称里，避免读屏把「公司名 + 产品名」连读成一个词。
     expect(heading.textContent).toBe('地中海度假集团 AI 数字员工平台');
     expect(heading.childElementCount).toBe(2);
+  });
+
+  it('introduces the product with real on-duty staff and capabilities', () => {
+    renderLogin();
+
+    // 在岗播报用的是产品里真实存在的岗位与职责，不是占位文案。
+    expect(screen.getByText('市场 @admin')).toBeTruthy();
+    expect(screen.getByText('拆解目标、里程碑、责任人与风险')).toBeTruthy();
+    expect(screen.getByText('定义指标口径、分析周期与对比维度')).toBeTruthy();
+
+    for (const label of ['流程 SOP', '知识检索', '自主执行', '长期记忆']) {
+      expect(screen.getByText(label)).toBeTruthy();
+    }
   });
 
   it('toggles the password between hidden and visible text', async () => {

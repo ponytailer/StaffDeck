@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 
+import { MOTION, useStaggerReveal } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 
 import {
@@ -93,12 +94,20 @@ export function DataTable<T>({
   'aria-label': ariaLabel,
 }: DataTableProps<T>) {
   const hasData = data.length > 0;
+  // 数据就绪（加载态 → 有数据）时让行逐条淡入；只在首次为真时播放一次。
+  const rowsRef = useStaggerReveal<HTMLDivElement>(hasData, {
+    selector: 'tbody tr',
+    y: 6,
+    stagger: 22,
+    duration: MOTION.fast + 40,
+  });
   const fixedTableWidth = columns.every((column) => typeof column.width === 'number')
     ? columns.reduce((total, column) => total + (column.width as number), 0)
     : undefined;
 
   return (
     <div
+      ref={rowsRef}
       className={cn(
         'overflow-x-auto rounded-[14px] border border-[#f2f3f7]',
         className,

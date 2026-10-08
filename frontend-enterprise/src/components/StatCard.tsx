@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 
+import { useCountUp } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 
 export type StatCardTone = 'default' | 'green' | 'red';
@@ -36,6 +37,11 @@ export type StatCardProps = {
  * a rounded tinted surface with a large value and a trailing label.
  */
 export function StatCard({ value, label, tone = 'default', valueClassName, className }: StatCardProps) {
+  // 数值型指标从 0 滚到目标值；字符串（模型名、`—`、`98%`）保持原样渲染。
+  // `useCountUp` 必须无条件调用（hooks 规则），非数值时传 0 且不绑定 ref。
+  const numeric = typeof value === 'number' && Number.isFinite(value);
+  const countRef = useCountUp(numeric ? value : 0);
+
   return (
     <div
       className={cn(
@@ -45,7 +51,10 @@ export function StatCard({ value, label, tone = 'default', valueClassName, class
       )}
     >
       <div className="flex min-w-0 items-baseline gap-[6px]">
-        <span className={cn('shrink-0 text-[26px] font-semibold leading-none', VALUE_CLASS[tone], valueClassName)}>
+        <span
+          ref={numeric ? countRef : undefined}
+          className={cn('shrink-0 text-[26px] font-semibold leading-none', VALUE_CLASS[tone], valueClassName)}
+        >
           {value}
         </span>
         <span className={cn('truncate text-[14px] leading-none', LABEL_CLASS[tone])}>{label}</span>

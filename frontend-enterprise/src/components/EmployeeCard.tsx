@@ -99,8 +99,11 @@ export default function EmployeeCard({
       aria-pressed={selected}
       aria-busy={busy}
       className={cn(
-        'group relative flex h-full flex-col cursor-pointer overflow-visible rounded-[20px] border border-[#F6F6F6] bg-white py-[12px] px-[10px] transition-shadow',
-        '',
+        'group relative flex h-full flex-col cursor-pointer overflow-visible rounded-[20px] border border-[#F6F6F6] bg-white py-[12px] px-[10px]',
+        // 用 transform 而不是 Tailwind 的 translate 工具：全局 `[role=button]` 过渡列表
+        // 只覆盖 transform/box-shadow，用 translate 会被瞬时完成、没有抬升动画。
+        'hover:[transform:translateY(-3px)] hover:shadow-[0_16px_30px_0_rgba(0,0,0,0.10)]',
+        'motion-reduce:hover:[transform:none]',
         selected && 'shadow-[0_16px_30px_0_rgba(0,0,0,0.10)]',
       )}
     >

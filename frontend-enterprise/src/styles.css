@@ -7293,3 +7293,19 @@ body,
 }
 
 
+
+/* ==========================================================================
+   动效基座（src/lib/motion.ts）的 CSS 兜底：
+   prefers-reduced-motion 下把所有 CSS 动画/过渡压到瞬时，覆盖 Radix 弹层、
+   tw-animate-css、骨架屏等仍带位移/缩放的场景。JS 动效由 motion.ts 自行落终态。
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

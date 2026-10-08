@@ -37,7 +37,7 @@ export default function TeamCard({ team, agents, busy = false, onOpen }: TeamCar
           onOpen();
         }
       }}
-      className="flex cursor-pointer flex-col gap-[12px] rounded-[20px] border border-[#F6F6F6] bg-white p-[20px] transition-shadow hover:shadow-[0_16px_30px_0_rgba(0,0,0,0.10)]"
+      className="flex cursor-pointer flex-col gap-[12px] rounded-[20px] border border-[#F6F6F6] bg-white p-[20px] hover:[transform:translateY(-3px)] hover:shadow-[0_16px_30px_0_rgba(0,0,0,0.10)] motion-reduce:hover:[transform:none]"
     >
       <div className="flex items-start justify-between gap-[8px]">
         <span className="min-w-0 truncate text-[16px] font-medium text-[#18181a]" title={team.name}>

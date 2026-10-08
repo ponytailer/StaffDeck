@@ -21,6 +21,7 @@ import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
+import { RevealGroup } from '../components/RevealGroup';
 import {
   canManageEmployeeAgent,
   canSelectCurrentEmployeeAgent,
@@ -309,7 +310,10 @@ export default function AgentsPage({
         onChange={setEmployeeFilter}
         items={employeeTabs}
       />
-      <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
+      <RevealGroup
+        className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]"
+        itemCount={filteredEmployees.length}
+      >
         {filteredEmployees.map((employee) => (
           <EmployeeCard
             key={employee.id}
@@ -331,7 +335,7 @@ export default function AgentsPage({
         {!filteredEmployees.length && (
           <AgentsEmptyState />
         )}
-          </div>
+      </RevealGroup>
         </>
       ) : (
         <div className="mt-[24px]">

@@ -21,6 +21,7 @@ import type { EnterpriseAuthUser } from '../auth';
 import AppHeader from '../components/AppHeader';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatar from '../components/EmployeeAvatar';
+import { RevealGroup } from '../components/RevealGroup';
 import { EnterpriseRoute } from '../enums/routes';
 import { parseBackendDateTime } from '../lib/timezone';
 import type { AgentProfileRead, TeamRead, TeamThreadRead } from '../types';
@@ -368,7 +369,10 @@ export default function TeamsPage({
         );
       })()}
 
-      <div className="mt-[16px] grid grid-cols-1 content-start gap-[20px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+      <RevealGroup
+        className="mt-[16px] grid grid-cols-1 content-start gap-[20px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4"
+        itemCount={teams.length}
+      >
         {teams.map((team) => {
           const members = team.members || [];
           const leader = members.find((member) => member.role === 'leader') || null;
@@ -488,7 +492,7 @@ export default function TeamsPage({
             暂无团队，点击上方「创建新团队」开始
           </div>
         )}
-      </div>
+      </RevealGroup>
 
       <section aria-label="团队动态" className="mt-[24px] rounded-[20px] bg-white p-[20px] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
         <h2 className="mb-[12px] text-[16px] font-medium text-[#18181a]">团队动态</h2>

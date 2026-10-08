@@ -15,6 +15,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
+import { RevealGroup } from '../components/RevealGroup';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import TeamCard, { teamLeader } from '../components/TeamCard';
 import {
@@ -278,7 +279,10 @@ export default function EmployeeGalleryPage({
   // 「我的数字员工」还需要在下方挂「我创建的技能」维护区，所以把员工网格抽出来复用，
   // 避免在 mine / 其它两个 tab 之间复制同一段 JSX。
   const employeeGrid = (
-    <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
+    <RevealGroup
+      className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]"
+      itemCount={filteredEmployees.length}
+    >
       {filteredEmployees.map((employee) => (
         <EmployeeCard
           key={employee.id}
@@ -298,7 +302,7 @@ export default function EmployeeGalleryPage({
       {!filteredEmployees.length && (
         <EmployeeGalleryEmptyState title={emptyText} description={emptyDescription} />
       )}
-    </div>
+    </RevealGroup>
   );
 
   return (
@@ -335,7 +339,10 @@ export default function EmployeeGalleryPage({
 
       {scope === 'teams' ? (
         <section aria-label="团队">
-          <div className="grid grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
+          <RevealGroup
+            className="grid grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]"
+            itemCount={filteredTeams.length}
+          >
             {filteredTeams.map((team) => (
               <TeamCard
                 key={team.id}
@@ -348,7 +355,7 @@ export default function EmployeeGalleryPage({
             {!filteredTeams.length && (
               <EmployeeGalleryEmptyState title={teamsEmptyText} description={teamsEmptyDescription} />
             )}
-          </div>
+          </RevealGroup>
         </section>
       ) : scope === 'mine' ? (
         <>
