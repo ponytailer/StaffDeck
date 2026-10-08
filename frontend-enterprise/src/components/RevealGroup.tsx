@@ -14,6 +14,8 @@ export type RevealGroupProps = {
   y?: number;
   /** 子元素之间的 stagger 步长（ms）。 */
   stagger?: number;
+  /** 变化时重播一次入场（例如开放平台的 tab 切换）；留空则只在首次播放。 */
+  replayKey?: string | number;
   'aria-label'?: string;
 };
 
@@ -29,9 +31,10 @@ export function RevealGroup({
   itemCount,
   y = 12,
   stagger = 36,
+  replayKey,
   'aria-label': ariaLabel,
 }: RevealGroupProps) {
-  const ref = useStaggerReveal<HTMLDivElement>(itemCount > 0, { y, stagger });
+  const ref = useStaggerReveal<HTMLDivElement>(itemCount > 0, { y, stagger, replayKey });
 
   return (
     <div ref={ref} className={className} aria-label={ariaLabel}>

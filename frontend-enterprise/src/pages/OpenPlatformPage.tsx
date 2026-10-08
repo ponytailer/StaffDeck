@@ -8,6 +8,7 @@ import {
 } from '../icons';
 import { notify } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { RevealGroup } from '@/components/RevealGroup';
 import type { ComponentType, ReactNode, SVGProps } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -890,7 +891,11 @@ export default function OpenPlatformPage({
               <span>{platformItems[activeKind].length === 0 ? '暂无开放内容' : '没有匹配的广场内容'}</span>
             </div>
           ) : activeKind === 'agents' ? (
-            <div className="grid grid-cols-3 gap-[16px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
+            <RevealGroup
+              className="grid grid-cols-3 gap-[16px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1"
+              itemCount={filteredItems.length}
+              replayKey={activeKind}
+            >
               {filteredItems.map((item) => item.agent && (
                 <PlatformEmployeeCard
                   key={item.id}
@@ -916,9 +921,13 @@ export default function OpenPlatformPage({
                   unpublishing={deletingItemKey === platformItemDeleteKey(activeKind, item)}
                 />
               ))}
-            </div>
+            </RevealGroup>
           ) : (
-            <div className="grid grid-cols-3 gap-[16px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
+            <RevealGroup
+              className="grid grid-cols-3 gap-[16px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1"
+              itemCount={filteredItems.length}
+              replayKey={activeKind}
+            >
               {filteredItems.map((item) => (
                 <PlatformResourceCard
                   key={item.id}
@@ -933,7 +942,7 @@ export default function OpenPlatformPage({
                   onClick={() => setDetailItem({ kind: activeKind, item })}
                 />
               ))}
-            </div>
+            </RevealGroup>
           )}
         </div>
       </div>

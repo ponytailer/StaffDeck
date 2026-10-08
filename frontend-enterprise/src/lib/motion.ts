@@ -164,17 +164,28 @@ export function reveal(
  *
  * 只在 `enabled` 第一次为真、且容器里已经有子元素时播放一次；筛选、翻页导致的
  * 子元素增减不会再触发（`played` ref 锁住），避免列表反复「抖动」。
+ *
+ * 需要「每次切换都重播」（例如开放平台的 tab 切换）时传入 `replayKey`：
+ * key 变化会重放入场，未传则保持只播一次。
  */
 export function useStaggerReveal<T extends HTMLElement>(
   enabled: boolean,
-  options: RevealOptions & { selector?: string } = {},
+  options: RevealOptions & { selector?: string; replayKey?: string | number } = {},
 ): RefObject<T> {
   const ref = useRef<T>(null);
   const played = useRef(false);
-  const { selector = ':scope > *', y = 12, stagger: step = 36, duration, scale } = options;
+  const {
+    selector = ':scope > *',
+    y = 12,
+    stagger: step = 36,
+    duration,
+    scale,
+    replayKey,
+  } = options;
 
   useIsomorphicLayoutEffect(() => {
-    if (!enabled || played.current) return;
+    if (!enabled) return;
+    if (replayKey === undefined && played.current) return;
     const container = ref.current;
     if (!container) return;
     const items = Array.from(container.querySelectorAll<HTMLElement>(selector));
@@ -186,7 +197,7 @@ export function useStaggerReveal<T extends HTMLElement>(
       animation?.pause();
       settle(items, { y, scale });
     };
-  }, [enabled, selector, y, step, duration, scale]);
+  }, [enabled, replayKey, selector, y, step, duration, scale]);
 
   return ref;
 }
