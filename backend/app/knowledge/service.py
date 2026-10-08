@@ -316,8 +316,11 @@ def _cache_route_decision(
 
 
 class KnowledgeService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, laya_router: Any = None):
         self.db = db
+        # Laya 知识路由旁路（可选）：None 时行为与改造前完全一致。
+        # 由 Harness 能力调用方按帧注入，避免 core 层反向依赖本模块。
+        self._laya_router = laya_router
 
     def create_ingest_job(self, payload: IngestPayload) -> KnowledgeIngestJob:
         job = KnowledgeIngestJob(
@@ -890,10 +893,10 @@ class KnowledgeService:
                                 documents,
                                 SEARCH_DOCUMENT_ROUTE_LIMIT,
                             )
-                            llm_document_ids = self._select_documents_with_llm(
+                            route_document_ids = self._select_documents(
                                 query, route_documents, 5, model_config, route_trace
                             )
-                            if llm_document_ids is None:
+                            if route_document_ids is None:
                                 selected_document_ids = [
                                     row.id for _score, row in scored_documents[:5]
                                 ]
@@ -905,7 +908,7 @@ class KnowledgeService:
                                     }
                                 )
                             else:
-                                selected_document_ids = llm_document_ids
+                                selected_document_ids = route_document_ids
                                 # 文档决策独立写回：即使 bucket 走了词法路径也照样缓存。
                                 # 空结果也来自一次成功的模型调用（判定「无相关文档」），
                                 # 进负缓存，否则同一问法每次都白问一遍模型。
@@ -1089,7 +1092,7 @@ class KnowledgeService:
                                         "routed_count": len(route_buckets),
                                     }
                                 )
-                            llm_bucket_ids = self._select_buckets_with_llm(
+                            route_bucket_ids = self._select_buckets(
                                 query,
                                 route_buckets,
                                 request.max_buckets,
@@ -1097,7 +1100,7 @@ class KnowledgeService:
                                 route_trace,
                                 request.query_type,
                             )
-                            if llm_bucket_ids is None:
+                            if route_bucket_ids is None:
                                 selected_ids = [
                                     bucket.id
                                     for _score, bucket in scored_buckets[: request.max_buckets]
@@ -1110,7 +1113,7 @@ class KnowledgeService:
                                     }
                                 )
                             else:
-                                selected_ids = llm_bucket_ids
+                                selected_ids = route_bucket_ids
                                 # 内部索引决策独立写回（bucket_route 才是耗时大头）；
                                 # 空结果同样进负缓存，避免每次重复一次昂贵的模型路由
                                 _cache_route_decision(
@@ -1625,6 +1628,132 @@ class KnowledgeService:
         if request.knowledge_base_version_ids:
             stmt = stmt.where(KnowledgeBucket.knowledge_base_version_id.in_(request.knowledge_base_version_ids))
         return self.db.exec(stmt.order_by(KnowledgeBucket.created_at.asc())).all()
+
+    def _select_documents(
+        self,
+        query: str,
+        documents: list[KnowledgeDocument],
+        max_documents: int,
+        model_config: ModelConfig,
+        trace: list[dict[str, Any]],
+    ) -> list[str] | None:
+        """文档路由：确定性路径已在上游跑完，这里 Laya 优先、判不了再走 LLM。"""
+
+        laya_ids = self._select_via_laya(
+            query,
+            [(row.id, _document_route_label(row)) for row in documents],
+            max_documents,
+            "document",
+            trace,
+        )
+        if laya_ids is not None:
+            return laya_ids
+        return self._select_documents_with_llm(
+            query, documents, max_documents, model_config, trace
+        )
+
+    def _select_buckets(
+        self,
+        query: str,
+        buckets: list[KnowledgeBucket],
+        max_buckets: int,
+        model_config: ModelConfig,
+        trace: list[dict[str, Any]],
+        query_type: str = "answer",
+    ) -> list[str] | None:
+        """桶路由：确定性路径已在上游跑完，这里 Laya 优先、判不了再走 LLM。"""
+
+        laya_ids = self._select_via_laya(
+            query,
+            [(bucket.id, _bucket_route_label(bucket)) for bucket in buckets],
+            max_buckets,
+            "bucket",
+            trace,
+        )
+        if laya_ids is not None:
+            return laya_ids
+        return self._select_buckets_with_llm(
+            query, buckets, max_buckets, model_config, trace, query_type
+        )
+
+    def _select_via_laya(
+        self,
+        query: str,
+        candidates: list[tuple[str, str]],
+        max_items: int,
+        dimension: str,
+        trace: list[dict[str, Any]],
+    ) -> list[str] | None:
+        """用 Laya 逐候选判相关，返回 top-k；未启用 / 判不了返回 ``None``。
+
+        未启用时**不写任何 phase**（关闭时与改造前逐字节一致）；只有真正调用
+        了 Laya 之后才记录 ``laya_*`` 决策轨迹。返回列表时调用方沿用原有
+        「模型路由成功」分支（含路由缓存写回），与决策来源无关。
+        """
+
+        router = self._laya_router
+        if router is None or not getattr(router, "enabled", False):
+            return None
+
+        outcome = router.score_candidates(
+            query=query,
+            candidates=candidates,
+            operation=f"laya.{dimension}_route",
+        )
+        if not outcome.scores:
+            trace.append(
+                {
+                    "phase": f"laya_{dimension}_route_skipped",
+                    "message": "Laya 未给出可用判定，回退模型路由",
+                    "reason": outcome.fallback_reason or "no_scores",
+                    "error_kind": outcome.error_kind,
+                    "candidate_count": outcome.candidate_count,
+                    "latency_ms": outcome.latency_ms,
+                }
+            )
+            return None
+
+        # 平局保留传入顺序（调用方按词法相关性排过），避免「全相关」时顺序随机
+        ranked = sorted(outcome.scores, key=lambda item: item.probability, reverse=True)
+        confident = [
+            item for item in ranked if item.probability >= router.min_confidence
+        ][:max_items]
+        if not confident:
+            trace.append(
+                {
+                    "phase": f"laya_{dimension}_route_skipped",
+                    "message": "Laya 判定无高置信相关候选，回退模型路由",
+                    "reason": "low_confidence",
+                    "peak_probability": round(ranked[0].probability, 4),
+                    "candidate_count": outcome.candidate_count,
+                    "latency_ms": outcome.latency_ms,
+                }
+            )
+            return None
+
+        if outcome.shadow:
+            trace.append(
+                {
+                    "phase": f"laya_{dimension}_route_shadow",
+                    "message": "影子模式：已计算 Laya 路由但不采用，仍走模型路由",
+                    "selected_count": len(confident),
+                    "candidate_count": outcome.candidate_count,
+                    "latency_ms": outcome.latency_ms,
+                }
+            )
+            return None
+
+        trace.append(
+            {
+                "phase": f"laya_{dimension}_route",
+                "message": "Laya 决策头直接完成路由（跳过模型路由）",
+                "selected_count": len(confident),
+                "candidate_count": outcome.candidate_count,
+                "calls": outcome.calls,
+                "latency_ms": outcome.latency_ms,
+            }
+        )
+        return [item.key for item in confident]
 
     def _select_documents_with_llm(
         self,
@@ -2535,6 +2664,34 @@ def _bucket_card_for_route(row: KnowledgeBucket) -> dict[str, Any]:
         keep = max(40, len(card["summary"]) - overflow - 20)
         card["summary"] = card["summary"][:keep]
     return card
+
+
+def _laya_candidate_label(parts: list[Any], limit: int = 400) -> str:
+    """把路由卡片压成一行候选描述，供 Laya ``noul`` 问句使用。"""
+
+    text = "｜".join(str(part).strip() for part in parts if str(part or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _document_route_label(row: KnowledgeDocument) -> str:
+    card = _document_card_for_route(row)
+    return _laya_candidate_label(
+        [card.get("title"), card.get("filename"), card.get("summary")]
+    )
+
+
+def _bucket_route_label(row: KnowledgeBucket) -> str:
+    card = _bucket_card_for_route(row)
+    return _laya_candidate_label(
+        [
+            card.get("title"),
+            card.get("bucket_type"),
+            card.get("summary"),
+            "、".join(card.get("section_paths") or []),
+        ]
+    )
 
 
 def _route_candidates(ranked: list[Any], candidates: list[Any], limit: int) -> list[Any]:

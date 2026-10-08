@@ -77,6 +77,10 @@ def categorize_route(phases: list[str]) -> str:
         return "small_candidate_shortcut"
     if any(p.endswith("lexical_fast_path") for p in marks):
         return "lexical_fast_path"
+    # Laya 接管了该次检索的某个维度（只有 ``laya_*_route`` 是采用；
+    # ``*_shadow`` / ``*_skipped`` 仍走了模型，不归这类）。
+    if any(p.startswith("laya_") and p.endswith("_route") for p in marks):
+        return "laya_route"
     if any(p.endswith("lexical_fallback") for p in marks):
         return "llm_route_failed_fallback"
     if any(p.endswith("_lexical") for p in marks):
@@ -157,6 +161,7 @@ def collect_stats(conn, *, tenant_id: str | None = None, since: datetime | None 
     knowledge_searches = 0
     knowledge_search_failed = 0
     route_categories: dict[str, int] = {}
+    laya_phases: dict[str, int] = {}
     prefills: dict[str, int] = {}
     plan_decisions: dict[str, int] = {}
     plan_frame_kinds: dict[str, int] = {}
@@ -184,6 +189,11 @@ def collect_stats(conn, *, tenant_id: str | None = None, since: datetime | None 
             phases = result.get("route_phases") if isinstance(result, dict) else None
             category = categorize_route([str(p) for p in phases]) if isinstance(phases, list) else "no_phases"
             route_categories[category] = route_categories.get(category, 0) + 1
+            if isinstance(phases, list):
+                for phase in phases:
+                    if str(phase).startswith("laya_"):
+                        name = str(phase)
+                        laya_phases[name] = laya_phases.get(name, 0) + 1
             continue
 
         if event_type == "sop_prefill_planned":
@@ -232,6 +242,7 @@ def collect_stats(conn, *, tenant_id: str | None = None, since: datetime | None 
             "route_llm_calls": route_llm_calls,
             "route_llm_calls_per_search": llm_route_ratio,
             "route_categories": dict(sorted(route_categories.items(), key=lambda i: -i[1])),
+            "laya_phases": dict(sorted(laya_phases.items(), key=lambda i: -i[1])),
         },
         "sop_prefill_scenes": dict(sorted(prefills.items(), key=lambda i: -i[1])),
         "turn_plan": {
@@ -336,6 +347,11 @@ def render(report: dict) -> str:
     lines.append("  每次检索的路由结果分类（近似）：")
     for category, count in knowledge["route_categories"].items():
         lines.append(f"    {category:<32} {count:>7}")
+    laya_phases = knowledge.get("laya_phases") or {}
+    if laya_phases:
+        lines.append("  Laya 知识路由轨迹：")
+        for phase, count in laya_phases.items():
+            lines.append(f"    {phase:<32} {count:>7}")
 
     lines.append("")
     lines.append("[C] SOP 边条件编译分布（场景 L 的机会上限）")

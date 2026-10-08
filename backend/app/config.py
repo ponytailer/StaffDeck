@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     laya_sop_timeout_seconds: float = 6.0
     # 连续失败达到该次数后本帧熔断，后续节点直接回退 LLM。
     laya_sop_circuit_breaker_failures: int = 3
+    # ---- Laya 决策头接入知识路由（选文档 / 选桶，P2'）----
+    # 默认关闭：不开启时知识检索行为与改造前逐字节一致。
+    # 优先级固定为「缓存 / 小候选短路 / 词法 fast path > Laya > 现有 LLM」。
+    laya_knowledge_route_enabled: bool = False
+    # P0 影子模式：照常计算并记录 Laya 的候选判定，但不采用（用于看与 LLM 的一致率）。
+    laya_knowledge_shadow_mode: bool = True
+    # 候选数超过该值时直接回退 LLM：Laya 逐候选 noul 需 ceil(N/30) 次调用，
+    # 多跳可能比一次 LLM 路由还慢。
+    laya_knowledge_max_candidates: int = 30
+    # 单次 /predict 携带的问题数上限（≤ 上游 MAX_QUESTIONS=30）。
+    laya_knowledge_questions_per_call: int = 30
+    # 知识路由专用短超时，与 SOP 旁路、页面「决策助手」60s 各自独立。
+    laya_knowledge_timeout_seconds: float = 6.0
     # 对外可访问的站点基址（`PUBLIC_BASE_URL`），用于生成开放 API 的调用示例。
     # 部署在域名 / 公网 IP 后面时填它，决策助手页面「API 接入」里的示例就会用该地址；
     # 留空则前端回退成浏览器当前 origin（本地开发即 http://127.0.0.1:5173）。

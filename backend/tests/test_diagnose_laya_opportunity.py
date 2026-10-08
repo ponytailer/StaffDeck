@@ -132,6 +132,40 @@ def test_categorize_route_priority() -> None:
     assert module.categorize_route(["okf_only"]) == "okf_only"
 
 
+def test_categorize_route_recognises_laya_adoption() -> None:
+    module = _load_script()
+    assert module.categorize_route(["document_route", "laya_document_route"]) == "laya_route"
+    assert module.categorize_route(["bucket_route", "laya_bucket_route"]) == "laya_route"
+    # 影子 / 跳过仍走了模型，不归 laya_route
+    assert (
+        module.categorize_route(["document_route", "laya_document_route_shadow"])
+        == "llm_route"
+    )
+    assert (
+        module.categorize_route(["bucket_route", "laya_bucket_route_skipped"])
+        == "llm_route"
+    )
+
+
+def test_collect_stats_records_laya_phases(conn) -> None:
+    module = _load_script()
+    conn.execute(
+        text("INSERT INTO agent_events (event_type, payload_json) VALUES (:e, :p)"),
+        {
+            "e": "harness_tool_completed",
+            "p": json.dumps(
+                {
+                    "tool_name": "knowledge_search",
+                    "success": True,
+                    "result": {"route_phases": ["document_route", "laya_document_route"]},
+                }
+            ),
+        },
+    )
+    report = module.collect_stats(conn, tenant_id=None, since=None, limit=1000)
+    assert report["knowledge"]["laya_phases"] == {"laya_document_route": 1}
+
+
 def test_collect_stats_aggregates_knowledge_and_llm(conn) -> None:
     module = _load_script()
     report = module.collect_stats(conn, tenant_id=None, since=None, limit=1000)

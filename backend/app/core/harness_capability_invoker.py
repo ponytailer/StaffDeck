@@ -111,6 +111,7 @@ class HarnessCapabilityInvoker:
         ensure_execution_lease: Any | None = None,
         trace_sink: Callable[[str, dict[str, Any]], None] | None = None,
         step_deadline_monotonic: float | None = None,
+        knowledge_laya_router: Any | None = None,
     ) -> None:
         self.db = db
         self.tenant_id = tenant_id
@@ -131,6 +132,8 @@ class HarnessCapabilityInvoker:
         self.ensure_execution_lease = ensure_execution_lease
         self.trace_sink = trace_sink
         self.step_deadline_monotonic = step_deadline_monotonic
+        # Laya 知识路由旁路（可选）：None 时知识检索行为与改造前一致。
+        self._knowledge_laya_router = knowledge_laya_router
         self.run_id = str(run_id or new_id("hrun"))
         self.workspace_root = _workspace_root(
             tenant_id, session.id, task_frame_id, db=self.db
@@ -1116,7 +1119,7 @@ class HarnessCapabilityInvoker:
             for kb_id in selected
             if str(version_by_base.get(kb_id) or "").strip()
         ]
-        response = KnowledgeService(self.db).search(
+        response = KnowledgeService(self.db, self._knowledge_laya_router).search(
             KnowledgeSearchRequest(
                 tenant_id=self.tenant_id,
                 agent_id=self.agent_id,

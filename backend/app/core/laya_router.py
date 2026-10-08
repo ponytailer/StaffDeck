@@ -1,15 +1,22 @@
-"""SOP 出边决策的 Laya 旁路（场景 L 的实现）。
+"""Laya 决策头接入（SOP 出边 + 知识路由）。
 
-定位：确定性求值（``EdgeConditionSpec``，场景 G/D/C2）**判不了**时，
-用私有部署的 Laya 决策头做一次「选哪条出边」的非自回归判定，替代一整轮
-``harness.task_action`` 主模型决策；低置信 / 超时 / 非法答案一律回退，
-优先级固定为 **确定性 spec > Laya > 主模型 LLM**。
+两个落点共用这一个类，各自一个实例、各自一套启用开关：
+
+- :meth:`LayaRouter.route_edges` —— SOP 出边决策（场景 L）。确定性求值
+  （``EdgeConditionSpec``，场景 G/D/C2）**判不了**时，用 Laya 做一次
+  「选哪条出边」的 ``choice`` 判定，替代一整轮 ``harness.task_action`` 主模型
+  决策；低置信 / 超时 / 非法答案一律回退，优先级固定为
+  **确定性 spec > Laya > 主模型 LLM**。
+- :meth:`LayaRouter.score_candidates` —— 知识路由（选文档 / 选桶）。Laya
+  的 ``choice`` 一次只能选 1 个，满足不了 top-k，所以改成对每个候选问一个
+  ``noul``「是否相关」，按相关概率排序取 top-k：**确定性路径（缓存 / 小候选
+  短路 / 词法 fast path）> Laya > 现有 LLM 路由**。
 
 设计约束（对应 .planning/quick/261008-jfj 的计划）：
 
 - 纯编排 + 一层网络调用，不引入新的持久化状态；失败绝不抛穿主链路。
-- ``state.background`` 只带当前节点、白名单槽位、上一步结果摘要与最近用户消息，
-  不塞全量历史（Laya 是决策头，不是对话模型）。
+- ``state.background`` 只带判定必需的信息，不塞全量历史（Laya 是决策头，
+  不是对话模型）。
 - 每帧一个实例，连续失败达到阈值即熔断（本帧内不再调用），下一帧自然恢复。
 - 影子模式（``shadow``）：照常计算并记录，但**绝不改变路由**，用于先看一致率。
 """
@@ -28,6 +35,14 @@ _BACKGROUND_MAX_CHARS = 1600
 _CRITERION_MAX_CHARS = 300
 _VALUE_MAX_CHARS = 80
 _PRIOR_RESULTS_MAX = 4
+
+# 知识路由（P2'）：Laya 一次最多 30 个问题，与 ``app/api/laya.py`` 的
+# ``MAX_QUESTIONS`` 契约一致。这里刻意不 import api 层，避免把 FastAPI
+# 依赖带进 core。
+MAX_QUESTIONS_PER_CALL = 30
+_KNOWLEDGE_QUESTION_PREFIX = "cand"
+_RELEVANCE_INSTRUCTION_MAX_CHARS = 2000
+_RELEVANCE_LABEL_MAX_CHARS = 400
 
 
 @dataclass
@@ -72,6 +87,53 @@ class LayaRouteOutcome:
             "next_node_id": decision.next_node_id if decision else "",
             "confidence": decision.confidence if decision else None,
             "candidates": decision.candidates if decision else [],
+            "latency_ms": self.latency_ms,
+            "error_kind": self.error_kind,
+        }
+
+
+@dataclass
+class LayaCandidateScore:
+    """单个候选的相关概率（``noul`` = P(相关)）。"""
+
+    key: str
+    probability: float
+
+
+@dataclass
+class LayaKnowledgeOutcome:
+    """一次知识路由判定的完整结果：逐候选分数、或未命中/失败的原因。
+
+    ``scores`` 保持传入顺序（调用方排序时平局自然保留词法序）。
+    """
+
+    scores: list[LayaCandidateScore] = field(default_factory=list)
+    fallback_reason: str = ""
+    error_kind: str = ""
+    latency_ms: float = 0.0
+    candidate_count: int = 0
+    calls: int = 0
+    shadow: bool = False
+
+    @property
+    def scored(self) -> bool:
+        return bool(self.scores)
+
+    def as_trace_payload(self) -> dict[str, Any]:
+        """给会话时间线的可读载荷（不含候选原文，避免泄漏业务内容）。"""
+
+        return {
+            "outcome": (
+                "shadow"
+                if self.shadow and self.scores
+                else "routed"
+                if self.scores
+                else "fallback"
+            ),
+            "reason": self.fallback_reason,
+            "candidate_count": self.candidate_count,
+            "scored_count": len(self.scores),
+            "calls": self.calls,
             "latency_ms": self.latency_ms,
             "error_kind": self.error_kind,
         }
@@ -210,6 +272,42 @@ def build_question(requirement: Any, edges: Sequence[_EdgeCondition], step: dict
     }
 
 
+def build_relevance_background(query: str) -> str:
+    """知识路由的 ``state.background``：只放用户问题（候选细节在各自问题里）。"""
+
+    text = _short(query, _BACKGROUND_MAX_CHARS)
+    if not text:
+        return ""
+    return f"用户问题：{text}"
+
+
+def build_relevance_questions(
+    candidates: Sequence[tuple[str, str]],
+    *,
+    key_prefix: str = _KNOWLEDGE_QUESTION_PREFIX,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """把候选压成 ``noul`` 问句；返回 ``(questions, key->候选id)``。
+
+    key 用位置序号（``cand0``…），避免候选 id 里的特殊字符污染上游 key；
+    再把 key 映射回真实 id。
+    """
+
+    questions: dict[str, dict[str, Any]] = {}
+    key_to_id: dict[str, str] = {}
+    for index, (candidate_id, label) in enumerate(candidates):
+        key = f"{key_prefix}{index}"
+        key_to_id[key] = str(candidate_id)
+        questions[key] = {
+            "type": "noul",
+            "instructions": _short(
+                f"候选内容「{_short(label, _RELEVANCE_LABEL_MAX_CHARS)}」"
+                "是否与用户问题相关、需要被读取用于作答？",
+                _RELEVANCE_INSTRUCTION_MAX_CHARS,
+            ),
+        }
+    return questions, key_to_id
+
+
 class LayaRouter:
     """每帧实例：负责构造问题、调用、阈值判断与熔断。"""
 
@@ -221,6 +319,8 @@ class LayaRouter:
         min_confidence: float = 0.7,
         timeout: float = 6.0,
         max_failures: int = 3,
+        max_candidates: int = MAX_QUESTIONS_PER_CALL,
+        questions_per_call: int = MAX_QUESTIONS_PER_CALL,
         predict: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.enabled = bool(enabled)
@@ -228,6 +328,8 @@ class LayaRouter:
         self.min_confidence = float(min_confidence)
         self.timeout = float(timeout)
         self.max_failures = max(1, int(max_failures))
+        self.max_candidates = max(1, int(max_candidates))
+        self.questions_per_call = max(1, min(int(questions_per_call), MAX_QUESTIONS_PER_CALL))
         self._predict = predict or (lambda payload: predict_raw(payload, timeout=self.timeout))
         self._consecutive_failures = 0
         self._open = False
@@ -299,6 +401,145 @@ class LayaRouter:
             )
             return outcome
 
+    # -- 知识路由（P2'）----------------------------------------------------
+    def score_candidates(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[tuple[str, str]],
+        operation: str = "laya.knowledge_route",
+        max_candidates: int | None = None,
+        questions_per_call: int | None = None,
+    ) -> LayaKnowledgeOutcome:
+        """逐候选问 ``noul``「是否相关」，返回每条的相关概率。
+
+        为什么不用 ``choice``：Laya 的 choice 一次只选 1 个，满足不了 top-k
+        （文档 5 / 桶 4）——只能逐候选判定再排序。一次 ``/predict`` 最多
+        :data:`MAX_QUESTIONS_PER_CALL` 问，超过则分批多次调用；候选数超过
+        ``max_candidates`` 直接返回 ``oversize``，交调用方回退（多跳调用可能
+        比一次 LLM 还慢）。
+        """
+
+        if not self.enabled:
+            return LayaKnowledgeOutcome(fallback_reason="disabled", shadow=self.shadow)
+        if self._open:
+            return LayaKnowledgeOutcome(
+                fallback_reason="circuit_open", shadow=self.shadow
+            )
+
+        limit = int(max_candidates if max_candidates is not None else self.max_candidates)
+        per_call = int(
+            questions_per_call
+            if questions_per_call is not None
+            else self.questions_per_call
+        )
+        per_call = max(1, min(per_call, MAX_QUESTIONS_PER_CALL))
+
+        unique: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for candidate_id, label in candidates:
+            key = str(candidate_id)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append((key, str(label)))
+        if not unique:
+            return LayaKnowledgeOutcome(
+                fallback_reason="no_candidates", shadow=self.shadow
+            )
+        if len(unique) > limit:
+            return LayaKnowledgeOutcome(
+                fallback_reason="oversize",
+                candidate_count=len(unique),
+                shadow=self.shadow,
+            )
+
+        background = build_relevance_background(query)
+        if not background:
+            return LayaKnowledgeOutcome(
+                fallback_reason="no_background", shadow=self.shadow
+            )
+
+        scores: list[LayaCandidateScore] = []
+        latency_ms = 0.0
+        calls = 0
+        with observed_span(
+            "laya_knowledge",
+            operation,
+            candidate_count=len(unique),
+            shadow=self.shadow,
+        ) as span:
+            for start in range(0, len(unique), per_call):
+                chunk = unique[start : start + per_call]
+                questions, key_to_id = build_relevance_questions(chunk)
+                payload = {"state": {"background": background}, "questions": questions}
+                calls += 1
+                try:
+                    body = self._predict(payload)
+                except LayaError as exc:
+                    self._record_failure()
+                    span.finish(status="failed", error_kind=exc.kind, error=str(exc)[:300])
+                    return LayaKnowledgeOutcome(
+                        fallback_reason="error",
+                        error_kind=exc.kind,
+                        candidate_count=len(unique),
+                        calls=calls,
+                        latency_ms=latency_ms,
+                        shadow=self.shadow,
+                    )
+                except Exception as exc:  # noqa: BLE001 - 旁路绝不阻断主链路
+                    self._record_failure()
+                    span.finish(
+                        status="failed", error_kind="unexpected", error=str(exc)[:300]
+                    )
+                    return LayaKnowledgeOutcome(
+                        fallback_reason="error",
+                        error_kind="unexpected",
+                        candidate_count=len(unique),
+                        calls=calls,
+                        latency_ms=latency_ms,
+                        shadow=self.shadow,
+                    )
+
+                self._reset_failures()
+                latency_ms += _coerce_float(body.get("elapsed_ms")) or 0.0
+                answers = body.get("answers") if isinstance(body, Mapping) else None
+                if not isinstance(answers, Mapping):
+                    span.finish(status="failed", error_kind="shape")
+                    return LayaKnowledgeOutcome(
+                        fallback_reason="missing_answers",
+                        error_kind="shape",
+                        candidate_count=len(unique),
+                        calls=calls,
+                        latency_ms=latency_ms,
+                        shadow=self.shadow,
+                    )
+                for key, candidate_id in key_to_id.items():
+                    answer = answers.get(key)
+                    if not isinstance(answer, Mapping):
+                        continue
+                    probability = _coerce_float(answer.get("noul"))
+                    if probability is None:
+                        continue
+                    scores.append(
+                        LayaCandidateScore(key=candidate_id, probability=probability)
+                    )
+
+            span.finish(
+                status="success",
+                scored_count=len(scores),
+                calls=calls,
+                latency_ms=round(latency_ms, 3),
+            )
+
+        return LayaKnowledgeOutcome(
+            scores=scores,
+            candidate_count=len(unique),
+            calls=calls,
+            latency_ms=round(latency_ms, 3),
+            shadow=self.shadow,
+        )
+
     # -- 内部 -------------------------------------------------------------
     def _interpret(
         self,
@@ -368,10 +609,14 @@ def _coerce_float(value: Any) -> float | None:
 
 
 __all__ = [
+    "LayaCandidateScore",
+    "LayaKnowledgeOutcome",
     "LayaRouteDecision",
     "LayaRouteOutcome",
     "LayaRouter",
     "build_background",
     "build_criteria",
     "build_question",
+    "build_relevance_background",
+    "build_relevance_questions",
 ]

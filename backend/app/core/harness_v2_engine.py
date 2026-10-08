@@ -1228,6 +1228,8 @@ class HarnessV2Engine:
         # Laya 出边决策旁路（P0/P1）：仅 sop 帧、且配置开启时构造；
         # 默认关闭 / 影子模式下不改路由，行为与改造前一致。
         laya_router = _build_laya_router(frame.kind)
+        # Laya 知识路由旁路（P2'）：任何帧都可能触发知识检索，独立实例、独立熔断。
+        knowledge_laya_router = _build_knowledge_laya_router()
         self.events.record(
             request.tenant_id,
             session.id,
@@ -1367,6 +1369,7 @@ class HarnessV2Engine:
                 ),
                 trace_sink=trace,
                 step_deadline_monotonic=step_deadline_monotonic,
+                knowledge_laya_router=knowledge_laya_router,
             )
 
             result = self.task_agent.run(
@@ -2461,6 +2464,32 @@ def _build_laya_router(frame_kind: str) -> Any:
         min_confidence=settings.laya_min_confidence,
         timeout=settings.laya_sop_timeout_seconds,
         max_failures=settings.laya_sop_circuit_breaker_failures,
+    )
+
+
+def _build_knowledge_laya_router() -> Any:
+    """按配置构造 Laya 知识路由（选文档 / 选桶）旁路；未开启返回 None。
+
+    与 SOP 旁路分开实例：启用开关、影子模式、熔断状态都独立，
+    知识路由不可用不影响 SOP 出边决策，反之亦然。每帧构造一个。
+    """
+
+    settings = get_settings()
+    if not settings.laya_knowledge_route_enabled:
+        return None
+    try:
+        from app.core.laya_router import LayaRouter
+    except Exception:  # noqa: BLE001 - 旁路不可用不影响主链路
+        logger.debug("Laya 知识路由旁路加载失败", exc_info=True)
+        return None
+    return LayaRouter(
+        enabled=True,
+        shadow=settings.laya_knowledge_shadow_mode,
+        min_confidence=settings.laya_min_confidence,
+        timeout=settings.laya_knowledge_timeout_seconds,
+        max_failures=settings.laya_sop_circuit_breaker_failures,
+        max_candidates=settings.laya_knowledge_max_candidates,
+        questions_per_call=settings.laya_knowledge_questions_per_call,
     )
 
 
