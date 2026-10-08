@@ -13,6 +13,7 @@ from app.agents.branching import (
     visible_published_skills,
     visible_skill,
 )
+from app.agents.free_model import resolve_turn_default_model
 from app.channels.service_outbox import stage_channel_delivery
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled
@@ -1224,6 +1225,11 @@ class AgentLoop:
         role: str = "default",
         user_id: str | None = None,
     ) -> ModelConfig | None:
+        # 免费链路:员工被管理员标记 + 用户在该角色上没有自己的模型 → 用租户的全局免费模型
+        # (配额在发送入口 chat_stream 已校验并消耗;这里只做解析,所有角色统一落到免费模型)。
+        free_candidate = resolve_turn_default_model(self.db, tenant_id, agent_id, user_id, role)
+        if free_candidate is not None:
+            return resolve_model_config_for_runtime(self.db, tenant_id, free_candidate.id)
         return model_for_agent(self.db, tenant_id, agent_id, role, user_id=user_id)
 
     def _get_persona_prompt(self, tenant_id: str, agent_id: str | None = None) -> str | None:

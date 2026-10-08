@@ -66,6 +66,7 @@ def init_db() -> None:
     _migrate_ai_review_schema()
     _migrate_mcp_server_timeout()
     _migrate_general_skill_download_count()
+    _migrate_free_model_schema()
     # _migrate_sqlite_skill_schema()
     # _migrate_pg_api_key_schema()
     # _migrate_user_ldap_schema()
@@ -3315,6 +3316,33 @@ def _migrate_ai_review_schema() -> None:
         print(
             f"[init_db] uq_ai_review_task_in_flight 创建失败（可能存在重复的进行中任务）：{exc}"
         )
+
+
+def _migrate_free_model_schema() -> None:
+    """全局免费模型补列:model_configs.is_global_free + agent_profiles.free_model_enabled。
+
+    新表 global_free_model_usage 由 create_all 直接建;这里给**已存在**的两张表补新列。
+    """
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        if "model_configs" in set(inspector.get_table_names()):
+            columns = {column["name"] for column in inspector.get_columns("model_configs")}
+            if "is_global_free" not in columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE model_configs ADD COLUMN is_global_free BOOLEAN "
+                        f"{'NOT NULL DEFAULT FALSE' if engine.url.get_backend_name().startswith('postgresql') else 'NOT NULL DEFAULT 0'}"
+                    )
+                )
+        if "agent_profiles" in set(inspector.get_table_names()):
+            columns = {column["name"] for column in inspector.get_columns("agent_profiles")}
+            if "free_model_enabled" not in columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE agent_profiles ADD COLUMN free_model_enabled BOOLEAN "
+                        f"{'NOT NULL DEFAULT FALSE' if engine.url.get_backend_name().startswith('postgresql') else 'NOT NULL DEFAULT 0'}"
+                    )
+                )
 
 
 def _migrate_mcp_server_timeout() -> None:

@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import PlatformEmployeeCard from './PlatformEmployeeCard';
 
-function renderCard(onUnpublish?: () => void) {
+function renderCard(onUnpublish?: () => void, freeBadge = false) {
   const onOpen = vi.fn();
   render(
     <PlatformEmployeeCard
@@ -15,6 +15,7 @@ function renderCard(onUnpublish?: () => void) {
       role="Finance"
       description="Handles finance workflows"
       stats={[{ label: 'SOP', value: 2 }]}
+      freeBadge={freeBadge}
       onOpen={onOpen}
       onUnpublish={onUnpublish}
     />,
@@ -37,5 +38,14 @@ describe('PlatformEmployeeCard gallery governance', () => {
 
     expect(onUnpublish).toHaveBeenCalledTimes(1);
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('免费员工显示「免费」徽标，普通员工不显示', () => {
+    renderCard(undefined, true);
+    expect(screen.getByText('免费')).toBeTruthy();
+
+    renderCard(undefined, false);
+    // 上一张卡片的徽标还在，但这一张没有自己的徽标（用 getAllByText 计数区分）
+    expect(screen.getAllByText('免费')).toHaveLength(1);
   });
 });

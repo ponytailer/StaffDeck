@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import { Sheet, SheetContent } from '@/components/ui';
+import { Sheet, SheetContent, Switch } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { Ban, XIcon } from 'lucide-react';
 
@@ -23,12 +23,16 @@ export type PlatformEmployeeDrawerProps = {
   online?: boolean;
   canManage?: boolean;
   unpublishing?: boolean;
+  /** 管理员免费模型标记：传了 onToggleFreeModel 才渲染开关行 */
+  freeModelEnabled?: boolean;
+  freeModelToggling?: boolean;
   hasPrev?: boolean;
   hasNext?: boolean;
   onClose: () => void;
   onPrev?: () => void;
   onNext?: () => void;
   onUnpublish?: () => void;
+  onToggleFreeModel?: (enabled: boolean) => void;
   onUse: () => void;
 };
 
@@ -78,12 +82,15 @@ export default function PlatformEmployeeDrawer({
   online = true,
   canManage = false,
   unpublishing = false,
+  freeModelEnabled = false,
+  freeModelToggling = false,
   hasPrev = false,
   hasNext = false,
   onClose,
   onPrev,
   onNext,
   onUnpublish,
+  onToggleFreeModel,
   onUse,
 }: PlatformEmployeeDrawerProps) {
   return (
@@ -204,6 +211,33 @@ export default function PlatformEmployeeDrawer({
               </p>
             </div>
           </div>
+
+          {canManage && onToggleFreeModel && (
+            <>
+              <DrawerDivider />
+              <div className="flex shrink-0 items-center justify-between gap-[10px] rounded-[14px] bg-[#fafbfd] px-[14px] py-[10px]">
+                <div className="flex min-w-0 flex-col gap-[2px]">
+                  <span className="flex items-center gap-[6px] text-[12px] font-medium text-[#464c5e]">
+                    免费模型
+                    {freeModelEnabled && (
+                      <span className="rounded-[6px] bg-[#eafaf3] px-[5px] py-[1px] text-[10px] text-[#0f8a5f]">
+                        已开启
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[10px] leading-[14px] text-[#757f9c]">
+                    成员没有自己的模型时自动用全局模型，每人每天 10 问
+                  </span>
+                </div>
+                <Switch
+                  checked={freeModelEnabled}
+                  disabled={freeModelToggling}
+                  onCheckedChange={onToggleFreeModel}
+                  aria-label="免费模型开关"
+                />
+              </div>
+            </>
+          )}
         </div>
 
         <DrawerDivider />

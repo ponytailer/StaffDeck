@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
 from app.agents.schema import (
+    AgentFreeModelRequest,
     AgentModelsUpdateRequest,
     AgentAPICredentialCreateRequest,
     AgentAPICredentialCreated,
@@ -45,6 +46,7 @@ from app.agents.branching import (
     sync_branch_from_overall,
     visible_skill_rows,
 )
+from app.agents.free_model import agent_free_summary, get_global_free_model
 from app.db import get_session
 from app.db.bulk_delete import bulk_delete_matching, expunge_matching
 from app.db.models import (
@@ -133,7 +135,17 @@ def list_agents(
         rows = [row for row in rows if row.is_overall or _agent_visible_to_user(row, user)]
     bindings = _bindings_by_agent(db, tenant_id)
     used_agent_ids = _used_agent_ids_for_user(db, tenant_id, user)
-    return [agent_read(row, bindings.get(row.id, []), row.id in used_agent_ids) for row in rows]
+    # 免费员工的今日剩余问数:一次批量查配额表,避免逐行 count(远程 PG N+1)
+    free_quotas = agent_free_summary(db, tenant_id, [row.id for row in rows], user.id)
+    return [
+        agent_read(
+            row,
+            bindings.get(row.id, []),
+            row.id in used_agent_ids,
+            free_model_remaining=free_quotas.get(row.id, {}).get("remaining"),
+        )
+        for row in rows
+    ]
 
 
 @enterprise_router.post("", response_model=AgentProfileRead)
@@ -452,6 +464,32 @@ def unpublish_agent_from_gallery(
     metadata.pop("gallery_published_by", None)
     row.metadata_json = metadata
     row.updated_at = now
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return agent_read(row, _bindings_by_agent(db, tenant_id).get(row.id, []))
+
+
+@enterprise_router.post("/{agent_id}/free-model", response_model=AgentProfileRead)
+def set_agent_free_model(
+    agent_id: str,
+    request: AgentFreeModelRequest,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AgentProfileRead:
+    """管理员标记/取消「免费员工」:成员无自己模型时自动使用租户的全局免费模型。"""
+    _ensure_admin_user(tenant_id, current_user)
+    row = _get_agent(db, tenant_id, agent_id)
+    if row.is_overall:
+        raise HTTPException(status_code=400, detail="Overall agent cannot be marked as free")
+    if request.enabled and get_global_free_model(db, tenant_id) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="还没有配置全局免费模型，请先在「模型配置」里设置。",
+        )
+    row.free_model_enabled = bool(request.enabled)
+    row.updated_at = utc_now()
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -882,7 +920,17 @@ def list_chat_agents(
         row for row in rows if _chat_agent_selectable_to_user(row, current_user, used_agent_ids)
     ]
     bindings = _bindings_by_agent(db, tenant_id)
-    return [agent_read(row, bindings.get(row.id, []), row.id in used_agent_ids) for row in rows]
+    # 免费员工的今日剩余问数:一次批量查配额表,聊天端提示「免费模型 · 今日剩 N 问」
+    free_quotas = agent_free_summary(db, tenant_id, [row.id for row in rows], current_user.id)
+    return [
+        agent_read(
+            row,
+            bindings.get(row.id, []),
+            row.id in used_agent_ids,
+            free_model_remaining=free_quotas.get(row.id, {}).get("remaining"),
+        )
+        for row in rows
+    ]
 
 
 @chat_router.post("/{agent_id}/use", response_model=AgentProfileRead)
@@ -1067,6 +1115,7 @@ def agent_read(
     row: AgentProfile,
     bindings: list[AgentResourceBinding],
     used_by_current_user: bool | None = None,
+    free_model_remaining: int | None = None,
 ) -> AgentProfileRead:
     metadata = dict(row.metadata_json or {})
     if used_by_current_user is not None:
@@ -1082,6 +1131,9 @@ def agent_read(
         status=row.status,
         harness_max_actions=max(1, min(int(row.harness_max_actions or 32), 100)),
         usage_count=max(0, int(row.usage_count or 0)),
+        free_model_enabled=bool(getattr(row, "free_model_enabled", False)),
+        # 仅列表/详情接口针对当前用户计算;这里 None 表示「未计算」,前端按 enabled + 有全局模型理解
+        free_model_remaining=free_model_remaining if row.free_model_enabled else None,
         metadata=metadata,
         resources=[binding_read(binding) for binding in bindings],
         created_at=row.created_at.isoformat(),

@@ -19,6 +19,12 @@ from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from app.agents.branching import visible_published_skills
+from app.agents.free_model import (
+    FREE_MODEL_DAILY_LIMIT,
+    FREE_MODEL_QUOTA_EXHAUSTED_CODE,
+    consume_free_quota,
+    free_model_turn_allowed,
+)
 from app.channels.service_outbox import stage_channel_delivery
 from app.chat_pubsub import RelaySubscriber, publish_relay_wake
 from app.core import AgentLoop
@@ -1111,6 +1117,26 @@ def chat_stream(
         _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user, share_scope)
     if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    # 免费模型链路:用户没有自己的模型(前端不会带 model_config_id)+ 员工被标记为免费
+    # → 校验并消耗「用户×员工×天」配额(每员工各 FREE_MODEL_DAILY_LIMIT 问)。
+    # 模型本身的解析在 agent_loop._get_default_model 里做;这里只管配额与计数,
+    # 计数立即提交(回合失败不退还,与真实 LLM 成本一致)。
+    if not request.model_config_id and request.agent_id:
+        free_model, free_error = free_model_turn_allowed(
+            db, request.tenant_id, request.user_id, request.agent_id
+        )
+        if free_error == FREE_MODEL_QUOTA_EXHAUSTED_CODE:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"该员工今日免费额度已用完（每天 {FREE_MODEL_DAILY_LIMIT} 问）。"
+                    "明天再来，或在「模型配置」里添加自己的模型。"
+                ),
+            )
+        if free_model is not None:
+            consume_free_quota(db, request.tenant_id, request.user_id, request.agent_id)
+
     original_message = request.message
     if team_tl_team_id is not None:
         # 团队 TL 会话:注入团队上下文(花名册/未闭环任务/黑板/派任务格式)后再走正常引擎

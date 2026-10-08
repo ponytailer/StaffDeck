@@ -266,6 +266,21 @@ describe('Agent 广场', () => {
     expect(screen.queryByText('AI CodeReviewer')).toBeNull();
   });
 
+  it('免费员工的卡片显示「免费」徽标', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents/') && url.includes('/skills')) return jsonResponse([]);
+      if (url.includes('/api/enterprise/agents')) {
+        return jsonResponse([overallAgent, { ...galleryAgent, free_model_enabled: true, free_model_remaining: 10 }]);
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPlatform('/enterprise/platform/agents');
+    await screen.findByText('小艾');
+    expect(await screen.findAllByText('免费')).toHaveLength(1);
+  });
+
   it('Agent 广场是纯本地数据，不请求后端列表接口', async () => {
     const fetchMock = stubPlatformFetch();
     renderPlatform('/enterprise/platform/agent-apps');

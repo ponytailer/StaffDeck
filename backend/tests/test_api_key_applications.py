@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.db.models import ApiKeyApplication, ApiKeyConsumer, ApiKeyConsumerGroup, ApiKeyQuotaRule, Tenant, User
+from app.db.models import ApiKeyApplication, ApiKeyConsumer, ApiKeyConsumerGroup, ApiKeyQuotaRule, ApiKeyUsageSnapshot, Tenant, User
 from app.api import api_key_applications as apk
 from app.aliyun_aigw import config as aigw_config
 from app.aliyun_aigw import get_apig_client as real_get_apig_client
@@ -1527,6 +1527,56 @@ def test_mine_usage_uses_group_subject_for_group_scoped_rule():
     # 云端用量查询的 subject 是消费者归属的组 ID，而非消费者本人
     usage_calls = [c for c in fake.usage_calls if c["rule_id"] == (rule.external_rule_id or rule.id)]
     assert usage_calls and usage_calls[-1]["consumer_id"] == group.id
+
+
+def test_mine_usage_prefers_live_rule_quota_after_adjustment():
+    """/mine/usage：审批后管理员上调规则配额，个人页必须显示规则当前值。
+
+    回归：曾用申请行上落库的旧值（批准时的 6000）写快照与展示，管理员把
+    规则调到 20000 后个人页仍显示 6000，与实际云端限额不一致。
+    """
+    session = _make_session()
+    admin = _admin(session)
+    member = _member(session)
+    fake = FakeApigClient()
+    group, rule = _make_group_rule(session, quota_limit=6000, period_type="month")
+    _register_cloud_refs(fake, group, rule)
+    # 生产中审批传云端 ruleId（= 本地行 external_rule_id），fake 视图按 external id 注册
+    fake.quota_rules[rule.external_rule_id] = fake.quota_rules[rule.id]
+
+    created = create_application(
+        ApiKeyApplicationCreate(tenant_id=TENANT, purpose="调额回归"),
+        db=session,
+        current_user=member,
+    )
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        approve_application(
+            created.id,
+            ApiKeyApplicationApprove(
+                tenant_id=TENANT,
+                consumer_name="quota-raise",
+                consumer_group_id=group.id,
+                quota_rule_id=rule.external_rule_id or rule.id,
+            ),
+            db=session,
+            current_user=admin,
+        )
+
+    # 管理员随后把规则配额 6000 → 20000（生产中走规则调整链路，申请行不回写）
+    rule.quota_limit = 20000
+    session.add(rule)
+    session.commit()
+
+    with patch.object(apk, "get_apig_client", return_value=fake):
+        items = list_my_usage(tenant_id=TENANT, db=session, current_user=member)
+
+    assert len(items) == 1
+    assert items[0].quota_limit == 20000, "个人页应显示规则当前配额而非申请行旧值"
+    # 快照行同步被刷新为规则当前值（下次打开页面即自愈，无需手工修数）
+    snap = session.exec(
+        select(ApiKeyUsageSnapshot).where(ApiKeyUsageSnapshot.consumer_id == items[0].consumer_id)
+    ).first()
+    assert snap is not None and snap.quota_limit == 20000
 
 
 def test_update_consumer_group_owner_local_only():

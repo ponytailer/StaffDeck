@@ -57,12 +57,22 @@ class AgentProfileRead(BaseModel):
     harness_max_actions: int = 32
     # 被使用次数:员工广场卡片展示(每次新建会话 +1)
     usage_count: int = 0
+    # 免费员工标记:广场卡片显示「免费」徽标;成员无自己模型时自动用全局免费模型
+    free_model_enabled: bool = False
+    # 今日剩余问数(仅列表/详情接口针对当前用户计算;未启用或未知为 null)
+    free_model_remaining: Optional[int] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     resources: list[AgentResourceBindingRead] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AgentFreeModelRequest(BaseModel):
+    """管理员标记/取消免费员工(免费模型自动回落)。"""
+
+    enabled: bool
 
 
 class AgentScopeRead(BaseModel):

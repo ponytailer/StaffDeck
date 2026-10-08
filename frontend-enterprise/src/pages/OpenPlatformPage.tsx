@@ -248,6 +248,8 @@ export default function OpenPlatformPage({
   // 首页角标：各模块可见资源数量来自聚合接口，一次请求即可填满 5 个 tab，不必等懒加载列表。
   const [galleryCounts, setGalleryCounts] = useState<Record<PlatformKind, number> | null>(null);
   const [deletingItemKey, setDeletingItemKey] = useState('');
+  // 免费模型开关进行中的员工 id（'' = 空闲）
+  const [freeModelTogglingKey, setFreeModelTogglingKey] = useState('');
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [detailItem, setDetailItem] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
   // 下载中的技能 slug（'' = 空闲）；drawer 的 downloading 收窄成 Boolean
@@ -611,8 +613,32 @@ export default function OpenPlatformPage({
     return `/api/enterprise/tools/${resourceKey}?tenant_id=${TENANT_ID}${overallSuffix}`;
   }
 
-  async function runDelete() {
-    if (!confirmTarget) return;
+  /** 管理员标记/取消免费员工；成功后强刷列表，并把抽屉持有的旧快照换成新对象。 */
+  async function toggleAgentFreeModel(agent: AgentProfileRead, enabled: boolean) {
+    setFreeModelTogglingKey(agent.id);
+    try {
+      await api.post<AgentProfileRead>(
+        `/api/enterprise/agents/${encodeURIComponent(agent.id)}/free-model?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+        { enabled },
+      );
+      notify.success(enabled ? `已开启「${agent.name}」的免费模型` : `已关闭「${agent.name}」的免费模型`);
+      // 只强刷列表的话，抽屉还拿着打开时的旧 agent 快照 → 开关会一直显示旧值，
+      // 必须用新对象同步替换 detailItem（卡片列表随 setAgents 自动更新）。
+      agentsCacheRef.current = null;
+      const rows = await fetchAgents();
+      setDetailItem((current) => {
+        if (!current || current.kind !== 'agents') return current;
+        const fresh = rows.find((row) => row.id === current.item.agent?.id);
+        return fresh ? { kind: 'agents', item: { ...current.item, agent: fresh } } : current;
+      });
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '免费模型设置失败');
+    } finally {
+      setFreeModelTogglingKey('');
+    }
+  }
+
+  async function runDelete() {    if (!confirmTarget) return;
     const { kind: platformKind, item } = confirmTarget;
     // Agent 广场对所有人只读（抽屉不暴露删除入口），这里再兜一层，防止将来误接。
     if (platformKind === 'agent-apps') {
@@ -675,30 +701,34 @@ export default function OpenPlatformPage({
     const drawerIndex = drawerItems.findIndex((entry) => entry.id === item.id);
 
     if (detailItem.kind === 'agents' && item.agent) {
-      const profile = employeeProfile(item.agent);
-      const detailText = item.agent.persona_prompt
-        || item.agent.description
+      const agent = item.agent;
+      const profile = employeeProfile(agent);
+      const detailText = agent.persona_prompt
+        || agent.description
         || config.detail;
       return (
         <PlatformEmployeeDrawer
           open
-          agent={item.agent}
+          agent={agent}
           platformTitle={config.title}
           name={item.title}
           role={item.meta}
           description={item.description}
           detailText={detailText}
           workStyles={profile.workStyles}
-          stats={employeeStats(item.agent)}
-          online={item.agent.status === 'active'}
+          stats={employeeStats(agent)}
+          online={agent.status === 'active'}
           canManage={canManagePlatform}
           unpublishing={deletingItemKey === deleteKey}
+          freeModelEnabled={agent.free_model_enabled === true}
+          freeModelToggling={freeModelTogglingKey === agent.id}
           hasPrev={drawerIndex > 0}
           hasNext={drawerIndex >= 0 && drawerIndex < drawerItems.length - 1}
           onClose={() => setDetailItem(null)}
           onPrev={() => navigateDetailItem(-1)}
           onNext={() => navigateDetailItem(1)}
           onUnpublish={() => setConfirmTarget({ kind: detailItem.kind, item })}
+          onToggleFreeModel={(enabled) => void toggleAgentFreeModel(agent, enabled)}
           onUse={() => {
             setDetailItem(null);
             void usePlatformItem(detailItem.kind, item.id);
@@ -914,6 +944,7 @@ export default function OpenPlatformPage({
                   online={item.agent.status === 'active'}
                   description={item.description}
                   stats={employeeStats(item.agent)}
+                  freeBadge={item.agent.free_model_enabled === true}
                   onOpen={() => setDetailItem({ kind: activeKind, item })}
                   onUnpublish={canManagePlatform
                     ? () => setConfirmTarget({ kind: activeKind, item })

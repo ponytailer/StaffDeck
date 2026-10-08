@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { InfoCircleOutlined } from '@/icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Check, ChevronDown, FlaskConical, LoaderCircle, Plus, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, FlaskConical, Gift, LoaderCircle, Plus, Trash2 } from 'lucide-react';
 
 import { api, ApiError, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
@@ -501,6 +501,23 @@ export default function ModelsPage({
     }
   }
 
+  /** 管理员把模型标记为全局免费模型（租户内单选，费用记在自己头上）。 */
+  async function setGlobalFree(row: ModelConfigRead) {
+    const next = !row.is_global_free;
+    try {
+      await api.post(
+        `/api/enterprise/model-configs/${row.id}/global-free?tenant_id=${TENANT_ID}`,
+        { enabled: next },
+      );
+      notify.success(next
+        ? `已把「${row.name}」设为全局免费模型（租户内单选）`
+        : `已取消「${row.name}」的全局免费模型`);
+      await load();
+    } catch (error) {
+      notify.error(modelActionError(error, '全局免费模型设置失败'));
+    }
+  }
+
   async function test(row: ModelConfigRead): Promise<boolean> {
     if (testingModelIdsRef.current.has(row.id)) return false;
     testingModelIdsRef.current.add(row.id);
@@ -539,6 +556,7 @@ export default function ModelsPage({
 
   function renderActions(row: ModelConfigRead) {
     const isTesting = testingModelIds.has(row.id);
+    const isAdmin = currentUser?.role === 'admin';
     return (
       <DropdownMenu>
         <DropdownMenuTrigger
@@ -560,6 +578,16 @@ export default function ModelsPage({
             <Check />
             {row.is_default ? '已默认' : '设为默认'}
           </DropdownMenuItem>
+          {isAdmin && (
+            <DropdownMenuItem
+              className={MENU_ITEM_CLASS}
+              disabled={isTesting || (!row.is_global_free && !row.enabled)}
+              onSelect={() => void setGlobalFree(row)}
+            >
+              <Gift />
+              {row.is_global_free ? '取消全局免费' : '设为全局免费模型'}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem className={MENU_ITEM_CLASS} disabled={isTesting} onSelect={() => void test(row)}>
             {isTesting ? <LoaderCircle className="animate-spin" /> : <FlaskConical />}
             {isTesting ? '正在测试' : '测试'}
@@ -590,6 +618,7 @@ export default function ModelsPage({
             <span className="truncate font-medium leading-[18px] text-[#18181a]">{row.name}</span>
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
             {row.is_intent_recognition && <StatusBadge tone="blue">意图识别</StatusBadge>}
+            {row.is_global_free && <StatusBadge tone="green">全局免费</StatusBadge>}
           </span>
           <span className="truncate text-[#858b9c]">
             {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}
@@ -635,6 +664,7 @@ export default function ModelsPage({
             <strong className="truncate text-[14px] font-semibold text-[#18181a]">{row.name}</strong>
             {row.is_default && <StatusBadge tone="green">默认</StatusBadge>}
             {row.is_intent_recognition && <StatusBadge tone="blue">意图识别</StatusBadge>}
+            {row.is_global_free && <StatusBadge tone="green">全局免费</StatusBadge>}
           </span>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">
             {row.enabled ? '已启用' : '已停用'} · {row.api_protocol}

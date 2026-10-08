@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint, text
+from sqlalchemy import JSON, Boolean, Column, Index, Integer, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -706,8 +706,37 @@ class ModelConfig(SQLModel, table=True):
     key_revision: int = 1
     is_default: bool = False
     is_intent_recognition: bool = Field(default=False)
+    # 全局免费模型:租户内单选(管理员把自己的一条模型标记为全局,成员在免费员工上无自己模型时自动使用,
+    # 按「用户×员工×天」计 10 问配额)。置位/清理由 service 层保证租户内唯一。
+    is_global_free: bool = False
     enabled: bool = True
     created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class GlobalFreeModelUsage(SQLModel, table=True):
+    """免费模型每日配额:每用户对每个免费员工每天 FREE_MODEL_DAILY_LIMIT 问。
+
+    count 走 SQL 侧原子自增(对话链路并发安全);(tenant, user, agent, date) 唯一。
+    usage_date 用 UTC 日期字符串('YYYY-MM-DD'),避免时区列类型在 PG/SQLite 间的差异。
+    """
+
+    __tablename__ = "global_free_model_usage"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "user_id", "agent_id", "usage_date", name="uq_free_model_usage_day"
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("freemodel"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    usage_date: str = Field(index=True)
+    count: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -928,6 +957,12 @@ class AgentProfile(SQLModel, table=True):
     usage_count: int = Field(
         default=0,
         sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
+    # 免费模型:管理员在员工广场标记后,成员无自己模型时自动使用租户的全局免费模型
+    # (每用户每员工每天 FREE_MODEL_DAILY_LIMIT 问);广场卡片显示「免费」徽标。
+    free_model_enabled: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
     )
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)

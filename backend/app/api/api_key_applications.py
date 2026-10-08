@@ -1326,6 +1326,8 @@ def list_my_usage(
     # 组粒度规则（subjectType=consumer_group，2.1.23）：用量主体是消费组 csg-
     # 而非消费者 cs-，实时查询需换用消费者归属的组 ID；组内成员共享规则限额
     rule_subject_map: dict[str, str] = {}  # quota_rule_id -> subject_type
+    # 规则当前配额（管理员调整规则后申请行上的旧值会过期，展示必须以规则为准）
+    rule_quota_map: dict[str, int] = {}  # quota_rule_id -> quota_limit
     rule_ids = {r.quota_rule_id for r in rows if r.quota_rule_id}
     if rule_ids:
         for rr in db.exec(
@@ -1336,6 +1338,8 @@ def list_my_usage(
         ).all():
             if rr.external_rule_id:
                 rule_subject_map[rr.external_rule_id] = rr.subject_type or "consumer"
+                if rr.quota_limit:
+                    rule_quota_map[rr.external_rule_id] = int(rr.quota_limit)
 
     # 消费者 -> 归属消费组（组粒度用量查询的映射依据）
     consumer_group_map: dict[str, tuple[str | None, str | None]] = {}
@@ -1352,7 +1356,10 @@ def list_my_usage(
 
     items: list[ApiKeyApplicationUsageItem] = []
     for row in rows:
-        quota_limit = int(row.quota_limit or 0)
+        # 生效配额以规则当前值为准；规则已删（历史数据）才回退申请行上的旧值
+        quota_limit = (
+            rule_quota_map.get(row.quota_rule_id or "") or int(row.quota_limit or 0)
+        )
         used_amount = 0
         rule_subject_type = rule_subject_map.get(row.quota_rule_id or "", "consumer")
         subject_id = row.consumer_id
@@ -1400,7 +1407,7 @@ def list_my_usage(
                 gateway_name=row.gateway_name,
                 quota_rule_id=row.quota_rule_id,
                 quota_rule_name=row.quota_rule_name,
-                quota_limit=row.quota_limit or 0,
+                quota_limit=quota_limit,
                 quota_period=row.quota_period,
                 used_amount=used_amount,
             )

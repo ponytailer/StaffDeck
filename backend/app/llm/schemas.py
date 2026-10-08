@@ -63,6 +63,8 @@ class ModelConfigRead(BaseModel):
     security_revision: int
     is_default: bool
     is_intent_recognition: bool
+    # 全局免费模型标记(租户单选,仅管理员可设置):成员在免费员工上无自己模型时自动使用
+    is_global_free: bool = False
     enabled: bool
     created_at: str
     updated_at: str

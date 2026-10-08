@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # 新建/编辑模型时可选用的固定模型列表（JSON 数组字符串）。
     # 例如：MODEL_PRESETS='["gpt-4o","gpt-4o-mini","qwen-max","qwen-plus","deepseek-v3","claude-sonnet-4-5","gemini-2.5-pro"]'
     # 未配置时使用下方默认内置列表，保证前端下拉始终有可选值。
-    model_presets: str = '["qwen3.7-plus", "deepseek-v4-flash-0731", "qwen3.8-27b"]'
+    model_presets: str = '["qwen3.7-plus", "deepseek-v4.1-flash", "qwen3.8-27b"]'
     # 消费组「归属」业务字段的可选值（JSON 数组字符串），与阿里云接口无关。
     # 例如：CONSUMER_GROUP_OWNERS='["重庆项目","复星总部IT","Club Med"]'
     # 未配置时使用下方默认内置列表，保证前端下拉始终有可选值。

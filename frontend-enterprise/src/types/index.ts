@@ -206,6 +206,10 @@ export type AgentProfileRead = {
   harness_max_actions?: number;
   /** 被使用次数：每次新建会话 +1，员工广场卡片展示 */
   usage_count?: number;
+  /** 免费员工标记：广场卡片显示「免费」徽标；成员无自己模型时自动用全局免费模型 */
+  free_model_enabled?: boolean;
+  /** 今日剩余问数（针对当前用户计算；未启用或未计算为 null） */
+  free_model_remaining?: number | null;
   metadata: Record<string, unknown>;
   resources: AgentResourceBindingRead[];
   created_at: string;
@@ -347,6 +351,8 @@ export type ModelConfigRead = {
   security_revision: number;
   is_default: boolean;
   is_intent_recognition: boolean;
+  /** 全局免费模型标记（租户单选，仅管理员可设置自己的模型） */
+  is_global_free?: boolean;
   enabled: boolean;
   updated_at: string;
 };

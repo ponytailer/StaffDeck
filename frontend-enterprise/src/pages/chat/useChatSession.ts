@@ -629,9 +629,16 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   );
   // 模型管理已开放给所有成员：每个人管理自己的模型。
   const canConfigureModels = Boolean(auth?.user) && !shareMode;
+  // 当前员工开启了免费模式：没有自己的模型时后端自动走全局免费模型（每员工每天 10 问）。
+  const displayedAgentFreeModel = displayedAgent?.free_model_enabled === true;
   // 分享访客的模型在分享创建时已锁定（后端在对话链路强制注入），不应出现“配置模型”提示。
-  const showModelSetupNotice = !shareMode && !modelConfigsLoading && !modelConfigsLoadError && !selectedModelConfig;
+  const showModelSetupNotice = !shareMode && !modelConfigsLoading && !modelConfigsLoadError && !selectedModelConfig && !displayedAgentFreeModel;
   const modelSetupNoticeText = t('当前账号还没有可用模型，发送消息前请先完成模型配置。');
+  const freeModelNoticeText = displayedAgentFreeModel
+    ? `你还没有自己的模型，发送后将使用「${displayedAgent ? employeeDisplayName(displayedAgent) : '该员工'}」的免费模型（每人每天 10 问${
+        typeof displayedAgent?.free_model_remaining === 'number' ? `，今日剩余 ${displayedAgent.free_model_remaining} 问` : ''
+      }）。`
+    : '';
 
   useEffect(() => {
     if (!auth || !displayedAgent?.id) {
@@ -693,11 +700,13 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       return false;
     }
     if (!selectedModelConfig) {
+      // 免费员工：没有自己的模型也能发，后端自动解析全局免费模型并按「用户×员工×天」计 10 问配额
+      if (displayedAgent?.free_model_enabled) return true;
       setModelSetupOpen(true);
       return false;
     }
     return true;
-  }, [modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, shareMode, t]);
+  }, [modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, displayedAgent, shareMode, t]);
 
   const loadAgents = useCallback(async (preferredAgentId?: string) => {
     setAgentsLoaded(false);
@@ -895,11 +904,13 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
 
   useEffect(() => {
     if (!auth || modelConfigsLoading || modelConfigsLoadError || selectedModelConfig) return;
+    // 免费员工不弹模型配置对话框：无模型也能对话（后端走全局免费模型）
+    if (displayedAgent?.free_model_enabled) return;
     const onboardingSeen = window.localStorage.getItem(ONBOARDING_SEEN_KEY);
     const quickStartSeen = window.localStorage.getItem(QUICK_START_SEEN_KEY);
     if (!onboardingSeen || !quickStartSeen) return;
     setModelSetupOpen(true);
-  }, [auth, modelConfigsLoadError, modelConfigsLoading, selectedModelConfig]);
+  }, [auth, modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, displayedAgent]);
 
   const toggleTrace = useCallback((turnId: string, isExpanded = false) => {
     if (isExpanded) {
@@ -3813,6 +3824,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     changeModelConfig,
     showModelSetupNotice,
     modelSetupNoticeText,
+    freeModelNoticeText,
     tenantId,
     canConfigureModels,
     modelConfigsLoading,

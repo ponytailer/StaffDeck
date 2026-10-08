@@ -5,6 +5,7 @@ from time import monotonic
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -42,7 +43,9 @@ from app.security.encryption import (
     mask_secret,
     try_decrypt_secret,
 )
+from app.security.permissions import is_admin_user
 from app.security.tenant import ensure_tenant
+from app.agents.free_model import clear_global_free_flag
 
 router = APIRouter(
     prefix="/api/enterprise/model-configs",
@@ -105,6 +108,7 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
         security_revision=row.security_revision,
         is_default=row.is_default,
         is_intent_recognition=row.is_intent_recognition,
+        is_global_free=bool(row.is_global_free),
         enabled=row.enabled,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
@@ -127,6 +131,45 @@ def list_model_configs(
         )
     ).all()
     return [model_config_read(row) for row in rows]
+
+
+class GlobalFreeModelFlagRequest(BaseModel):
+    """置位/取消「全局免费模型」。置位时租户内单选(自动清掉其他标记)。"""
+
+    enabled: bool
+
+
+@router.post("/{config_id}/global-free", response_model=ModelConfigRead)
+def set_global_free_model(
+    config_id: str,
+    request: GlobalFreeModelFlagRequest,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ModelConfigRead:
+    """管理员把自己的模型标记为全局免费模型(租户内单选)。
+
+    停用后标记自动失效(get_global_free_model 只取 enabled),无需额外清理;
+    费用记在模型属主(管理员)头上,所以只允许标记自己的模型。
+    """
+    ensure_tenant(db, tenant_id)
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Only administrator can set the global free model")
+    row = db.get(ModelConfig, config_id)
+    if not row or row.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Model config not found")
+    if row.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="只能标记自己的模型为全局免费模型")
+    if request.enabled and not row.enabled:
+        raise HTTPException(status_code=400, detail="已停用的模型不能设为全局免费模型")
+    if request.enabled:
+        clear_global_free_flag(db, tenant_id, exclude_config_id=row.id)
+    row.is_global_free = bool(request.enabled)
+    row.updated_at = utc_now()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return model_config_read(row)
 
 
 @router.post("", response_model=ModelConfigRead)

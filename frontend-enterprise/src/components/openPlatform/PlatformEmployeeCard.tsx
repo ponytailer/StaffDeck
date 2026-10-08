@@ -19,6 +19,8 @@ export type PlatformEmployeeCardProps = {
   description: ReactNode;
   /** Bottom metric segments (资料 / 技能 / SOP …). */
   stats: PlatformStat[];
+  /** 免费员工徽标(管理员标记了全局免费模型的员工):卡片右上角常驻。 */
+  freeBadge?: boolean;
   onOpen?: () => void;
   onUnpublish?: () => void;
   unpublishing?: boolean;
@@ -33,6 +35,7 @@ export default function PlatformEmployeeCard({
   online = true,
   description,
   stats,
+  freeBadge = false,
   onOpen,
   onUnpublish,
   unpublishing = false,
@@ -45,6 +48,7 @@ export default function PlatformEmployeeCard({
         className,
       )}
     >
+      {freeBadge && <FreeBadge />}
       <button
         type="button"
         onClick={onOpen}
@@ -108,7 +112,9 @@ export default function PlatformEmployeeCard({
           disabled={unpublishing}
           onClick={onUnpublish}
           className={cn(
-            'absolute top-[8px] right-[8px] inline-flex h-[24px] items-center gap-[4px] rounded-[9px] border border-[#f3c7c7] bg-white px-[7px] text-[9px] font-medium text-[#b42318] shadow-[0_3px_10px_rgba(20,20,20,0.06)] transition-all',
+            'absolute top-[8px] inline-flex h-[24px] items-center gap-[4px] rounded-[9px] border border-[#f3c7c7] bg-white px-[7px] text-[9px] font-medium text-[#b42318] shadow-[0_3px_10px_rgba(20,20,20,0.06)] transition-all',
+            // 有免费徽标时让位到徽标左侧，避免 hover 时互相压住
+            freeBadge ? 'right-[44px]' : 'right-[8px]',
             'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f1aaaa]',
             'hover:border-[#e49b9b] hover:bg-[#fff7f7] disabled:cursor-wait disabled:opacity-50',
           )}
@@ -118,5 +124,19 @@ export default function PlatformEmployeeCard({
         </button>
       )}
     </article>
+  );
+}
+
+/** 「免费」徽标:免费员工卡片右上角常驻(头像在左上,右上更醒目),hover 下线按钮让位到徽标左侧。 */
+export function FreeBadge({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        'pointer-events-none absolute top-[8px] right-[8px] z-10 inline-flex h-[22px] items-center rounded-[9px] border border-[#8fd8bd] bg-[#e2f9ef] px-[9px] text-[10px] font-semibold leading-none text-[#0f8a5f] shadow-[0_2px_8px_rgba(15,138,95,0.14)]',
+        className,
+      )}
+    >
+      免费
+    </span>
   );
 }

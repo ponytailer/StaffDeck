@@ -1,5 +1,6 @@
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Gift } from 'lucide-react';
 
 import EmployeeAvatar from '@/components/EmployeeAvatar';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
@@ -95,6 +96,7 @@ export default function Composer({
     changeModelConfig,
     showModelSetupNotice,
     modelSetupNoticeText,
+    freeModelNoticeText,
     canConfigureModels,
     setModelSetupOpen,
     isComposing,
@@ -211,6 +213,14 @@ export default function Composer({
                 {t('配置模型')}
               </button>
             )}
+          </div>
+        )}
+        {!showModelSetupNotice && freeModelNoticeText && (
+          <div className="mb-[10px] flex items-center gap-[9px] rounded-[12px] border border-[#bfe8d9] bg-[#eafaf3] px-[14px] py-[10px] text-[#0f8a5f]">
+            <span className="flex size-[26px] shrink-0 items-center justify-center rounded-[8px] bg-[#d3f2e4]">
+              <Gift className="size-[14px]" strokeWidth={1.8} />
+            </span>
+            <span className="min-w-0 text-[12px] leading-[18px]">{freeModelNoticeText}</span>
           </div>
         )}
         {showComposerAvatar && displayedProfile && (
