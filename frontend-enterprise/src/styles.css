@@ -15,7 +15,7 @@
 }
 
 :root {
-  --background: #f7f5ef;
+  --background: #fbfbfa;
   --foreground: #20201d;
   --surface: #ffffff;
   --surface-raised: #ffffff;
@@ -42,12 +42,12 @@
   --island-gap: 16px;
   --island-radius: 20px;
   --island-radius-sm: 16px;
-  --island-bg: #ffffff;
+  --island-bg: #fbfbfa;
   --island-border-color: rgba(17, 17, 17, 0.06);
   --island-padding: 12px;
   --island-shadow: var(--shadow-float);
   --island-shadow-sm: var(--shadow-soft);
-  --canvas-bg: #f1f2f6;
+  --canvas-bg: #fbfbfa;
   --elev-card: 0 1px 2px rgba(17, 17, 17, 0.04), 0 1px 8px rgba(70, 76, 94, 0.06);
   --elev-overlay: 0 24px 68px rgba(17, 17, 17, 0.18);
   /* SD1 stacking tokens */
@@ -62,8 +62,8 @@
   --font-display: "Inter", "IBM Plex Sans", "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --page-gradient-a: rgba(15, 118, 110, 0.055);
-  --page-gradient-top: #fbfaf6;
-  --page-gradient-bottom: #f3f0e8;
+  --page-gradient-top: #fbfbfa;
+  --page-gradient-bottom: #fbfbfa;
   --panel-bg: rgba(249, 247, 241, 0.82);
   --code-bg: #ffffff;
   --code-fg: #1f1f1f;
@@ -5214,7 +5214,7 @@ pre {
 
 /* StaffDeck SD1 visual alignment */
 :root {
-  --background: #f7f8fa;
+  --background: #fbfbfa;
   --foreground: #111111;
   --surface: #ffffff;
   --surface-raised: #ffffff;
@@ -5233,19 +5233,19 @@ pre {
   --font-display: var(--font-body);
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --page-gradient-a: transparent;
-  --page-gradient-top: #f7f8fa;
-  --page-gradient-bottom: #f7f8fa;
+  --page-gradient-top: #fbfbfa;
+  --page-gradient-bottom: #fbfbfa;
   --panel-bg: rgba(255, 255, 255, 0.94);
 }
 
 body,
 .app-shell {
-  background: var(--canvas-bg);
+  background: #fbfbfa; /* 站点统一底色，与首页一致 */
   letter-spacing: 0;
 }
 
 .app-shell {
-  background: var(--canvas-bg);
+  background: #fbfbfa;
 }
 
 .sidebar {

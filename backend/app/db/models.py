@@ -2121,3 +2121,26 @@ class AiReviewTask(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, index=True)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+
+
+class PlazaNewsCache(SQLModel, table=True):
+    """开放广场首页新闻的每日缓存。
+
+    同一租户同一天只抓取一次 RSS 源（tenant_id + cache_date 唯一）；
+    抓取失败时回退读最近一天缓存，再退到 API 内置种子新闻。
+    """
+
+    __tablename__ = "plaza_news_cache"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "cache_date", name="uq_plaza_news_tenant_date"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("pnews"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    # 缓存归属日期（YYYY-MM-DD，租户本地时区语义上按「天」粒度即可）
+    cache_date: str = Field(index=True)
+    # {"ai": [item...], "travel": [item...]}，item: {title, summary, source, url, published_at, category}
+    items_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # provenance: rss / fallback（种子兜底）
+    provenance: str = Field(default="rss")
+    updated_at: datetime = Field(default_factory=utc_now)

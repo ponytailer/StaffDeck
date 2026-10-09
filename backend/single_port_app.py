@@ -465,8 +465,8 @@ app.mount(
 
 @app.get("/", include_in_schema=False)
 def root_redirect() -> RedirectResponse:
-    # 站点默认落地页是开放广场平台；对话端入口仍在 /chat/（桌面启动器直接开 /chat/）。
-    return RedirectResponse(url="/enterprise/platform")
+    # 站点默认落地页是「首页」（AI 新闻 + 快捷方式画布）；对话端入口仍在 /chat/（桌面启动器直接开 /chat/）。
+    return RedirectResponse(url="/enterprise/home")
 
 
 @app.get("/pilotdeck", include_in_schema=False)

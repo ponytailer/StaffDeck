@@ -27,6 +27,7 @@ from app.api import (
     mock,
     model_configs,
     persona,
+    plaza_news,
     scheduled_task_monitor,
     scheduled_tasks,
     sessions,
@@ -172,6 +173,7 @@ app.include_router(knowledge_bases.router)
 app.include_router(knowledge.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)
+app.include_router(plaza_news.router)
 app.include_router(api_key_applications.router)
 app.include_router(laya.router)
 app.include_router(ai_review.router)

@@ -179,23 +179,23 @@ describe('App team scope selection', () => {
 });
 
 describe('App default landing route', () => {
-  it('sends the site root to the open platform instead of the chat gallery', async () => {
+  it('sends the site root to the plaza home instead of the chat gallery', async () => {
     stubAppFetch();
     window.history.pushState({}, '', '/');
     render(<I18nProvider><App /></I18nProvider>);
 
     await waitFor(() => {
-      expect(window.location.pathname).toBe('/enterprise/platform');
+      expect(window.location.pathname).toBe('/enterprise/home');
     });
   });
 
-  it('sends the bare /enterprise path to the open platform', async () => {
+  it('sends the bare /enterprise path to the plaza home', async () => {
     stubAppFetch();
     window.history.pushState({}, '', '/enterprise');
     render(<I18nProvider><App /></I18nProvider>);
 
     await waitFor(() => {
-      expect(window.location.pathname).toBe('/enterprise/platform');
+      expect(window.location.pathname).toBe('/enterprise/home');
     });
   });
 

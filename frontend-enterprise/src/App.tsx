@@ -57,6 +57,7 @@ import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
 import ApiKeyApprovalsPage from "./pages/ApiKeyApprovalsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
+import HomePage from "./pages/HomePage";
 import PlatformUpdatesPage from "./pages/PlatformUpdatesPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -174,7 +175,7 @@ function Shell({
     location.pathname.startsWith("/enterprise/platform/");
   const selected =
     location.pathname === "/enterprise"
-      ? "/enterprise/dashboard"
+      ? EnterpriseRoute.Home
       : isOpenPlatformRoute
         ? "/enterprise/platform"
         : location.pathname.startsWith("/enterprise/knowledge")
@@ -580,7 +581,21 @@ function Shell({
             <Routes>
               <Route
                 path="/enterprise"
-                element={<Navigate to={EnterpriseRoute.Platform} replace />}
+                element={<Navigate to={EnterpriseRoute.Home} replace />}
+              />
+              <Route
+                path={EnterpriseRoute.Home}
+                element={
+                  <HomePage
+                    currentUser={auth.user}
+                    onLogout={onLogout}
+                  />
+                }
+              />
+              {/* 广场首页已独立为站点首页：旧链接 /enterprise/platform/home 301 到新地址 */}
+              <Route
+                path="/enterprise/platform/home"
+                element={<Navigate to={EnterpriseRoute.Home} replace />}
               />
               <Route
                 path="/enterprise/platform"
@@ -1034,8 +1049,8 @@ function AuthedApp({
 }) {
   const location = useLocation();
   if (location.pathname === "/") {
-    // 站点默认首页是开放广场平台；对话广场（/workspace/gallery）不再是落地页。
-    return <Navigate to={EnterpriseRoute.Platform} replace />;
+    // 站点默认首页是「首页」（AI 新闻 + 快捷方式画布）。
+    return <Navigate to={EnterpriseRoute.Home} replace />;
   }
   if (location.pathname === "/chat" || location.pathname === "/chat/") {
     return <Navigate to={EnterpriseRoute.Gallery} replace />;

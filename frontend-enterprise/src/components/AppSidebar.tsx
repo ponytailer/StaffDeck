@@ -28,6 +28,7 @@ import { employeeDisplayNameWithCreator, employeeProfile, staffdeckDisplayText }
 import { EnterpriseRoute } from '../enums/routes';
 import type { AgentProfileRead, ChatSession, TeamRead } from '../types';
 import IconPlatform from '../assets/icons/nav-platform.svg?react';
+import IconHome from '../assets/icons/nav-home.svg?react';
 import IconAgents from '../assets/icons/nav-agents.svg?react';
 import IconTeams from '../assets/icons/nav-teams.svg?react';
 import IconFile from '../assets/icons/profile-file.svg?react';
@@ -66,6 +67,8 @@ type NavItem = {
 };
 
 const PRIMARY_NAV: NavItem[] = [
+  // 站点默认首页：AI 新闻 + 快捷方式画布（PlazaHomePage 独立页）
+  { route: EnterpriseRoute.Home, label: '首页', Icon: IconHome },
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
   { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },

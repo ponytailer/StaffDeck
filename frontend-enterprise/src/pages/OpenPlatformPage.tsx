@@ -238,6 +238,7 @@ export default function OpenPlatformPage({
   const { kind } = useParams<{ kind?: PlatformKind }>();
   const initialKind = kind && PLATFORM_BY_KIND.has(kind) ? kind : 'agents';
   const [activeKind, setActiveKind] = useState<PlatformKind>(initialKind);
+  // 广场首页已独立为侧边栏「首页」（/enterprise/home，HomePage.tsx），广场页只承载各资源列表。
   // 支持 ?q= 深链（技能分享页「去技能广场查看」带上技能名）：进页面即预填搜索词，
   // 广场自动过滤出目标技能；用户可随时清空改查。
   const [searchText, setSearchText] = useState(() => new URLSearchParams(window.location.search).get('q') || '');
@@ -863,23 +864,24 @@ export default function OpenPlatformPage({
 
           <div className="flex flex-wrap items-center gap-[8px]">
             {activeKind === 'general-skills' && (
-              <UIButton onClick={handleCreateGeneralSkill} className="h-8 gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]">
-                <IconAdd className="size-3.5" />
-                创建开放 Skill
-              </UIButton>
-            )}
-            <UIButton
-              variant="outline"
-              onClick={() => void loadKindData(activeKind, { force: true })}
-              disabled={loading}
-              className="h-8 gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
-            >
-              <IconRefresh className={cn('size-[14px]', loading && 'animate-spin')} />
-              刷新
-            </UIButton>
+                  <UIButton onClick={handleCreateGeneralSkill} className="h-8 gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]">
+                    <IconAdd className="size-3.5" />
+                    创建开放 Skill
+                  </UIButton>
+                )}
+                <UIButton
+                  variant="outline"
+                  onClick={() => void loadKindData(activeKind, { force: true })}
+                  disabled={loading}
+                  className="h-8 gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
+                >
+                  <IconRefresh className={cn('size-[14px]', loading && 'animate-spin')} />
+                  刷新
+                </UIButton>
           </div>
         </div>
 
+        <>
         <div className="flex flex-col gap-[10px] px-[12px]">
           <div className="flex items-center gap-[8px] text-[#18181a]">
             <PlatformIcon className="size-[16px] shrink-0" />
@@ -978,6 +980,7 @@ export default function OpenPlatformPage({
             </RevealGroup>
           )}
         </div>
+        </>
       </div>
 
       {renderItemDrawer()}

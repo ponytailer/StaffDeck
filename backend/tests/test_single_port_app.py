@@ -293,12 +293,12 @@ async def test_anthropic_messages_relay_uses_dedicated_upstream(monkeypatch) -> 
     } <= single_port_app.LLM_RELAY_REQUEST_HEADERS
 
 
-def test_root_redirects_to_the_open_platform() -> None:
-    """/ 是站点默认落地页：必须落到开放广场平台，而不是对话端 /chat/。"""
+def test_root_redirects_to_the_plaza_home() -> None:
+    """/ 是站点默认落地页：必须落到「首页」/enterprise/home，而不是对话端 /chat/。"""
     response = single_port_app.root_redirect()
 
     assert response.status_code == 307
-    assert response.headers["location"] == "/enterprise/platform"
+    assert response.headers["location"] == "/enterprise/home"
 
 
 def test_share_route_serves_spa_index(monkeypatch, tmp_path: Path) -> None:
