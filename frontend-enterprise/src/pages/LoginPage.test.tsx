@@ -12,8 +12,8 @@ import { I18nProvider } from '../i18n';
 
 import LoginPage from './LoginPage';
 
-// jsdom 不实现 matchMedia，而登录页/预览动效要靠它判断 prefers-reduced-motion
-// 与精细指针。补一个最小实现，保持测试环境与浏览器一致。
+// jsdom 不实现 matchMedia，而登录页/卡片堆/光路动效要靠它判断
+// prefers-reduced-motion 与精细指针。补一个最小实现，保持测试环境与浏览器一致。
 beforeEach(() => {
   if (!window.matchMedia) {
     window.matchMedia = ((query: string) => ({
@@ -57,12 +57,11 @@ function renderLogin(onLogin = vi.fn()) {
   return onLogin;
 }
 
-async function showFormAndEnterCredentials(
+async function enterCredentials(
   user: ReturnType<typeof userEvent.setup>,
   username = 'admin',
   password = 'secret',
 ) {
-  await user.click(screen.getByRole('button', { name: '登录' }));
   await user.type(screen.getByLabelText('账号'), username);
   await user.type(screen.getByLabelText('密码'), password);
 }
@@ -74,17 +73,13 @@ afterEach(() => {
 });
 
 describe('LoginPage', () => {
-  it('shows the original landing hero before revealing credentials', async () => {
-    const user = userEvent.setup();
+  it('shows the credentials card directly on the landing hero', () => {
     renderLogin();
 
-    expect(screen.getByAltText('StaffDeck 产品预览')).toBeTruthy();
-    expect(screen.queryByLabelText('账号')).toBeNull();
-
-    await user.click(screen.getByRole('button', { name: '登录' }));
-
+    // 登录框改为常驻的浮层卡片堆：表单直接可见，不再有「先点登录再展开」两步
     expect(screen.getByLabelText('账号')).toBeTruthy();
     expect(screen.getByLabelText('密码')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '登录' })).toBeTruthy();
   });
 
   it('renders the hero title as one heading holding the brand and product lines', () => {
@@ -97,14 +92,15 @@ describe('LoginPage', () => {
     expect(heading.childElementCount).toBe(2);
   });
 
-  it('introduces the product with real on-duty staff and capabilities', () => {
+  it('introduces the product with real on-duty staff and the SOP light path', () => {
     renderLogin();
 
     // 在岗播报用的是产品里真实存在的岗位与职责，不是占位文案。
-    expect(screen.getByText('市场 @admin')).toBeTruthy();
+    expect(screen.getByText('市场')).toBeTruthy();
     expect(screen.getByText('拆解目标、里程碑、责任人与风险')).toBeTruthy();
     expect(screen.getByText('定义指标口径、分析周期与对比维度')).toBeTruthy();
 
+    // 四个能力标签现在由底部「SOP 光路流水线」的节点承载。
     for (const label of ['流程 SOP', '知识检索', '自主执行', '长期记忆']) {
       expect(screen.getByText(label)).toBeTruthy();
     }
@@ -113,7 +109,6 @@ describe('LoginPage', () => {
   it('toggles the password between hidden and visible text', async () => {
     const user = userEvent.setup();
     renderLogin();
-    await user.click(screen.getByRole('button', { name: '登录' }));
     const password = screen.getByLabelText('密码');
 
     expect(password.getAttribute('type')).toBe('password');
@@ -129,7 +124,7 @@ describe('LoginPage', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderLogin();
 
-    await showFormAndEnterCredentials(user, '  admin  ', '  secret  ');
+    await enterCredentials(user, '  admin  ', '  secret  ');
     await user.click(screen.getByRole('button', { name: '登录' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -148,11 +143,24 @@ describe('LoginPage', () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(session)));
     const onLogin = renderLogin();
 
-    await showFormAndEnterCredentials(user);
+    await enterCredentials(user);
     await user.click(screen.getByRole('button', { name: '登录' }));
 
     await waitFor(() => expect(onLogin).toHaveBeenCalledWith(session));
     expect(JSON.parse(window.localStorage.getItem(ENTERPRISE_AUTH_STORAGE_KEY) || 'null'))
       .toEqual(session);
+  });
+
+  it('surfaces validation errors without calling the API when fields are empty', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    renderLogin();
+
+    await user.click(screen.getByRole('button', { name: '登录' }));
+
+    expect(screen.getByText('请输入账号')).toBeTruthy();
+    expect(screen.getByText('请输入密码')).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

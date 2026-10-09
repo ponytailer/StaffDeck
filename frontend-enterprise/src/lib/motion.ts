@@ -5,7 +5,7 @@ import type { AnimationParams, JSAnimation, TargetsParam } from 'animejs';
 /**
  * Shared motion foundation for the enterprise console.
  *
- * 登录页（`LoginPage` / `LoginProductPreview`）已经有一套精修过的动效，但它是
+ * 登录页（`LoginPage` / `LoginCardStack` / `LoginSopFlow`）已经有一套精修过的动效，但它是
  * 一次性写死的；后台页面要加动效时没有可复用的入口，容易各自为战，也容易漏掉
  * `prefers-reduced-motion` 分支。这里把最常用的三种动作收敛成一个基座：
  *
