@@ -204,10 +204,12 @@ function overallSuffixFor(rows: AgentProfileRead[]): string {
 
 // Bottom metric segments for a 数字员工广场 card.
 function employeeStats(agent: AgentProfileRead): PlatformStat[] {
+  const usageCount = Math.max(0, Number(agent.usage_count || 0));
   return [
     { value: agentResourceCount(agent, 'knowledge_base'), label: '资料' },
     { value: agentResourceCount(agent, 'general_skill'), label: '技能' },
     { value: agentResourceCount(agent, 'skill'), label: 'SOP' },
+    { value: usageCount > 9999 ? '9999+' : usageCount, label: '被使用' },
   ];
 }
 

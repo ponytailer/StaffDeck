@@ -634,7 +634,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   // 分享访客的模型在分享创建时已锁定（后端在对话链路强制注入），不应出现“配置模型”提示。
   const showModelSetupNotice = !shareMode && !modelConfigsLoading && !modelConfigsLoadError && !selectedModelConfig && !displayedAgentFreeModel;
   const modelSetupNoticeText = t('当前账号还没有可用模型，发送消息前请先完成模型配置。');
-  const freeModelNoticeText = displayedAgentFreeModel
+  // 免费模式提示只对「自己没有可用模型」的用户出现：配了模型就走自己的，不必提醒。
+  const freeModelNoticeText = displayedAgentFreeModel && !selectedModelConfig
     ? `你还没有自己的模型，发送后将使用「${displayedAgent ? employeeDisplayName(displayedAgent) : '该员工'}」的免费模型（每人每天 10 问${
         typeof displayedAgent?.free_model_remaining === 'number' ? `，今日剩余 ${displayedAgent.free_model_remaining} 问` : ''
       }）。`
