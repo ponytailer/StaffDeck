@@ -280,10 +280,14 @@ export default function ModelsPage({
   const load = (showLoading = true) => {
     if (showLoading) setLoading(true);
     return api
-      .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`)
+      // 管理页需要看到全局免费模型（徽标/取消标记）；其余选模型场景一律不出现它
+      .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}&include_global_free=1`)
       .then((items) => {
         setRows(items);
-        window.dispatchEvent(new CustomEvent(MODEL_CONFIGS_UPDATED_EVENT, { detail: { models: items } }));
+        // 广播给其他消费方（App/对话页等）时剔除全局免费模型，保持「只在免费链路生效」口径
+        window.dispatchEvent(new CustomEvent(MODEL_CONFIGS_UPDATED_EVENT, {
+          detail: { models: items.filter((item) => !item.is_global_free) },
+        }));
       })
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载模型失败'))
       .finally(() => {

@@ -73,7 +73,15 @@ def _model(db: Session, owner: User, config_id: str, enabled: bool = True) -> Mo
 
 
 def _agent(db: Session, agent_id: str, is_overall: bool = False) -> AgentProfile:
-    row = AgentProfile(id=agent_id, tenant_id="tenant_demo", name=agent_id, is_overall=is_overall)
+    # published_to_gallery:member 的 list_agents 可见性要求 owner 或已发布广场,
+    # 裸 agent 对 member 隐藏会让按 id 取行的用例拿不到数据。
+    row = AgentProfile(
+        id=agent_id,
+        tenant_id="tenant_demo",
+        name=agent_id,
+        is_overall=is_overall,
+        metadata_json={"published_to_gallery": True},
+    )
     db.add(row)
     db.commit()
     db.refresh(row)

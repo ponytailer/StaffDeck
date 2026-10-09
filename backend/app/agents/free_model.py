@@ -66,16 +66,26 @@ def is_agent_free_enabled(db: Session, tenant_id: str, agent_id: str | None) -> 
 
 
 def own_model_for_role(db: Session, tenant_id: str, user_id: str, role: str) -> ModelConfig | None:
-    """用户自己的 role 模型(不回落租户),与 branching.model_for_agent 的角色过滤保持一致。"""
-    role_filter = (
-        ModelConfig.is_intent_recognition == True  # noqa: E712
-        if role == "intent_recognition"
-        else ModelConfig.is_default == True  # noqa: E712
-    )
+    """用户自己的 role 模型(不回落租户)。
+
+    intent_recognition 角色没有专用标记时回落自己的默认模型——
+    「有自己的模型就完全不受免费链路影响」的口径对任意角色都成立。
+    """
+    if role == "intent_recognition":
+        own_intent = db.exec(
+            select(ModelConfig).where(
+                ModelConfig.tenant_id == tenant_id,
+                ModelConfig.is_intent_recognition == True,  # noqa: E712
+                ModelConfig.enabled == True,  # noqa: E712
+                ModelConfig.user_id == user_id,
+            )
+        ).first()
+        if own_intent is not None:
+            return own_intent
     return db.exec(
         select(ModelConfig).where(
             ModelConfig.tenant_id == tenant_id,
-            role_filter,
+            ModelConfig.is_default == True,  # noqa: E712
             ModelConfig.enabled == True,  # noqa: E712
             ModelConfig.user_id == user_id,
         )

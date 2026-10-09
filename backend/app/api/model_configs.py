@@ -120,16 +120,21 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
 )
 def list_model_configs(
     tenant_id: str = Query(...),
+    include_global_free: bool = Query(False),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[ModelConfigRead]:
+    """列出当前用户的模型配置。
+
+    全局免费模型默认不出现在列表里:它只由免费员工链路在后端自动使用,
+    不应出现在任何「选模型」的下拉中。模型管理页(ModelsPage)传
+    ``include_global_free=1`` 拿全量做管理(徽标/取消标记)。
+    """
     ensure_tenant(db, tenant_id)
-    rows = db.exec(
-        select(ModelConfig).where(
-            ModelConfig.tenant_id == tenant_id,
-            ModelConfig.user_id == current_user.id,
-        )
-    ).all()
+    filters = [ModelConfig.tenant_id == tenant_id, ModelConfig.user_id == current_user.id]
+    if not include_global_free:
+        filters.append(ModelConfig.is_global_free == False)  # noqa: E712
+    rows = db.exec(select(ModelConfig).where(*filters)).all()
     return [model_config_read(row) for row in rows]
 
 

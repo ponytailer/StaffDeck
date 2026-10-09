@@ -1140,7 +1140,14 @@ def model_for_agent(
         ).first()
         if model:
             return _runtime_model(db, tenant_id, model)
-    model = db.exec(select(ModelConfig).where(*base_filters)).first()
+    # 全局免费模型只走免费员工链路(resolve_turn_default_model),不参与
+    # 「租户默认回落」——否则没配模型的成员在非免费员工上也会静默用它。
+    model = db.exec(
+        select(ModelConfig).where(
+            *base_filters,
+            ModelConfig.is_global_free == False,  # noqa: E712
+        )
+    ).first()
     return _runtime_model(db, tenant_id, model) if model else None
 
 

@@ -150,9 +150,6 @@ export default function LoginSopFlow() {
   return (
     <div className="mt-[10px] flex w-full justify-center pb-[26px]">
       <div className="w-full max-w-[1120px]">
-        <p className="text-center text-[13px] text-[#757f9c]">
-          把一件事交给数字员工 —— 一条光路，四步完成
-        </p>
         <div ref={stageRef} className="relative mt-[4px] aspect-[1120/420] w-full">
           <svg
             viewBox="0 0 1120 420"

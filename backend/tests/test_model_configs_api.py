@@ -769,3 +769,48 @@ def test_model_presets_invalid_json_falls_back_to_empty() -> None:
 
     settings = Settings(model_presets="not-json{{")
     assert settings.model_preset_list == []
+
+
+def test_list_excludes_global_free_model_unless_opted_in(tmp_path) -> None:
+    """全局免费模型默认不出现在列表里,include_global_free=1 才返回(管理页专用)。"""
+    from app.agents.free_model import get_global_free_model
+    from app.api.model_configs import list_model_configs, set_global_free_model
+
+    class _FlagRequest:
+        def __init__(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    with _db(tmp_path) as db:
+        db.add(_admin())
+        db.commit()
+        admin = db.get(User, "user_admin")
+        row = ModelConfig(
+            id="model_free",
+            tenant_id="tenant_a",
+            user_id=admin.id,
+            name="Free",
+            api_key_encrypted="enc",
+            model="free-model",
+            enabled=True,
+        )
+        db.add(row)
+        db.commit()
+
+        set_global_free_model(
+            "model_free",
+            _FlagRequest(True),
+            tenant_id="tenant_a",
+            db=db,
+            current_user=admin,
+        )
+        assert get_global_free_model(db, "tenant_a") is not None
+
+        default_ids = {item.id for item in list_model_configs(
+            tenant_id="tenant_a", include_global_free=False, db=db, current_user=admin,
+        )}
+        assert "model_free" not in default_ids
+
+        full_ids = {item.id for item in list_model_configs(
+            tenant_id="tenant_a", include_global_free=True, db=db, current_user=admin,
+        )}
+        assert "model_free" in full_ids
