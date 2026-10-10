@@ -218,6 +218,28 @@
     return found;
   }
 
+  /**
+   * 从候选项里挑最匹配的：
+   *  ① 文本完全一致（归一化空白后）；
+   *  ② 以关键词开头（如「电子普通发票」优先于「增值税电子普通发票」）；
+   *  ③ 退而求其次：包含关键词的最短项。
+   * 之前的「取第一个包含项」会在「电子普通发票」这类关键词上误选「增值税电子普通发票」。
+   */
+  function pickOption(options, keyword) {
+    var key = String(keyword || '').replace(/\s+/g, '');
+    if (!key) return options[0];
+    var prefix = null;
+    var shortest = null;
+    var shortestLen = Infinity;
+    for (var i = 0; i < options.length; i++) {
+      var text = (options[i].innerText || options[i].textContent || '').replace(/\s+/g, '');
+      if (text === key) return options[i];
+      if (!prefix && text.indexOf(key) === 0) prefix = options[i];
+      if (text.length < shortestLen) { shortest = options[i]; shortestLen = text.length; }
+    }
+    return prefix || shortest;
+  }
+
   /** 提交判据：容器内 hidden input 有值（渲染区文本会镜像搜索词，不能作依据）。 */
   function selectCommitted(container, value) {
     var hidden = container.querySelector("input[type='hidden']");
@@ -288,7 +310,7 @@
       var option = null;
       for (var o = 0; o < 12; o++) {
         var opts = visibleOptions(doc, keyword);
-        if (opts.length) { option = opts[0]; break; }
+        if (opts.length) { option = pickOption(opts, keyword); break; }
         await sleep(300);
       }
       attempts.push('opts=' + (option ? 'hit' : 'miss'));
