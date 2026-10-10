@@ -39,6 +39,10 @@ dependencies = [
   "rq-scheduler>=0.13.0",
   # 远程 PostgreSQL（DATABASE_URL 指向 PG 时必需）
   "psycopg2-binary>=2.9.9",
+  # Agent 广场「报销流程助手」浏览器自动化（复用本机 Chrome，不下载内置浏览器）
+  "playwright>=1.47.0",
+  # 报销流程助手：解析电子发票 PDF 价税合计，自动计算报销总金额
+  "pypdf>=5.0.0",
 ]
 
 # 本地启动便捷入口（uv run 会把本项目装进 .venv 并暴露这两个命令）：

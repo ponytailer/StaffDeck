@@ -389,6 +389,48 @@ describe('AgentAppPage', () => {
     expect(screen.queryByText('Agent 广场 · AI CodeReviewer')).toBeNull();
   });
 
+  it('报销流程助手走 expense 能力分发：事由按上月预填，全电子票时出现附件登记', async () => {
+    // 新页面用原生 fetch + res.json()（不走 api.request 的 text() 路径），响应助手需要带 json()
+    const jsonCapableResponse = (body: unknown): Response =>
+      ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => body,
+        text: async () => JSON.stringify(body ?? {}),
+      }) as unknown as Response;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/expense-workflow/config')) {
+        return jsonCapableResponse({
+          scenarios: [
+            {
+              id: 'communication',
+              name: '通讯费用',
+              enabled: true,
+              reason_prefill: '{last_month}月通讯费报销',
+              fields: [],
+            },
+          ],
+          browser: { open: false, url: null },
+        });
+      }
+      return jsonCapableResponse({});
+    }));
+    renderPage('expense-assistant');
+
+    expect(await screen.findByText('Agent 广场 · 报销流程助手')).toBeTruthy();
+    expect(await screen.findByText('← 返回 Agent 广场')).toBeTruthy();
+    // 事由预填：{last_month} 被替换成上一个月（1 月回绕到 12 月）；config 异步加载，等 effect 跑完
+    const lastMonth = new Date().getMonth() === 0 ? 12 : new Date().getMonth();
+    await waitFor(() => {
+      const reasonInput = screen.getByPlaceholderText(/通讯费报销/) as HTMLInputElement;
+      expect(reasonInput.value).toBe(`${lastMonth}月通讯费报销`);
+    });
+    // 默认「全为电子票」→ 附件登记区可见
+    expect(await screen.findByText(/电子票附件/)).toBeTruthy();
+  });
+
   it('未知 entry 退化为提示页而不是白屏', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([])));
     renderPage('not-in-catalog');

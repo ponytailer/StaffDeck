@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from xml.etree import ElementTree
 
@@ -36,7 +37,7 @@ router = APIRouter(
 
 # 抓取配置：每个类目按顺序尝试，凑够 MAX_PER_CATEGORY 条即停。
 # 源不可达/格式变化都只是「跳过该源」，不影响其余源。
-# 口径（用户约定）：全部使用国内新闻源。
+# 口径（用户约定）：全部使用国内新闻源；旅文圈额外保留 Club Med 相关坑位。
 FEEDS: dict[str, list[str]] = {
     "ai": [
         # 量子位（WordPress RSS）
@@ -53,6 +54,15 @@ FEEDS: dict[str, list[str]] = {
         "http://www.pinchain.com/feed/",
     ],
 }
+# Club Med 相关（归入旅文圈展示）：品橙旅游（WordPress）站内搜索 RSS，国内可达。
+# 英文/中文名各一路，先抓满 CLUBMED_SLOTS 条，再由常规旅文源补齐到 MAX_PER_CATEGORY。
+CLUBMED_FEEDS: list[str] = [
+    "http://www.pinchain.com/?s=Club+Med&feed=rss2",
+    "http://www.pinchain.com/?s=%E5%9C%B0%E4%B8%AD%E6%B5%B7%E4%BF%B1%E4%B9%90%E9%83%A8&feed=rss2",
+]
+CLUBMED_SLOTS = 2
+# Club Med 坑位标题过滤：搜索 RSS 会命中弱相关文章，只收标题明确相关的
+_CLUBMED_TITLE_RE = re.compile(r"club\s*med|地中海俱乐部|地中海度假集团|复星旅文", re.IGNORECASE)
 MAX_PER_CATEGORY = 4
 FETCH_TIMEOUT = 6.0
 SUMMARY_MAX_CHARS = 110
@@ -62,6 +72,36 @@ CATEGORY_LABELS = {"ai": "AI 圈", "travel": "旅文圈"}
 _TAG_RE = re.compile(r"<[^>]+>")
 # RSS2.0: <item><title/><link/><description/><pubDate/>；Atom: <entry><title/><link href/><summary/><updated/>
 _TEXT_TAGS = ("title", "description", "summary", "content", "published", "updated", "pubDate")
+
+# 来源域名 → 媒体名（前端不展示网址，未知域名留空隐藏）
+_SOURCE_NAMES = {
+    "qbitai.com": "量子位",
+    "jiqizhixin.com": "机器之心",
+    "ifanr.com": "爱范儿",
+    "traveldaily.cn": "环球旅讯",
+    "traveldaily.com": "环球旅讯",
+    "pinchain.com": "品橙旅游",
+    "clubmed.com.cn": "Club Med",
+    "clubmed.com": "Club Med",
+}
+
+# 北京时间（展示口径：用户约定时间用北京时间）
+_BJ_TZ = timezone(timedelta(hours=8))
+
+
+def _format_published(raw: str) -> str:
+    """RFC822/ISO 时间字符串 → 北京时间「MM-DD HH:MM」；解析失败原样返回。"""
+    if not raw:
+        return ""
+    try:
+        dt = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return raw
+    if dt is None:
+        return raw
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(_BJ_TZ).strftime("%m-%d %H:%M")
 
 
 def _clean_text(raw: str | None, limit: int = SUMMARY_MAX_CHARS) -> str:
@@ -99,18 +139,18 @@ def _parse_feed(xml_text: str, category: str) -> list[dict[str, Any]]:
         if not title or not link:
             continue
         summary = _clean_text(fields.get("description") or fields.get("summary") or fields.get("content"))
-        published = fields.get("pubDate") or fields.get("published") or fields.get("updated") or ""
-        # 来源域名作为媒体名兜底（RSS 一般不带源名）
+        published = _format_published(fields.get("pubDate") or fields.get("published") or fields.get("updated") or "")
+        # 来源显示媒体名（不展示网址）；未知域名留空，前端隐藏徽标
         try:
-            source = re.match(r"https?://([^/]+)", link).group(1).replace("www.", "")  # type: ignore[union-attr]
+            domain = re.match(r"https?://([^/]+)", link).group(1).replace("www.", "")  # type: ignore[union-attr]
         except (AttributeError, TypeError):
-            source = ""
+            domain = ""
         items.append(
             {
                 "category": category,
                 "title": title,
                 "summary": summary,
-                "source": source,
+                "source": _SOURCE_NAMES.get(domain, ""),
                 "url": link,
                 "published_at": published,
             }
@@ -125,22 +165,33 @@ def _fetch_news() -> dict[str, list[dict[str, Any]]]:
         for category, urls in FEEDS.items():
             collected: list[dict[str, Any]] = []
             seen: set[str] = set()
-            for url in urls:
-                try:
-                    resp = client.get(url)
-                    resp.raise_for_status()
-                    entries = _parse_feed(resp.text, category)
-                except (httpx.HTTPError, ElementTree.ParseError):
-                    continue
-                for entry in entries:
-                    if entry["url"] in seen:
-                        continue
-                    seen.add(entry["url"])
-                    collected.append(entry)
-                    if len(collected) >= MAX_PER_CATEGORY:
+
+            def _collect(feed_urls: list[str], cap: int, title_filter: re.Pattern[str] | None = None) -> None:
+                """按顺序抓 feed_urls，去重后收进 collected，凑满 cap 即停。"""
+                for url in feed_urls:
+                    if len(collected) >= cap:
                         break
-                if len(collected) >= MAX_PER_CATEGORY:
-                    break
+                    try:
+                        resp = client.get(url)
+                        resp.raise_for_status()
+                        entries = _parse_feed(resp.text, category)
+                    except (httpx.HTTPError, ElementTree.ParseError):
+                        continue
+                    for entry in entries:
+                        if entry["url"] in seen:
+                            continue
+                        if title_filter and not title_filter.search(entry["title"]):
+                            continue
+                        seen.add(entry["url"])
+                        collected.append(entry)
+                        if len(collected) >= cap:
+                            break
+
+            if category == "travel":
+                # 旅文圈：先保 Club Med 相关坑位（搜索 RSS 会命中弱相关文章，按标题过滤），
+                # 再由常规旅文源补满
+                _collect(CLUBMED_FEEDS, CLUBMED_SLOTS, title_filter=_CLUBMED_TITLE_RE)
+            _collect(urls, MAX_PER_CATEGORY)
             result[category] = collected
     return result
 

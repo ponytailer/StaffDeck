@@ -281,12 +281,14 @@ function NewsPanel() {
                       <span className="mt-[3px] block text-[11.5px] leading-[1.6] text-[#5b6274]">{item.summary}</span>
                     )}
                     <span className="mt-[6px] flex items-center gap-[8px] text-[11px] text-[#757f9c]">
-                      <span
-                        className="rounded-full px-[8px] py-[2px] font-medium"
-                        style={{ backgroundColor: `color-mix(in srgb, ${color} 9%, #fff)`, color: `color-mix(in srgb, ${color} 80%, #000)` }}
-                      >
-                        {item.source || '佚名'}
-                      </span>
+                      {item.source && (
+                        <span
+                          className="rounded-full px-[8px] py-[2px] font-medium"
+                          style={{ backgroundColor: `color-mix(in srgb, ${color} 9%, #fff)`, color: `color-mix(in srgb, ${color} 80%, #000)` }}
+                        >
+                          {item.source}
+                        </span>
+                      )}
                       {item.published_at && <span>{item.published_at}</span>}
                     </span>
                   </span>
@@ -514,7 +516,10 @@ export default function PlazaHomePage({
   useEffect(() => {
     api
       .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
-      .then((rows) => setEmployees(Array.isArray(rows) ? rows : []))
+      .then((rows) =>
+        // 整体智能体（is_overall 宿主）是系统资源池，不是可添加的岗位员工，与其他页面口径一致排除
+        setEmployees((Array.isArray(rows) ? rows : []).filter((row) => !row.is_overall)),
+      )
       .catch(() => setEmployees([]));
   }, []);
 
@@ -531,8 +536,9 @@ export default function PlazaHomePage({
     setDraggingKey('');
   }, []);
 
-  // 保存前自动对齐整理：把所有卡片按当前位置（先上后左）排序后重新排入等距网格——
-  // 左右相邻间隔 1 条网格线（16px），上下相邻间隔 2 条网格线（32px），并收敛进画布边界。
+  // 保存前自动对齐整理：不改变用户排的行列归属——y 相近的视为同一排，
+  // 行内按 x 从左到右等距排列（左右间隔 1 条网格线 16px），各排按原上下顺序
+  // 等距对齐（上下间隔 2 条网格线 32px），并收敛进画布边界。
   const CHIP_W = 104;
   const CHIP_H = 118;
   const CHIP_PITCH_X = CHIP_W + GRID; // 左右间隔一条线
@@ -544,13 +550,25 @@ export default function PlazaHomePage({
     // 四周留一道边距，卡片不贴画布边缘
     const maxX = Math.max(CANVAS_PAD, snap(width - CHIP_W - CANVAS_PAD));
     const maxY = Math.max(CANVAS_PAD, snap(height - CHIP_H - CANVAS_PAD));
-    const cols = Math.max(1, Math.floor((width - 2 * CANVAS_PAD - CHIP_W) / CHIP_PITCH_X) + 1);
     const sorted = [...chips].sort((a, b) => a.y - b.y || a.x - b.x);
-    const aligned = sorted.map((row, i) => ({
-      ...row,
-      x: Math.min(CANVAS_PAD + (i % cols) * CHIP_PITCH_X, maxX),
-      y: Math.min(CANVAS_PAD + Math.floor(i / cols) * CHIP_PITCH_Y, maxY),
-    }));
+    const rows: ChipLayout[][] = [];
+    for (const item of sorted) {
+      const last = rows[rows.length - 1];
+      if (last && Math.abs(item.y - last[0].y) < CHIP_H) {
+        last.push(item);
+      } else {
+        rows.push([item]);
+      }
+    }
+    const aligned = rows.flatMap((group, rowIndex) =>
+      [...group]
+        .sort((a, b) => a.x - b.x)
+        .map((row, colIndex) => ({
+          ...row,
+          x: Math.min(CANVAS_PAD + colIndex * CHIP_PITCH_X, maxX),
+          y: Math.min(CANVAS_PAD + rowIndex * CHIP_PITCH_Y, maxY),
+        })),
+    );
     setChips(aligned);
     saveLayout(aligned);
     setMode('view');

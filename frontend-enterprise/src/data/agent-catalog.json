@@ -43,6 +43,19 @@
       "status": "active"
     },
     {
+      "id": "expense-assistant",
+      "name": "报销流程助手",
+      "summary": "按场景填好报销表单，一键在 OA 页面自动填充并保存；检测到未登录会保留表单等你登录后重试。",
+      "description": "面向 OA 报销的流程自动化 Agent。左侧选择报销场景并填写金额、事由、票据形式（全电子票时登记附件），点击执行任务后由后台真实浏览器打开 OA 表单逐项填充，完成后自动点击保存。场景与页面字段对应关系由独立配置文件维护，可持续扩充新类别。",
+      "author": "黄松",
+      "updated_at": "2026-10-09",
+      "category": "流程自动化",
+      "tags": ["OA", "报销", "自动填充"],
+      "entry": "expense-assistant",
+      "capability": "expense",
+      "status": "active"
+    },
+    {
       "id": "code-reviewer",
       "name": "AI CodeReviewer",
       "summary": "把仓库的 PR / MR 交给异步评审队列，完成后查看逐行评审意见，可一键回写平台评论区。",
