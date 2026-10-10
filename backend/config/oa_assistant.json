@@ -1,12 +1,16 @@
 {
-  "version": 3,
-  "_note": "OA 表单代填配置（书签面板）。字段/组件关系集中在 field_library（各场景复用同一套定位器），scenario 只声明要用哪些字段（fields 顺序 = 执行顺序）与场景特有覆盖值（field_overrides）。整份配置由 /api/enterprise/oa-assistant/panel.js 内嵌下发到用户浏览器里的面板。",
+  "version": 4,
+  "_note": "OA 表单代填配置（书签面板）。字段/组件关系集中在 field_library（各场景复用同一套定位器），scenario 声明要用哪些字段（fields 顺序 = 执行顺序）、场景专属表单项（scene / scene_options / notices）与字段覆盖（field_overrides）。整份配置由 /api/enterprise/oa-assistant/panel.js 内嵌下发到用户浏览器里的面板。",
   "_howto": [
     "field_library：OA 字段/组件的公共定义库。selector 填 OA 页面上的定位器（CSS，或 Playwright 风格的 :has-text(\"文案\")——面板内置了兼容层）；写 __TODO__ 表示对应关系未确认，执行时跳过并在结果里标「待配置」。",
+    "selector 为 __TODO__ 且字段带 by_label 时，面板按页面标签文本兜底定位（如整行里找「实际出差天数」）——selector 没抓到也能先用；抓到后填进 selector 即可优先用它。",
     "mode: input=直接填文本; select=点击后从下拉选项里按文本点选（ant-select/wea-select/wea-browser 联想，布尔值用 value_yes/value_no 映射是否文案）; autocomplete=填文本后等联想下拉并选中 value 全称; radio=yes/no 两个定位器; file=容器定位时自动解析内部 input[type=file]，支持多选。",
-    "from 指该字段的值来自用户表单的哪个输入: amount/reason/company_name/invoice_type/all_e_ticket/attachment_paths; 不写 from 则用 value 常量。",
-    "scenario.fields = 字段 key 数组（顺序即执行顺序，联动字段如「报销类型」必须排在依赖它的字段前面）；scenario.field_overrides = 场景特有值覆盖（如报销场景各场景不同）。",
-    "新增场景流程：在 OA 里打开目标表单 → 用浏览器开发者工具或临时脚本确认字段容器 → 把新字段补进 field_library（已存在的直接复用）→ 新增 scenario 条目。字段定义尽量复用，只有场景差异（url/reason_prefill/field_overrides）写在场景里。",
+    "from 指该字段的值来自面板表单的哪个输入: amount/reason/scene/company_name/invoice_type/all_e_ticket/attachment_paths/trip_days; 不写 from 则用 value 常量。",
+    "scenario.fields = 字段 key 数组（顺序即执行顺序，联动字段如「报销类型」必须排在依赖它的字段前面）。",
+    "scenario.scene = 报销场景固定值（如通讯费用）；scenario.scene_options = 报销场景多选一（如交通报销的飞机 / 火车·汽车·船），面板渲染成二选一，选中值作为 scene 字段的值。",
+    "scenario.notices = 面板顶部提示（如「相关流程」需手动选择、报销明细暂不支持代填）。",
+    "scenario.field_overrides = 场景特有覆盖：可改 value / search_value / clear_first，或写 { \"enabled\": false } 让该场景整字段跳过（如出差报销不改费用承担部门）。",
+    "新增场景流程：在 OA 里打开目标表单 → 用浏览器开发者工具或临时脚本确认字段容器 → 把新字段补进 field_library（已存在的直接复用）→ 新增 scenario 条目。字段定义尽量复用，只有场景差异写在场景里。",
     "以下定位器为泛微 e-cology9「境内个人费用报销审批表」实测值（2026-10-09 抓取）：明细行字段以 _0 结尾（第 1 行），报销场景/是否全电子发票/上传附件都是自定义组件，用 data-fieldmark 定位容器。",
     "login_check 用于判断当前是不是 OA 登录页：url_contains 任一命中或 selectors 任一可见即判定未登录。",
     "panel 段是书签面板的表单默认值（标题、默认金额、公司/发票类型选项、默认票据形式、是否自动算金额与自动保存）。"
@@ -54,7 +58,8 @@
       "label": "报销场景",
       "selector": "div[data-fieldmark=\"field6926_0\"]",
       "mode": "select",
-      "_note": "value 由各场景通过 field_overrides 提供"
+      "from": "scene",
+      "_note": "值由场景提供：scenario.scene（固定）或 scenario.scene_options（面板二选一后写入表单值）"
     },
     "cost_department": {
       "label": "费用承担部门",
@@ -95,6 +100,14 @@
       "mode": "input",
       "from": "reason"
     },
+    "trip_days": {
+      "label": "出差天数",
+      "selector": "__TODO__",
+      "by_label": "实际出差天数",
+      "mode": "input",
+      "from": "trip_days",
+      "_note": "对应 OA「实际出差天数」。selector 未抓到时按页面标签文本兜底定位；抓到准确 selector 后填进 selector 即可优先用它"
+    },
     "item_desc": {
       "label": "明细-事项描述",
       "selector": "#field6920_0",
@@ -126,6 +139,7 @@
       "enabled": true,
       "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1791601026398#/main/workflow/req?iscreate=1&workflowid=57&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&menuIds=1,12&menuPathIds=1,12&preloadkey=1791601026398&timestamp=1791601026398",
       "reason_prefill": "{last_month}月通讯费报销",
+      "scene": "通讯费用",
       "fields": [
         "expense_type",
         "tax_exceeded",
@@ -139,16 +153,17 @@
         "scene",
         "item_desc",
         "amount"
-      ],
-      "field_overrides": {
-        "scene": { "value": "通讯费用" }
-      }
+      ]
     },
     {
       "id": "traffic",
       "name": "交通报销",
       "enabled": true,
       "reason_prefill": "{last_month}月交通报销",
+      "scene_options": [
+        { "label": "飞机", "value": "飞机" },
+        { "label": "火车 / 汽车 / 船", "value": "火车汽车船" }
+      ],
       "fields": [
         "expense_type",
         "tax_exceeded",
@@ -162,9 +177,37 @@
         "scene",
         "item_desc",
         "amount"
+      ]
+    },
+    {
+      "id": "business_trip",
+      "name": "出差报销",
+      "enabled": true,
+      "reason_prefill": "出差费用报销",
+      "scene": "出差费用",
+      "notices": [
+        "「相关流程」需要在 OA 页面手动选择。",
+        "报销明细暂不支持代填，请在 OA 页面手动填写。"
+      ],
+      "fields": [
+        "expense_type",
+        "tax_exceeded",
+        "travel_entertainment",
+        "reason",
+        "trip_days",
+        "company_name",
+        "cost_department",
+        "e_ticket",
+        "invoice_type",
+        "attachment",
+        "scene",
+        "item_desc",
+        "amount"
       ],
       "field_overrides": {
-        "scene": { "value": "交通费用" }
+        "travel_entertainment": { "value": "是" },
+        "cost_department": { "enabled": false },
+        "item_desc": { "enabled": false }
       }
     }
   ]

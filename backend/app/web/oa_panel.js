@@ -177,6 +177,53 @@
     return fallback;
   }
 
+  /**
+   * selector 未配置时的兜底：按页面可见的标签文本找输入框。
+   *  ① placeholder / aria-label / <label for> 命中标签；
+   *  ② 整行（tr）文本包含标签，且行内只有一个可见输入（e-cology 表格表单的常见结构）。
+   * 找不到返回 null（由调用方标「待配置」）。
+   */
+  function findByLabelText(labelText) {
+    var want = normText(labelText);
+    if (!want) return null;
+    var docs = collectDocs();
+    for (var d = 0; d < docs.length; d++) {
+      var doc = docs[d];
+      var inputs = doc.querySelectorAll('input, textarea');
+      for (var i = 0; i < inputs.length; i++) {
+        var el = inputs[i];
+        var type = (el.getAttribute('type') || '').toLowerCase();
+        if (type === 'hidden' || !isVisible(el)) continue;
+        var hint = normText(el.getAttribute('placeholder')) + normText(el.getAttribute('aria-label'));
+        if (hint && hint.indexOf(want) >= 0) return el;
+        if (el.id) {
+          var lab = null;
+          try {
+            var esc = (window.CSS && window.CSS.escape) ? window.CSS.escape(el.id) : el.id;
+            lab = doc.querySelector('label[for="' + esc + '"]');
+          } catch (e) { lab = null; }
+          if (lab && normText(lab.textContent).indexOf(want) >= 0) return el;
+        }
+      }
+      // 整行兑底：取包含标签的最短一行，返回其中唯一可见输入
+      var rows = doc.querySelectorAll('tr');
+      var best = null;
+      var bestLen = Infinity;
+      for (var r = 0; r < rows.length; r++) {
+        var text = normText(rows[r].innerText || rows[r].textContent);
+        if (text.indexOf(want) < 0) continue;
+        if (text.length < bestLen) { best = rows[r]; bestLen = text.length; }
+      }
+      if (best) {
+        var cands = best.querySelectorAll('input:not([type=hidden]):not([readonly]), textarea:not([readonly])');
+        for (var c = 0; c < cands.length; c++) {
+          if (isVisible(cands[c])) return cands[c];
+        }
+      }
+    }
+    return null;
+  }
+
   // ───────────────────────── 字段填写动作 ─────────────────────────
 
   function fillText(node, value, mode) {
@@ -367,8 +414,6 @@
       return { field: label, status: 'filled', detail: '勾选 ' + (wantYes ? '是' : '否') };
     }
 
-    if (!selector || selector === TODO) return { field: label, status: 'todo', detail: '定位器待配置' };
-
     // 取字段值：from 指向表单输入，否则用配置常量
     var value;
     if (spec.from) {
@@ -384,8 +429,18 @@
       value = value ? (spec.value_yes || '是') : (spec.value_no || '否');
     }
 
-    var node = findEl(selector);
-    if (!node) throw new Error('未找到元素：' + selector + '（当前页可能不是该场景的表单？）');
+    // 定位元素：selector 缺失时，若配了 by_label 就按页面标签文本兜底查找
+    var node;
+    if (!selector || selector === TODO) {
+      var matchLabel = spec.by_label ? (typeof spec.by_label === 'string' ? spec.by_label : label) : '';
+      node = matchLabel ? findByLabelText(matchLabel) : null;
+      if (!node) {
+        return { field: label, status: 'todo', detail: matchLabel ? ('未按标签「' + matchLabel + '」定位到输入框') : '定位器待配置' };
+      }
+    } else {
+      node = findEl(selector);
+      if (!node) throw new Error('未找到元素：' + selector + '（当前页可能不是该场景的表单？）');
+    }
 
     if (mode === 'file') {
       // 面板里选的本地文件直接搬进 OA 的 input（File 对象同文档传递，不经服务器）
@@ -504,9 +559,29 @@
   });
   body.appendChild(field('报销场景', scenarioSelect));
 
+  // 场景提示（如「相关流程」需手动选择、报销明细暂不支持代填）
+  var noticeBox = el('div', 'display:none;flex-direction:column;gap:3px;border:1px solid #f0dca8;background:#fffaef;color:#8a4b00;border-radius:9px;padding:7px 9px;font-size:11px;line-height:1.65;');
+  body.appendChild(noticeBox);
+
+  // 报销场景二选一（如交通报销：飞机 / 火车·汽车·船）
+  var sceneSeg = el('div', 'display:flex;border:1px solid #e3e7f1;border-radius:8px;overflow:hidden;');
+  var sceneSegRow = field('报销场景', sceneSeg);
+  sceneSegRow.style.display = 'none';
+  body.appendChild(sceneSegRow);
+  var sceneChoice = '';
+
   // 报销事由
   var reasonInput = el('input', INPUT);
   body.appendChild(field('报销事由', reasonInput));
+
+  // 出差天数（仅出差报销场景；对应 OA「实际出差天数」）
+  var tripDaysInput = el('input', INPUT);
+  tripDaysInput.type = 'number';
+  tripDaysInput.min = '0';
+  tripDaysInput.step = '0.5';
+  var tripDaysRow = field('出差天数', tripDaysInput);
+  tripDaysRow.style.display = 'none';
+  body.appendChild(tripDaysRow);
 
   // 公司名称
   var companySelect = el('select', INPUT);
@@ -820,8 +895,39 @@
     reasonInput.value = template.replace(/\{last_month\}/g, String(lastMonth()));
   }
 
-  scenarioSelect.addEventListener('change', refreshPrefill);
+  /** 按当前场景切换面板上的条件项：提示、报销场景二选一、出差天数。 */
+  function syncScenarioFields() {
+    var scenario = currentScenario();
+    if (!scenario) return;
+
+    var notices = scenario.notices || [];
+    noticeBox.textContent = '';
+    notices.forEach(function (n) { noticeBox.appendChild(el('div', '', '⚠ ' + n)); });
+    noticeBox.style.display = notices.length ? 'flex' : 'none';
+
+    var options = scenario.scene_options || [];
+    sceneSeg.textContent = '';
+    if (options.length) {
+      if (!options.some(function (o) { return o.value === sceneChoice; })) sceneChoice = options[0].value;
+      options.forEach(function (o, idx) {
+        var on = o.value === sceneChoice;
+        var btn = el('button', 'flex:1;border:0;padding:6px 4px;font-size:12px;cursor:pointer;font-family:inherit;background:' + (on ? '#18181a' : '#fff') + ';color:' + (on ? '#fff' : '#5b6274') + ';' + (idx > 0 ? 'border-left:1px solid #e3e7f1;' : ''), o.label);
+        btn.type = 'button';
+        btn.addEventListener('click', function () { sceneChoice = o.value; syncScenarioFields(); });
+        sceneSeg.appendChild(btn);
+      });
+      sceneSegRow.style.display = 'flex';
+    } else {
+      sceneSegRow.style.display = 'none';
+    }
+
+    var needsTripDays = (scenario.fields || []).indexOf('trip_days') >= 0;
+    tripDaysRow.style.display = needsTripDays ? 'flex' : 'none';
+  }
+
+  scenarioSelect.addEventListener('change', function () { refreshPrefill(); syncScenarioFields(); });
   refreshPrefill();
+  syncScenarioFields();
 
   closeBtn.addEventListener('click', function () { collapse(); });
 
@@ -863,9 +969,15 @@
       logLine('全为电子票但未选择附件：附件项会跳过，可在 OA 页面手动挂票据。', 'warn');
     }
 
+    var sceneValue = (scenario.scene_options && scenario.scene_options.length)
+      ? sceneChoice
+      : (scenario.scene || '');
+
     var values = {
       amount: amountValue,
       reason: String(reasonInput.value || '').trim(),
+      scene: sceneValue,
+      trip_days: String(tripDaysInput.value || '').trim(),
       company_name: companySelect.value,
       invoice_type: invoiceSelect.value,
       all_e_ticket: eTicket,
@@ -873,10 +985,18 @@
     };
     values['all_e_ticket=yes'] = eTicket;
 
+    if ((scenario.fields || []).indexOf('trip_days') >= 0 && !values.trip_days) {
+      logLine('未填写出差天数：该项会跳过，请在 OA 页面手动补。', 'warn');
+    }
+
     var fields = resolveFields(scenario);
     for (var i = 0; i < fields.length; i++) {
       var spec = fields[i][1];
-      if (spec.enabled === false) continue;
+      if (spec.enabled === false) {
+        steps.push({ field: spec.label || spec.key, status: 'skipped', detail: '按场景配置跳过' });
+        logLine('○ ' + (spec.label || spec.key) + '：按场景配置跳过', 'dim');
+        continue;
+      }
       var when = spec.when;
       if (when && when in values && !values[when]) {
         steps.push({ field: spec.label || spec.key, status: 'skipped', detail: '条件 ' + when + ' 不满足' });
