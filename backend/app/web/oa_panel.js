@@ -596,7 +596,7 @@
   floorCheck.type = 'checkbox';
   floorCheck.checked = PANEL_CFG.floor_amount_to_hundred === true;
   floorWrap.appendChild(floorCheck);
-  floorWrap.appendChild(el('span', '', '金额向下取整到百位（如 2030.22 → 2000）'));
+  floorWrap.appendChild(el('span', '', '金额向下取整到百位（如 1033.22 → 1000）'));
   attachBox.appendChild(floorWrap);
 
   var attachRow = field('电子发票附件（挂到 OA「相关票据」区）', attachBox);
