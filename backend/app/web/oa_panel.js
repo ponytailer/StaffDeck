@@ -525,10 +525,15 @@
   body.appendChild(field('是否全为电子票', radioWrap));
   radioWrap.addEventListener('change', function () { syncAttachVisibility(); });
 
-  // 报销金额
+  // 报销金额（下方 hint 用于显示自动计算/取整的原始金额）
   var amountInput = el('input', INPUT);
   amountInput.value = String(PANEL_CFG.default_amount || '100.00');
-  body.appendChild(field('报销金额（默认值，可改）', amountInput));
+  var amountHint = el('div', 'font-size:11px;color:#a4650a;line-height:1.6;display:none;');
+  amountInput.addEventListener('input', function () { amountHint.textContent = ''; amountHint.style.display = 'none'; });
+  var amountBox = el('div', 'display:flex;flex-direction:column;gap:4px;');
+  amountBox.appendChild(amountInput);
+  amountBox.appendChild(amountHint);
+  body.appendChild(field('报销金额（默认值，可改）', amountBox));
 
   // 附件（全为电子票才需要）：本地多选 PDF → 直接搬进 OA，同时可自动算金额
   var attachmentFiles = [];
@@ -602,7 +607,7 @@
       del.addEventListener('click', function () {
         attachmentFiles.splice(index, 1);
         renderFiles();
-        if (!attachmentFiles.length) lastCalcTotal = null;
+        if (!attachmentFiles.length) { lastCalcTotal = null; amountHint.style.display = 'none'; }
         else if (calcCheck.checked) calcAmounts();
       });
       row.appendChild(del);
@@ -611,7 +616,8 @@
   }
   renderFiles();
 
-  /** 把最近一次的发票合计写进金额框；开启「向下取整到百位」时按百位截断。 */
+  /** 把最近一次的发票合计写进金额框；开启「向下取整到百位」时按百位截断，并在下方
+   *  hint 里括注原始合计（用户手动改金额时 hint 会被清掉）。 */
   function applyCalculatedAmount() {
     if (lastCalcTotal === null || isNaN(lastCalcTotal)) return false;
     var value = lastCalcTotal;
@@ -622,6 +628,13 @@
       value = next;
     }
     amountInput.value = value.toFixed(2);
+    if (floored) {
+      amountHint.textContent = '已向下取整到百位：' + value.toFixed(2) + '（原 ' + lastCalcTotal.toFixed(2) + '）';
+      amountHint.style.display = 'block';
+    } else {
+      amountHint.textContent = '';
+      amountHint.style.display = 'none';
+    }
     return floored;
   }
 
@@ -641,7 +654,7 @@
       if (!res.ok) throw new Error((data && data.detail) || ('HTTP ' + res.status));
       lastCalcTotal = Number(data.total);
       var floored = applyCalculatedAmount();
-      var suffix = floored ? '（已向下取整到百位）' : '';
+      var suffix = floored ? '（已向下取整到百位，原 ' + lastCalcTotal.toFixed(2) + '）' : '';
       var failed = (data.items || []).filter(function (item) { return item.error; });
       if (failed.length) {
         logLine('已按可识别发票填写金额 ' + amountInput.value + suffix + '；' + failed.length + ' 张未能解析：' +
@@ -657,11 +670,13 @@
   }
 
   pickBtn.addEventListener('click', function () { fileInput.click(); });
-  clearFilesBtn.addEventListener('click', function () { attachmentFiles = []; lastCalcTotal = null; renderFiles(); });
+  clearFilesBtn.addEventListener('click', function () { attachmentFiles = []; lastCalcTotal = null; amountHint.style.display = 'none'; renderFiles(); });
   floorCheck.addEventListener('change', function () {
     if (lastCalcTotal !== null) {
       applyCalculatedAmount();
-      logLine('金额已按发票合计' + (floorCheck.checked ? '向下取整到百位：' : '原值填写：') + amountInput.value, 'dim');
+      logLine(floorCheck.checked
+        ? '金额已向下取整到百位：' + amountInput.value + '（原 ' + lastCalcTotal.toFixed(2) + '）'
+        : '金额已按发票合计原值填写：' + amountInput.value, 'dim');
     } else if (calcCheck.checked && attachmentFiles.length) {
       calcAmounts();
     }
