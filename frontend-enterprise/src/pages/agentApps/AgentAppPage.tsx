@@ -8,7 +8,7 @@ import AiReviewerPage from '@/pages/ai-review/AiReviewerPage';
 import DecisionAssistantPage from '@/pages/decision/DecisionAssistantPage';
 
 import DocReviewWorkspace from './DocReviewWorkspace';
-import ExpenseWorkflowPage from './ExpenseWorkflowPage';
+import OaAssistantPage from './OaAssistantPage';
 import SlidesMakerWorkspace from './SlidesMakerWorkspace';
 
 /** adminOnly Agent 的深链回退地址（与返回按钮一致）。 */
@@ -51,9 +51,9 @@ export default function AgentAppPage({ currentUser, onLogout }: AgentAppPageProp
     return <DecisionAssistantPage currentUser={currentUser} onLogout={onLogout} />;
   }
 
-  // 报销流程助手：表单式报销场景 → 后端真实浏览器打开 OA 表单自动填充并保存。
-  if (entry && entry.capability === 'expense') {
-    return <ExpenseWorkflowPage currentUser={currentUser} onLogout={onLogout} />;
+  // OA 浏览器代填：书签把面板注入用户当前的 OA 页面，服务端不开浏览器，用户零安装。
+  if (entry && entry.capability === 'oa-assistant') {
+    return <OaAssistantPage currentUser={currentUser} onLogout={onLogout} />;
   }
 
   // AI CodeReviewer：原独立页面整体搬进 Agent 广场，外壳同样统一；仅管理员可见（上面已挡）。
