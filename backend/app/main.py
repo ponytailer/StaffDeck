@@ -15,7 +15,6 @@ from app.api import (
     channels,
     chat,
     evolution,
-    expense_workflow,
     feedback,
     general_skill_shares,
     general_skills,
@@ -27,6 +26,7 @@ from app.api import (
     memories,
     mock,
     model_configs,
+    oa_assistant,
     persona,
     plaza_news,
     scheduled_task_monitor,
@@ -177,7 +177,7 @@ app.include_router(model_configs.router)
 app.include_router(plaza_news.router)
 app.include_router(api_key_applications.router)
 app.include_router(laya.router)
-app.include_router(expense_workflow.router)
+app.include_router(oa_assistant.router)
 app.include_router(ai_review.router)
 app.include_router(memories.router)
 app.include_router(evolution.router)

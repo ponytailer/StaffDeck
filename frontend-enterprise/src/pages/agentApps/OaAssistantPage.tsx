@@ -1,0 +1,147 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Bookmark, CheckCircle2, Copy, MousePointerClick, Puzzle } from 'lucide-react';
+
+import AppHeader from '@/components/AppHeader';
+import { Button as UIButton } from '@/components/ui/button';
+import { notify } from '@/components/ui/app-toast';
+import { API_BASE_URL } from '@/api/client';
+import type { EnterpriseAuthUser } from '@/auth';
+
+import AgentAppBackButton from '../agentApps/AgentAppBackButton';
+
+/**
+ * OA 浏览器代填（书签面板）的安装页。
+ *
+ * 这条链路不在服务端开浏览器：书签把 `panel.js` 注入到用户当前的 OA 页面，
+ * 面板在 OA 自己的 origin 里渲染表单并操作页面 —— 服务器部署也能用，用户零安装。
+ */
+export default function OaAssistantPage({
+  currentUser,
+  onLogout,
+}: {
+  currentUser?: EnterpriseAuthUser;
+  onLogout?: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const linkRef = useRef<HTMLAnchorElement>(null);
+
+  // 面板脚本要走用户浏览器可达的绝对地址：OA 页面里没有 StaffDeck 的相对路径上下文。
+  const panelUrl = useMemo(
+    () => new URL(`${API_BASE_URL}/api/enterprise/oa-assistant/panel.js`, window.location.origin).href,
+    [],
+  );
+
+  // 书签本体：小 loader，尽量短；真正的逻辑在 panel.js 里，升级不用用户重装书签。
+  const bookmarklet = useMemo(
+    () =>
+      'javascript:(function(){' +
+      'if(window.__SD_OA_PANEL__){window.__SD_OA_PANEL__.toggle();return;}' +
+      'var s=document.createElement("script");' +
+      `s.src=${JSON.stringify(panelUrl)};` +
+      's.onerror=function(){alert("StaffDeck 代填脚本加载失败：可能被 OA 页面 CSP 拦截，或网络不可达。");};' +
+      'document.documentElement.appendChild(s);' +
+      '})();',
+    [panelUrl],
+  );
+
+  // React 会对 javascript: 形式的 href 发警告，直接落到 DOM 属性上，拖动安装才可靠。
+  useEffect(() => {
+    if (linkRef.current) linkRef.current.setAttribute('href', bookmarklet);
+  }, [bookmarklet]);
+
+  const copyBookmarklet = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(bookmarklet);
+      setCopied(true);
+      notify.success('书签代码已复制');
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      notify.error('复制失败，请手动选中下方文本框复制');
+    }
+  }, [bookmarklet]);
+
+  return (
+    <div className="box-border min-h-full px-[48px] pb-[43px] pt-[20px] max-[900px]:px-[16px]">
+      <AppHeader
+        className="mb-[16px]"
+        onLogout={onLogout}
+        userName={currentUser?.username}
+        title="Agent 广场 · OA 浏览器代填"
+      />
+
+      <div className="flex flex-col gap-[14px]">
+        <div className="flex justify-end">
+          <AgentAppBackButton />
+        </div>
+
+        {/* 安装 */}
+        <section className="rounded-[20px] bg-white p-[20px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+          <div className="flex items-center gap-[8px]">
+            <Bookmark className="size-[15px] text-[#757f9c]" />
+            <h2 className="text-[14px] font-medium text-[#18181a]">第一步：把按钮拖到书签栏</h2>
+          </div>
+          <p className="mt-[6px] text-[12px] leading-[1.8] text-[#858b9c]">
+            书签栏默认隐藏，按 <kbd className="rounded border border-[#e3e7f1] bg-[#fafbfd] px-[5px] py-[1px] text-[11px]">Ctrl/⌘ + Shift + B</kbd> 显示。
+            把下面这个按钮<strong className="text-[#464c5e]">拖到书签栏</strong>即可（无需安装任何软件）。
+          </p>
+
+          <div className="mt-[14px] flex flex-wrap items-center gap-[10px]">
+            <a
+              ref={linkRef}
+              draggable
+              onClick={(e) => e.preventDefault()}
+              className="inline-flex h-[36px] cursor-grab items-center gap-[7px] rounded-[10px] border border-[#d6dbe8] bg-[#fafbfd] px-[14px] text-[13px] text-[#1f2333] no-underline hover:bg-[#f2f4f9] active:cursor-grabbing"
+              title="拖我到书签栏"
+            >
+              <Puzzle className="size-[14px] text-[#757f9c]" />
+              AI报销代填
+            </a>
+            <UIButton
+              type="button"
+              variant="outline"
+              onClick={copyBookmarklet}
+              className="h-[36px] gap-[6px] rounded-[10px] border-[#e3e7f1] px-[14px] text-[12.5px] text-[#464c5e]"
+            >
+              {copied ? <CheckCircle2 className="size-[13px]" /> : <Copy className="size-[13px]" />}
+              复制书签代码
+            </UIButton>
+          </div>
+
+          <details className="mt-[12px]">
+            <summary className="cursor-pointer text-[12px] text-[#757f9c]">拖不动？手动新建书签</summary>
+            <div className="mt-[8px] flex flex-col gap-[6px]">
+              <p className="text-[12px] leading-[1.8] text-[#858b9c]">
+                在书签栏右键「添加网页 / 添加书签」，名称填「AI报销代填」，网址粘贴下面这段：
+              </p>
+              <textarea
+                readOnly
+                value={bookmarklet}
+                onFocus={(e) => e.currentTarget.select()}
+                className="h-[90px] w-full resize-none rounded-[10px] border border-[#e3e7f1] bg-[#fafbfd] p-[8px] font-mono text-[11px] leading-[1.6] text-[#5b6274]"
+              />
+            </div>
+          </details>
+        </section>
+
+        {/* 使用 */}
+        <section className="rounded-[20px] bg-white p-[20px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+          <div className="flex items-center gap-[8px]">
+            <MousePointerClick className="size-[15px] text-[#757f9c]" />
+            <h2 className="text-[14px] font-medium text-[#18181a]">第二步：在 OA 报销页面点这个书签</h2>
+          </div>
+          <ol className="mt-[10px] flex list-decimal flex-col gap-[6px] pl-[20px] text-[12.5px] leading-[1.9] text-[#464c5e]">
+            <li>像平时一样打开 OA 报销表单页（已登录状态）。</li>
+            <li>点书签栏里的「AI报销代填」→ 右上角弹出面板。</li>
+            <li>在面板里确认场景 / 事由 / 金额，点「代填」。</li>
+            <li>面板会逐个字段操作当前 OA 页面，并显示每一步结果；失败的字段可以单独重试。</li>
+            <li>默认<strong>不会自动点保存</strong>，先看填得对不对；确认无误后可勾选「填完后自动点保存」。</li>
+          </ol>
+          <p className="mt-[10px] rounded-[10px] border border-[#eef0f5] bg-[#fafbfd] p-[10px] text-[11.5px] leading-[1.8] text-[#858b9c]">
+            说明：本方案不需要服务端浏览器，也不需要用户安装扩展。代价是<strong className="text-[#5b6274]">每次执行都要手动点一下书签</strong>（浏览器不允许网页替用户点书签），
+            且若 OA 页面配置了严格 CSP，注入脚本可能被拦截（面板会给出提示）。
+          </p>
+        </section>
+      </div>
+    </div>
+  );
+}

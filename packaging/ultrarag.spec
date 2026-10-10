@@ -36,6 +36,8 @@ datas = [
     (str(VERSION_FILE), "."),
     (str(ASSETS / "staffdeck.png"), "packaging/assets"),
     (str(BACKEND / "app" / "llm" / "prompts"), "app/llm/prompts"),
+    (str(BACKEND / "app" / "web"), "app/web"),
+    (str(BACKEND / "config"), "config"),
     (str(BACKEND / "app" / "db" / "seed_fixtures"), "app/db/seed_fixtures"),
     (str(BACKEND / "mock_servers"), "mock_servers"),
 ] + collect_data_files("tzdata")

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import io
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -23,6 +24,10 @@ _TOTAL_RE = re.compile(r"价税合计[^0-9]{0,30}?[¥￥]?\s*([0-9][0-9,]*(?:\.[
 def _pdf_text(pdf_path: Path) -> str:
     """提取 PDF 全部文本（去空白拼接，规避版式里字与字之间的空格/换行）。"""
     reader = PdfReader(str(pdf_path))
+    return _reader_text(reader)
+
+
+def _reader_text(reader: PdfReader) -> str:
     parts: list[str] = []
     for page in reader.pages:
         try:
@@ -30,6 +35,16 @@ def _pdf_text(pdf_path: Path) -> str:
         except Exception:
             continue
     return "".join(parts)
+
+
+def extract_invoice_total_bytes(data: bytes) -> str | None:
+    """从内存中的 PDF 字节解析价税合计（书签面板上传的文件不经落盘）。"""
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        text = _reader_text(reader)
+    except Exception:
+        return None
+    return extract_invoice_total_text(text)
 
 
 def extract_invoice_total_text(text: str) -> str | None:
@@ -78,3 +93,32 @@ def sum_invoice_amounts(paths: list[str]) -> dict[str, Any]:
             continue
         items.append({"path": raw, "filename": path.name, "amount": amount, "error": None})
     return {"items": items, "total": f"{total:.2f}"}
+
+
+def sum_invoice_amounts_from_uploads(uploads: list[tuple[str, bytes]]) -> dict[str, Any]:
+    """同 sum_invoice_amounts，但面向内存中的上传文件（书签面板路径，不落盘）。
+
+    uploads 为 (filename, bytes) 列表；返回结构一致，便于前端复用同一段渲染逻辑。
+    """
+    items: list[dict[str, str | None]] = []
+    total = Decimal("0")
+    for filename, data in uploads:
+        if not data:
+            items.append({"path": filename, "filename": filename, "amount": None, "error": "空文件"})
+            continue
+        amount = extract_invoice_total_bytes(data)
+        if amount is None:
+            items.append({"path": filename, "filename": filename, "amount": None, "error": "未能解析出价税合计（非电子发票版式或扫描件）"})
+            continue
+        try:
+            total += Decimal(amount)
+        except InvalidOperation:
+            items.append({"path": filename, "filename": filename, "amount": None, "error": "金额格式异常"})
+            continue
+        items.append({"path": filename, "filename": filename, "amount": amount, "error": None})
+    return {"items": items, "total": f"{total:.2f}"}
+
+
+def is_pdf_bytes(data: bytes) -> bool:
+    """文件头校验：只收真正的 PDF（%PDF-），不信任客户端的扩展名/MIME。"""
+    return data[:5] == b"%PDF-"
