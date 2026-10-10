@@ -66,7 +66,7 @@ export default function OaAssistantPage({
         className="mb-[16px]"
         onLogout={onLogout}
         userName={currentUser?.username}
-        title="Agent 广场 · OA 浏览器代填"
+        title="Agent 广场 · OA 单据助手"
       />
 
       <div className="flex flex-col gap-[14px]">
