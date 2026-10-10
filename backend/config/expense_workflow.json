@@ -1,0 +1,141 @@
+{
+  "version": 2,
+  "_note": "报销流程助手配置。字段/组件关系集中在 field_library（各场景复用同一套定位器），scenario 只声明要用哪些字段（fields 顺序 = 执行顺序）与场景特有覆盖值（field_overrides）。",
+  "_howto": [
+    "field_library：OA 字段/组件的公共定义库。selector 填 OA 页面上的定位器（CSS / playwright selector 均可）；写 __TODO__ 表示对应关系未确认，执行时跳过并在结果里标「待配置」。",
+    "mode: input=直接填文本; select=点击后从下拉选项里按文本点选（ant-select/wea-select/wea-browser 联想，布尔值用 value_yes/value_no 映射是否文案）; autocomplete=填文本后等联想下拉并选中 value 全称; radio=yes/no 两个定位器; file=容器定位时自动解析内部 input[type=file]，值可以是路径或路径列表（多选上传区）。多文件字段加 multi=true。",
+    "from 指该字段的值来自用户表单的哪个输入: amount/reason/company_name/invoice_type/all_e_ticket/attachment_paths; 不写 from 则用 value 常量。",
+    "scenario.fields = 字段 key 数组（顺序即执行顺序，联动字段如「报销类型」必须排在依赖它的字段前面）；scenario.field_overrides = 场景特有值覆盖（如报销场景各场景不同）。",
+    "新增场景流程：在 OA 里打开目标表单 → 运行 scripts/probe_oa_form.py 探查字段组件 → 把新字段补进 field_library（已存在的直接复用）→ 新增 scenario 条目。字段定义尽量复用，只有场景差异（url/reason_prefill/field_overrides）写在场景里。",
+    "以下定位器为泛微 e-cology9「境内个人费用报销审批表」实测值（2026-10-09 抓取）：明细行字段以 _0 结尾（第 1 行），报销场景/是否全电子发票/上传附件都是自定义组件，用 data-fieldmark 定位容器。",
+    "login_check 用于判断打开的是不是登录页：url_contains 任一命中或 selectors 任一可见即判定未登录。",
+    "browser.cdp_endpoint 配置后优先通过 CDP 连接「当前已打开的浏览器」（复用 cookie 登录态与已开标签页，无需再登录）。前提是 Chrome 以调试端口启动：macOS 完全退出 Chrome 后在终端执行 open -na \"Google Chrome\" --args --remote-debugging-port=9222。连不上时自动退回独立窗口模式（.oa-browser-profile，登录一次后 cookie 持久保存）。",
+    "browser.chrome_path 可留空（推荐）：留空或路径不存在时自动探测本机 Chrome/Edge/Chromium（macOS/Windows/Linux 常见安装位置 + PATH + playwright 自带内核）；全部找不到时执行任务会报错并给出解决办法。仅当自动探测不到时才需要手动填写。"
+  ],
+  "browser": {
+    "headless": false,
+    "cdp_endpoint": "http://127.0.0.1:9222",
+    "chrome_path": "",
+    "user_data_dir": ".oa-browser-profile",
+    "navigate_timeout_ms": 30000,
+    "login_check": {
+      "url_contains": ["logon", "Login", "login"],
+      "selectors": ["input[name='loginid']", "input[placeholder*='账号']", "#loginid"]
+    }
+  },
+  "save_button": {
+    "label": "保存",
+    "selector": "button.ant-btn:has-text(\"保 存\")",
+    "description": "OA 表单右上角的「保存」按钮（e-cology9 按钮文字带空格，用 has-text 匹配）"
+  },
+  "field_library": {
+    "expense_type": {
+      "label": "报销类型",
+      "selector": "div[data-fieldmark=\"field6970\"]",
+      "mode": "select",
+      "value": "公务限额费用",
+      "_note": "必须先选报销类型，报销场景的数据源才会联动出选项"
+    },
+    "company_name": {
+      "label": "公司名称",
+      "selector": "div[data-fieldmark=\"field6969\"]",
+      "mode": "select",
+      "from": "company_name"
+    },
+    "scene": {
+      "label": "报销场景",
+      "selector": "div[data-fieldmark=\"field6926_0\"]",
+      "mode": "select",
+      "_note": "value 由各场景通过 field_overrides 提供"
+    },
+    "cost_department": {
+      "label": "费用承担部门",
+      "selector": "div[data-fieldmark=\"field7012\"]",
+      "mode": "select",
+      "value": "核定",
+      "clear_first": true,
+      "_note": "点选提交后 hidden=1151、选项全名「核定费用承担部门」；OA 预填默认值（如 AI+），须退格清掉再搜「核定」，等下拉出现匹配 li 直接点击、全程无回车。注意：明细行同款组件的 a.child-item 列表是干扰项，不能全页搜选项"
+    },
+    "invoice_type": {
+      "label": "发票类型",
+      "selector": "div[data-fieldmark=\"field6925_0\"]",
+      "mode": "select",
+      "from": "invoice_type",
+      "search_value": "普通发票",
+      "_note": "用户表单选项「普通发票 0%」里的税率只是展示/判断用，OA 搜索关键词只填「普通发票」（search_value）"
+    },
+    "tax_exceeded": {
+      "label": "是否含超标",
+      "selector": "div[data-fieldmark=\"field7014\"]",
+      "mode": "select",
+      "value": "否"
+    },
+    "travel_entertainment": {
+      "label": "是否差旅/业务招待报销",
+      "selector": "div[data-fieldmark=\"field6974\"]",
+      "mode": "select",
+      "value": "否"
+    },
+    "amount": {
+      "label": "报销金额(发票金额价税合计)",
+      "selector": "#field6932_0",
+      "mode": "input",
+      "from": "amount"
+    },
+    "reason": {
+      "label": "报销事由",
+      "selector": "#field6946",
+      "mode": "input",
+      "from": "reason"
+    },
+    "item_desc": {
+      "label": "明细-事项描述",
+      "selector": "#field6920_0",
+      "mode": "input",
+      "from": "reason"
+    },
+    "e_ticket": {
+      "label": "是否全电子发票",
+      "selector": "div[data-fieldmark=\"field29328\"]",
+      "mode": "select",
+      "from": "all_e_ticket",
+      "value_yes": "是",
+      "value_no": "否"
+    },
+    "attachment": {
+      "label": "电子发票pdf(相关票据区·可多个)",
+      "selector": "div[data-fieldmark=\"field6951\"]",
+      "mode": "file",
+      "multi": true,
+      "from": "attachment_paths",
+      "when": "all_e_ticket=yes",
+      "_note": "后端已把用户选的附件落盘，这里拿到的是服务器路径列表（相关票据区是多选上传）；field6951=相关票据区(仅电子发票pdf)，field6973=其他参考资料(不用)"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "communication",
+      "name": "通讯费用",
+      "enabled": true,
+      "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1791601026398#/main/workflow/req?iscreate=1&workflowid=57&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&menuIds=1,12&menuPathIds=1,12&preloadkey=1791601026398&timestamp=1791601026398",
+      "reason_prefill": "{last_month}月通讯费报销",
+      "fields": [
+        "expense_type",
+        "tax_exceeded",
+        "travel_entertainment",
+        "reason",
+        "company_name",
+        "cost_department",
+        "e_ticket",
+        "invoice_type",
+        "attachment",
+        "scene",
+        "item_desc",
+        "amount"
+      ],
+      "field_overrides": {
+        "scene": { "value": "通讯费用" }
+      }
+    }
+  ]
+}
