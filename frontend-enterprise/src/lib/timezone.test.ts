@@ -4,6 +4,7 @@ import {
   formatClientDate,
   formatClientDateTime,
   formatClientMonthDayTime,
+  formatClientYearMonthDayTime,
   parseBackendDateTime,
 } from './timezone';
 
@@ -77,6 +78,34 @@ describe('formatClientMonthDayTime', () => {
   it('falls back to the empty text for missing values', () => {
     expect(formatClientMonthDayTime(undefined)).toBe('-');
     expect(formatClientMonthDayTime('bad', '')).toBe('');
+  });
+});
+
+describe('formatClientYearMonthDayTime', () => {
+  it('renders a naive UTC timestamp with year as local time', () => {
+    const expected = new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }).format(new Date(Date.UTC(2026, 9, 19, 8, 34, 0)));
+    expect(formatClientYearMonthDayTime('2026-10-19T08:34:00')).toBe(expected);
+  });
+
+  it('does not shift the clock backwards by the UTC offset (API Key 时间回归)', () => {
+    const clientTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (clientTz === 'Asia/Shanghai') {
+      expect(formatClientYearMonthDayTime('2026-10-19T08:34:00')).toBe('2026/10/19 16:34');
+    }
+  });
+
+  it('falls back to the empty text for missing values', () => {
+    expect(formatClientYearMonthDayTime(undefined)).toBe('-');
+    expect(formatClientYearMonthDayTime(null)).toBe('-');
+    expect(formatClientYearMonthDayTime('bad', '')).toBe('');
   });
 });
 

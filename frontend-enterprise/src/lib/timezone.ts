@@ -51,6 +51,29 @@ export function formatClientMonthDayTime(value?: string, emptyText = '-'): strin
 }
 
 /**
+ * 「年/月/日 时:分」（如 `2026/10/19 16:34`），给密钥创建时间、最后使用时间这类列表行用。
+ *
+ * 同样必须走 `parseBackendDateTime`：后端是 naive UTC，裸 `new Date` 在东八区会早 8 小时。
+ */
+export function formatClientYearMonthDayTime(
+  value?: string | null,
+  emptyText = '-',
+): string {
+  if (!value) return emptyText;
+  const date = parseBackendDateTime(value);
+  if (Number.isNaN(date.getTime())) return emptyText;
+  return new Intl.DateTimeFormat(getDateLocale(), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: getClientTimeZone(),
+  }).format(date);
+}
+
+/**
  * 只取日期部分（`YYYY/M/D`）的本地化格式化。
  *
  * 替代各处 `value.slice(0, 10)` 的写法：后端存的是 naive UTC，直接截字符串会把
