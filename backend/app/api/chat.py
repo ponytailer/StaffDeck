@@ -2859,17 +2859,20 @@ def _apply_share_scope(
 
     请求体里的 agent_id / model_config_id 一律忽略 —— 否则访客可以自己换员工或换模型,
     绕过分享者在创建链接时做的选择。
+    interaction_mode 同理:定时任务会落库并被后台调度长期执行,分享访客只能走普通对话,
+    即使构造请求体带上 scheduled_task 也降级为 normal。
     """
     # 用 isinstance 而非 `is not None`：直接调用（单测/内部复用）时默认值是 FastAPI 的
     # Depends 对象，`is not None` 会把普通请求误判成分享访客。
     if not isinstance(share_scope, ShareScope):
         return request
-    return request.model_copy(
-        update={
-            "agent_id": share_scope.agent_id,
-            "model_config_id": share_scope.model_config_id,
-        }
-    )
+    updates: dict[str, object] = {
+        "agent_id": share_scope.agent_id,
+        "model_config_id": share_scope.model_config_id,
+    }
+    if request.interaction_mode != "normal":
+        updates["interaction_mode"] = "normal"
+    return request.model_copy(update=updates)
 
 
 def _ensure_chat_agent_available(
