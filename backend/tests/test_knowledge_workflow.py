@@ -111,13 +111,33 @@ def test_rejected_without_knowledge_search_authorization() -> None:
 class _FakeResponseGenerator:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
+        self.stream_chunks: list[str] = ["身", "高", "体", "重"]
 
     def generate(self, *args: Any) -> str:
         self.calls.append(args)
         return "身高体重有要求 [1]。"
 
     def generate_stream(self, *args: Any):  # noqa: ANN201
-        raise AssertionError("非流式轮次应走 generate()")
+        self.calls.append(args)
+        yield from self.stream_chunks
+
+
+class _FakeSink:
+    """HarnessV2Engine 侧的最小 sink 替身。"""
+
+    def __init__(self) -> None:
+        self.deltas: list[str] = []
+        self.statuses: list[tuple[str, str]] = []
+        self.resets = 0
+
+    def delta(self, chunk: str) -> None:
+        self.deltas.append(chunk)
+
+    def status(self, phase: str, text: str, **extra: Any) -> None:
+        self.statuses.append((phase, text))
+
+    def reset(self) -> None:
+        self.resets += 1
 
 
 class _FakeInvoker:
@@ -191,6 +211,37 @@ def test_workflow_retrieves_in_code_then_answers_once() -> None:
     assert tool_event["result"]["route_phases"] == [
         "document_route_small_candidate_shortcut"
     ]
+
+
+def test_workflow_streams_answer_when_turn_stream_present() -> None:
+    """流式轮次：作答走 generate_stream，逐段 sink.delta（真流式）。"""
+
+    rg = _FakeResponseGenerator()
+    engine = _engine(rg)
+    sink = _FakeSink()
+    engine.turn_stream = sink  # type: ignore[assignment]
+    invoker = _FakeInvoker(_ok_search_result())
+
+    result = engine._run_knowledge_workflow(
+        SimpleNamespace(tenant_id="t"),
+        SimpleNamespace(agent_id="a"),
+        SimpleNamespace(task_id="task-1", status="running"),
+        _frame(),
+        SimpleNamespace(source_user_message="身高体重有要求吗"),
+        invoker,
+        object(),
+        [],
+        None,
+        lambda t, p: None,
+    )
+
+    assert result is not None
+    # 真流式：正文按 chunk 逐段 delta，最终拼接为完整 reply
+    assert sink.deltas == ["身", "高", "体", "重"]
+    assert result.reply_fragment == "身高体重"
+    assert sink.statuses == [("preparing", "正在整理知识答案")]
+    # 只调一次作答，且必须是流式版本
+    assert len(rg.calls) == 1
 
 
 def test_workflow_smalltalk_skips_retrieval() -> None:
