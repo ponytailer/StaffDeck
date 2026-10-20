@@ -49,6 +49,99 @@ def strip_citation_markers(content: str) -> str:
     )
 
 
+def strip_citation_section(content: str) -> str:
+    """整段正文的引用清理：先删尾部「参考来源：[1] [2]」，再删正文编号。
+
+    顺序不能反 —— 先删 `[n]` 会让 `参考资料：[1] [2]` 变成只剩标题的残留行
+    （与前端 `messageVisibleContent` 同一口径）。
+    """
+    if not content:
+        return content
+    return strip_citation_markers(SOURCE_FOOTER_PATTERN.sub("", content))
+
+
+# 流式分片可能把 `[1]` 切成 `[` + `1]`，尾部这几类残片要压到下一片再判定。
+PARTIAL_CITATION_MARKER_TAIL_PATTERN = re.compile(r"\[(?:\d{1,3})?$")
+CODE_FENCE_PATTERN = re.compile(r"(```|~~~)")
+
+
+class CitationMarkerStreamStripper:
+    """跨分片剥离引用编号的流式过滤器。
+
+    与整段 `strip_citation_markers` 的差别只有两点，都是为了 SSE 分片：
+    - 尾部可能是半截编号（`[`、`[1`、`[12`）时先压住，等下一片拼齐；
+    - 代码围栏可能被切开，所以围栏状态要跨片保持（围栏里的 `[1]` 是数组下标，不能删）。
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._fence: str | None = None
+
+    def reset(self) -> None:
+        self._pending = ""
+        self._fence = None
+
+    @property
+    def has_pending(self) -> bool:
+        return bool(self._pending)
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        text = self._pending + chunk
+        text, self._pending = _split_partial_tail(text)
+        return self._strip(text) if text else ""
+
+    def flush(self) -> str:
+        pending, self._pending = self._pending, ""
+        return self._strip(pending) if pending else ""
+
+    def _strip(self, text: str) -> str:
+        if not text:
+            return ""
+        parts: list[str] = []
+        cursor = 0
+        while cursor < len(text):
+            if self._fence is not None:
+                end = text.find(self._fence, cursor)
+                if end < 0:
+                    parts.append(text[cursor:])
+                    break
+                parts.append(text[cursor : end + 3])
+                cursor = end + 3
+                self._fence = None
+                continue
+            match = CODE_FENCE_PATTERN.search(text, cursor)
+            if match is None:
+                parts.append(strip_citation_markers(text[cursor:]))
+                break
+            parts.append(strip_citation_markers(text[cursor : match.start()]))
+            parts.append(match.group(1))
+            cursor = match.end()
+            self._fence = match.group(1)
+        return "".join(parts)
+
+
+def _split_partial_tail(text: str) -> tuple[str, str]:
+    """拆出尾部可能被后续分片补全的残片。"""
+    marker = PARTIAL_CITATION_MARKER_TAIL_PATTERN.search(text)
+    if marker is not None:
+        start = marker.start()
+        # 编号前的空格也一起压住：编号删掉后这串空白不该留在正文里
+        # （整段清理时 INLINE_CITATION_MARKER_PATTERN 会连 `[ \t]*` 一起吃掉）。
+        while start > 0 and text[start - 1] in " \t":
+            start -= 1
+        return text[:start], text[start:]
+    # 结尾 1~2 个反引号/波浪号可能是下一片代码围栏的开头；完整围栏不压。
+    for char in ("`", "~"):
+        if text.endswith(char * 3):
+            return text, ""
+        for size in (2, 1):
+            if text.endswith(char * size):
+                return text[:-size], char * size
+    return text, ""
+
+
 def compact_knowledge_citation_labels(
     content: str,
     citations: object,
