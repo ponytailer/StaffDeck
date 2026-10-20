@@ -82,7 +82,7 @@ from app.session.message_visibility import (
     visible_message_rows,
 )
 from app.session.message_read import message_read
-from app.session.origin import pilotdeck_origin_session_ids
+from app.session.origin import HIDDEN_FROM_CHAT_LIST_CHANNELS, pilotdeck_origin_session_ids
 from app.session.session_schema import (
     ChatAttachmentRead,
     ChatSessionCreateRequest,
@@ -2069,7 +2069,7 @@ def list_chat_sessions(
                 ChatSession.tenant_id == tenant_id,
                 or_(
                     ChatSession.channel.is_(None),
-                    ChatSession.channel != "skill_test",
+                    ChatSession.channel.not_in(HIDDEN_FROM_CHAT_LIST_CHANNELS),
                 ),
                 or_(
                     and_(

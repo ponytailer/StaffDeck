@@ -10,6 +10,7 @@ from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
 from app.public_api.schemas import PublicSessionCreate, PublicSessionUpdate
 from app.public_api.utils import etag_for
+from app.session.origin import PUBLIC_API_SESSION_CHANNEL
 
 
 router = APIRouter(prefix="/agents/{agent_id}/sessions", tags=["sessions"])
@@ -103,7 +104,7 @@ def create_public_session_row(
         user_id=principal.actor_user.id,
         agent_id=agent_id,
         title=(body.title or "新会话").strip()[:200],
-        channel="public_api",
+        channel=PUBLIC_API_SESSION_CHANNEL,
     )
     db.add(row)
     db.flush()
