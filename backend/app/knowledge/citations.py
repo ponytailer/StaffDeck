@@ -26,6 +26,27 @@ SOURCE_FOOTER_PATTERN = re.compile(
 CITATION_REFERENCE_PATTERN = re.compile(
     r"\[(\d+)\](?:\s*(?:-|–|—|至)\s*\[(\d+)\])?"
 )
+# 正文里的数字引用编号（`[1]`、`[12]`）。`[1](url)` 是 markdown 链接、
+# `[1]: url` 是链接定义，都要保留，所以后面紧跟 `(` 或 `:` 的不算编号。
+INLINE_CITATION_MARKER_PATTERN = re.compile(r"[ \t]*\[(\d{1,3})\](?![(:])")
+# 代码块 / 行内代码：里面的 `[1]` 是下标或示例，不能删。
+CODE_SEGMENT_PATTERN = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)")
+
+
+def strip_citation_markers(content: str) -> str:
+    """去掉正文里的数字引用编号。
+
+    「展示知识来源」关掉后来源卡片不再展示，正文里孤零零的 `[1]` 就成了指向
+    不存在内容的悬空编号。这里只按租户开关决定是否调用，与前端同一套口径
+    （前端 `stripCitationMarkers`），这样老客户端/缓存里的旧包也不会再露出编号。
+    """
+    if not content or "[" not in content:
+        return content
+    parts = CODE_SEGMENT_PATTERN.split(content)
+    return "".join(
+        part if index % 2 else INLINE_CITATION_MARKER_PATTERN.sub("", part)
+        for index, part in enumerate(parts)
+    )
 
 
 def compact_knowledge_citation_labels(

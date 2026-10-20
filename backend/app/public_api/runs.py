@@ -425,7 +425,7 @@ def create_run_route(
 
 
 @router.post("/agents/{agent_id}/runs:stream", status_code=200)
-@router.post("/agents/{agent_id}/runs", status_code=200)
+@router.post("/agents/{agent_id}/runs-stream", status_code=200)
 def create_run_stream_route(
     agent_id: str,
     body: AgentRunCreate,

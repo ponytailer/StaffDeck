@@ -62,6 +62,7 @@ from app.core.task_request_compiler import (
     TaskRequestCompiler,
 )
 from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
+from app.core.ui_flags import knowledge_citations_hidden
 from app.db.models import (
     ChatSession,
     HarnessRunRecord,
@@ -76,6 +77,7 @@ from app.knowledge.citations import (
     citation_identity,
     compact_knowledge_citation_labels,
     renumber_citations,
+    strip_citation_markers,
 )
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
 from app.memory.service import memory_read
@@ -1323,6 +1325,9 @@ class HarnessV2Engine:
             )
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
+        # 与 agent_loop 同一口径：租户关掉「展示知识来源」时正文里不留 [n] 编号
+        if knowledge_citations_hidden(self.db, request.tenant_id):
+            reply = strip_citation_markers(reply)
         artifacts = _aggregate_artifacts(execution_results)
         assistant_metadata: dict[str, Any] = {
             "execution_engine": "harness_v2",

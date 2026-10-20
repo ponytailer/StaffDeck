@@ -42,6 +42,7 @@ from app.core.response_generator import (
 from app.core.skill_runtime import SkillRuntime
 from app.core.slash_commands import SlashCommandError
 from app.core.turn_finalizer import TurnFinalizer
+from app.core.ui_flags import knowledge_citations_hidden
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
@@ -59,6 +60,7 @@ from app.db.models import (
 from app.knowledge.citations import (
     compact_knowledge_citation_labels,
     restore_truncated_atomic_references,
+    strip_citation_markers,
 )
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import (
@@ -1843,6 +1845,10 @@ class AgentLoop:
             reply,
             metadata.get("knowledge_citations"),
         )
+        # 租户关掉「展示知识来源」后，正文里的 [1] 也一起清掉：只靠前端裁剪的话，
+        # 老客户端 / 缓存里的旧包 / 分享页的第二端都会漏出悬空编号。
+        if knowledge_citations_hidden(self.db, tenant_id):
+            reply = strip_citation_markers(reply)
         metadata = dict(metadata)
         if compacted_citations:
             metadata["knowledge_citations"] = compacted_citations
