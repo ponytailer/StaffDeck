@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterator
 from time import sleep
 from typing import Any, Literal
 
-from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.agents.branching import (
@@ -15,6 +14,7 @@ from app.agents.branching import (
     visible_skill,
 )
 from app.agents.free_model import resolve_turn_default_model
+from app.agents.usage import bump_agent_usage
 from app.channels.service_outbox import stage_channel_delivery
 from app.chat_pubsub import publish_relay_wake
 from app.core.agent_identity_prompt import AgentIdentityPrompt
@@ -1348,17 +1348,9 @@ class AgentLoop:
     def _bump_agent_usage(self, agent_id: str | None) -> None:
         """数字员工「被使用」计数 +1(每新建一个会话算一次,站内与分享访客都计入)。
 
-        用 SQL 侧自增而非 read-modify-write,避免并发建会话时互相覆盖;
-        独立冗余列是为了让员工广场列表不必对每个员工做一次 count 查询。
+        公共实现见 `app.agents.usage.bump_agent_usage`（Public API 建会话也走它）。
         """
-        if not agent_id:
-            return
-        self.db.exec(
-            update(AgentProfile)
-            .where(AgentProfile.id == agent_id)
-            .values(usage_count=AgentProfile.usage_count + 1, updated_at=utc_now())
-            .execution_options(synchronize_session=False)
-        )
+        bump_agent_usage(self.db, agent_id)
 
     def _current_skill_step(
         self, skill: Skill, active_step_id: str | None
