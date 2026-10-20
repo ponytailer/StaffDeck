@@ -75,6 +75,7 @@ import ToolsPage, {
   ToolNewPage,
   ToolTestPage,
 } from "./pages/ToolsPage";
+import ToolSwaggerImportPage from "./pages/ToolSwaggerImportPage";
 import { useIsMobile } from "./hooks/use-mobile";
 import {
   Dialog,
@@ -861,6 +862,15 @@ function Shell({
                 path="/enterprise/tools/mcp/:serverId/edit"
                 element={
                   <McpServerEditPage
+                    currentUser={auth.user}
+                    onLogout={onLogout}
+                  />
+                }
+              />
+              <Route
+                path="/enterprise/tools/import/swagger"
+                element={
+                  <ToolSwaggerImportPage
                     currentUser={auth.user}
                     onLogout={onLogout}
                   />

@@ -3609,7 +3609,6 @@ function SkillSource({
     label: item.display_name || item.name,
     description: item.description || item.name,
     capabilityScope: item.capability_scope,
-    unavailableReason: item.enabled ? undefined : '工具已停用',
   }));
   const knowledgeBaseOptions: CapabilityReferenceOption[] = knowledgeBases.map((item) => ({
     value: item.id,
@@ -3928,7 +3927,6 @@ function SkillFlow({
     label: item.display_name || item.name,
     description: item.description || item.name,
     capabilityScope: item.capability_scope,
-    unavailableReason: item.enabled ? undefined : '工具已停用',
   }));
   const knowledgeBaseOptions: CapabilityReferenceOption[] = knowledgeBases.map((item) => ({
     value: item.id,
