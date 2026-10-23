@@ -9,12 +9,38 @@ from zipfile import ZipFile
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".html", ".htm", ".pdf", ".docx", ".doc"}
 
+#: 除 \t / \n / \r 之外的控制字符（\v、\f 已先统一成换行）。
+#: NUL 单独处理：PostgreSQL 的 text 列不接受 0x00，flush 时会直接抛
+#: "A string literal cannot contain NUL (0x00) characters"，整个入库任务因此失败。
+_CONTROL_CHARS = re.compile(r"[\x01-\x08\x0e-\x1f\x7f]")
+
 
 class KnowledgeParseError(ValueError):
     pass
 
 
+def sanitize_text(text: str) -> str:
+    """清掉 NUL 与无意义的控制字符。
+
+    扫描件、老旧 docx、伪装的二进制文件抽出来的正文里确实会夹 NUL；这类字符
+    既没法显示也没法入库（PG 直接拒收），统一在解析出口清掉，避免下游各写入点
+    各清一遍、漏一处就炸在 commit 上。
+    """
+
+    if not text:
+        return ""
+    if "\x00" in text:
+        text = text.replace("\x00", "")
+    text = text.replace("\x0b", "\n").replace("\x0c", "\n")
+    return _CONTROL_CHARS.sub("", text)
+
+
 def extract_text(filename: str, content: bytes) -> tuple[str, str]:
+    text, file_type = _extract_raw_text(filename, content)
+    return sanitize_text(text), file_type
+
+
+def _extract_raw_text(filename: str, content: bytes) -> tuple[str, str]:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
         raise KnowledgeParseError(f"暂不支持 {suffix or 'unknown'} 文件格式。")

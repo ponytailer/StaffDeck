@@ -94,6 +94,7 @@ import type {
   KnowledgeConceptRead,
   KnowledgeDiscoveryRead,
   KnowledgeDocumentRead,
+  KnowledgeDocumentPage,
   KnowledgeIngestJobRead,
   KnowledgeSearchResponse,
   AgentProfileRead,
@@ -436,10 +437,17 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     setLoading(true);
     try {
       const suffix = scopedAgentId ? `&agent_id=${encodeURIComponent(scopedAgentId)}` : '';
-      const [docRows, kbRows] = await Promise.all([
-        api.get<KnowledgeDocumentRead[]>(`/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${suffix}`),
+      // 选了具体知识库时按该库取数（page_size 拉满，保证自动选中最新文档不漏）；
+      // 选「全部」则只取第一页，避免一次拉全量文档把响应拖慢。
+      const scopedKbId = knowledgeBaseFilter !== '__all__' ? knowledgeBaseFilter : '';
+      const docQuery = scopedKbId
+        ? `${suffix}&knowledge_base_id=${encodeURIComponent(scopedKbId)}&page=1&page_size=200`
+        : `${suffix}&page=1&page_size=50`;
+      const [docPage, kbRows] = await Promise.all([
+        api.get<KnowledgeDocumentPage>(`/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${docQuery}`),
         api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}`),
       ]);
+      const docRows = docPage.items;
       setDocuments(docRows);
       setKnowledgeBases(kbRows);
       const scopedDocRows =
@@ -545,7 +553,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     }
   }
 
-  function selectKnowledgeBase(knowledgeBaseId: string) {
+  async function selectKnowledgeBase(knowledgeBaseId: string) {
     setKnowledgeBaseFilter(knowledgeBaseId);
     const nextDocument =
       knowledgeBaseId === '__all__'
@@ -555,10 +563,31 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       void loadBuckets(nextDocument);
       return;
     }
+    if (knowledgeBaseId === '__all__') {
+      setSelectedDocument(null);
+      setBuckets([]);
+      setSearchResult(null);
+      void loadOkfConcepts(undefined);
+      return;
+    }
+    // 本地没有该库文档（例如之前在「全部」视图只取了第一页）：按需取该库最新一篇。
+    try {
+      const page = await api.get<KnowledgeDocumentPage>(
+        `/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : ''}&knowledge_base_id=${encodeURIComponent(knowledgeBaseId)}&page=1&page_size=1`,
+      );
+      const doc = page.items[0] || null;
+      setDocuments((prev) => (doc ? [doc, ...prev.filter((item) => item.id !== doc.id)] : prev));
+      if (doc) {
+        void loadBuckets(doc);
+        return;
+      }
+    } catch {
+      // 取数失败不打扰用户，走空态
+    }
     setSelectedDocument(null);
     setBuckets([]);
     setSearchResult(null);
-    void loadOkfConcepts(knowledgeBaseId === '__all__' ? undefined : knowledgeBaseId);
+    void loadOkfConcepts(knowledgeBaseId);
   }
 
   async function runKnowledgeSearch() {
@@ -2028,7 +2057,7 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
             <InboxOutlined />
             <div>
               <strong>拖拽文档到这里，或点击上传</strong>
-              <span>支持 doc/docx/txt/md/html/pdf；旧版 doc 会提示转换为 docx。</span>
+              <span>支持 docx/txt/md/html/pdf；旧版 doc 请自行转换为 docx</span>
             </div>
           </div>
         </FileDropzone>

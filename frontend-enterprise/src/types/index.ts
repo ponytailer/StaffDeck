@@ -91,6 +91,14 @@ export type KnowledgeDocumentRead = {
   updated_at: string;
 };
 
+export type KnowledgeDocumentPage = {
+  items: KnowledgeDocumentRead[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+};
+
 export type KnowledgeBucketRead = {
   id: string;
   tenant_id: string;

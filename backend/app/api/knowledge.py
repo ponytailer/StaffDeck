@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -407,7 +408,7 @@ def cancel_job(
 
 @router.get(
     "/documents",
-    response_model=list[KnowledgeDocumentRead],
+    response_model=None,
     dependencies=[Depends(require_agent_scope_viewer)],
 )
 def list_documents(
@@ -415,31 +416,74 @@ def list_documents(
     knowledge_base_id: str | None = Query(None),
     agent_id: str | None = Query(None),
     include_all_versions: bool = Query(False),
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(50, ge=1, le=200, description="每页条数"),
     db: Session = Depends(get_session),
-) -> list[KnowledgeDocumentRead]:
+) -> dict[str, Any]:
+    """列出知识文档。
+
+    服务端分页：返回 ``{items, total, page, page_size, total_pages}``，``total`` 为精确总数。
+    前端之前是在拿到全量后客户端切片，租户文档量大时响应会随文档数线性变慢；现在接口
+    本身只回一页，响应时间不再随文档总量增长。
+    """
+
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+
     ensure_tenant(db, tenant_id)
     visible_versions = visible_knowledge_base_versions(
         db, tenant_id, agent_id, include_inactive=True
     )
     if not visible_versions:
-        return []
+        return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0}
     if knowledge_base_id and knowledge_base_id not in visible_versions:
-        return []
-    stmt = select(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id)
+        return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0}
+
+    conditions: list[Any] = [KnowledgeDocument.tenant_id == tenant_id]
     if include_all_versions:
         visible_knowledge_base_ids = (
             [knowledge_base_id] if knowledge_base_id else list(visible_versions)
         )
-        stmt = stmt.where(KnowledgeDocument.knowledge_base_id.in_(visible_knowledge_base_ids))
+        conditions.append(KnowledgeDocument.knowledge_base_id.in_(visible_knowledge_base_ids))
     else:
         visible_version_ids = [
             version.id
             for base_id, version in visible_versions.items()
             if not knowledge_base_id or base_id == knowledge_base_id
         ]
-        stmt = stmt.where(KnowledgeDocument.knowledge_base_version_id.in_(visible_version_ids))
-    rows = db.exec(stmt.order_by(KnowledgeDocument.created_at.desc())).all()
-    return [document_read(row) for row in rows]
+        conditions.append(KnowledgeDocument.knowledge_base_version_id.in_(visible_version_ids))
+
+    total = int(
+        db.exec(
+            select(func.count()).select_from(KnowledgeDocument).where(*conditions)
+        ).one()
+    )
+    offset = (page - 1) * page_size
+    if offset >= total:
+        # 越界：直接回空页，避免多查一次数据库
+        total_pages = max(1, math.ceil(total / page_size))
+        return {
+            "items": [],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
+    rows = db.exec(
+        select(KnowledgeDocument)
+        .where(*conditions)
+        .order_by(KnowledgeDocument.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    ).all()
+    total_pages = max(1, math.ceil(total / page_size))
+    return {
+        "items": [document_read(row) for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 
 @router.get(

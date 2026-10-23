@@ -32,7 +32,7 @@ from app.db.models import (
     Tool,
     utc_now,
 )
-from app.knowledge.parser import KnowledgeParseError, extract_text
+from app.knowledge.parser import KnowledgeParseError, extract_text, sanitize_text
 from app.llm.model_config_resolver import (
     ResolvedModelConfig,
     resolve_model_config_for_runtime,
@@ -688,6 +688,10 @@ class KnowledgeService:
         except KnowledgeIngestCancelled as exc:
             self._finalize_cancelled_job(job, str(exc) or "入库任务已取消")
         except Exception as exc:  # noqa: BLE001 - persist stable job failure.
+            # 先回滚：写入失败（例如正文里混进 NUL，PG 直接拒收）会让这个 Session
+            # 进入 pending-rollback 状态，此时任何 db.get / commit 都会再抛
+            # PendingRollbackError，把真正的报错盖掉、任务永远停在 running。
+            self._recover_session()
             if job.document_id:
                 document = self.db.get(KnowledgeDocument, job.document_id)
                 if document:
@@ -2098,6 +2102,18 @@ class KnowledgeService:
         job.metadata_json = metadata
         self._update_job(job, stage=stage, progress=progress, **changes)
 
+    def _recover_session(self) -> None:
+        """把失败事务回滚掉，好让「失败状态」还能写进库。
+
+        SQLAlchemy 在 flush 失败后会把 Session 标记成 pending-rollback：不回滚就继续
+        用它查/写，只会再抛一次 ``PendingRollbackError``，把真正的报错盖掉。
+        """
+
+        try:
+            self.db.rollback()
+        except Exception:  # noqa: BLE001 - 连接都废了就没什么可救的，记录后交给上层
+            logger.warning("知识库入库任务回滚失败，失败状态可能无法落库", exc_info=True)
+
     def _clear_embedded_content(self, job: KnowledgeIngestJob) -> None:
         metadata = dict(job.metadata_json or {})
         metadata.pop("content_base64", None)
@@ -2144,6 +2160,8 @@ def chunk_read(row: KnowledgeChunk) -> KnowledgeChunkRead:
 
 
 def _normalize_text(text: str) -> str:
+    # 解析出口已经清过 NUL；这里再兜一道，防止别的入口（重放、迁移数据）把 0x00 带进来
+    text = sanitize_text(text)
     lines = [line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     compact: list[str] = []
     blank = False

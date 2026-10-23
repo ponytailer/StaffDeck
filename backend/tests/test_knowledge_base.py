@@ -20,6 +20,7 @@ from app.api.knowledge import (
 from app.api.knowledge_bases import knowledge_base_read
 from app.db.models import (
     AgentProfile,
+    AgentResourceBinding,
     KnowledgeBase,
     KnowledgeBaseVersion,
     KnowledgeBucket,
@@ -2043,3 +2044,154 @@ def _test_session():
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+# ---------------------------------------------------------------------------
+# 正文里的 NUL 字符（PostgreSQL 拒收 0x00）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_text_strips_nul_and_control_chars() -> None:
+    """回归：NUL 进 DB 会让 flush 抛 "cannot contain NUL (0x00) characters"。"""
+
+    text, file_type = extract_text("scan.md", b"# A\x00B\nC\x01D\x0bE\x0cF")
+
+    assert file_type == "md"
+    assert "\x00" not in text
+    assert "\x01" not in text
+    # \v / \f 统一成换行，而不是把两段粘在一起
+    assert "AB" in text
+    assert "C" in text and "D" in text and "E" in text and "F" in text
+
+
+def test_normalize_text_drops_nul_characters() -> None:
+    assert knowledge_service._normalize_text("甲\x00乙\n\n\n丙") == "甲乙\n\n丙"  # noqa: SLF001
+
+
+def test_recover_session_clears_pending_rollback() -> None:
+    from sqlalchemy.exc import IntegrityError, PendingRollbackError
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.commit()
+        # 主键冲突让 flush 失败，Session 随即进入 pending-rollback
+        db.add(KnowledgeIngestJob(id="dup", tenant_id="tenant_demo", knowledge_base_id="kb", filename="a.md"))
+        db.add(KnowledgeIngestJob(id="dup", tenant_id="tenant_demo", knowledge_base_id="kb", filename="b.md"))
+        with pytest.raises(IntegrityError):
+            db.commit()
+        with pytest.raises(PendingRollbackError):
+            db.exec(select(Tenant))
+
+        KnowledgeService(db)._recover_session()  # noqa: SLF001
+
+        assert db.exec(select(Tenant)).first() is not None
+
+
+def test_ingest_job_marks_failed_when_the_first_flush_fails() -> None:
+    """flush 失败后必须先 rollback 才能写失败状态，否则只剩 PendingRollbackError。"""
+
+    from sqlalchemy import event
+
+    from app.knowledge.service import KnowledgeService
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        job = KnowledgeIngestJob(
+            id="kjob_flush_fail",
+            tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
+            filename="nul.md",
+            status="queued",
+            stage="queued",
+            progress=0.0,
+            metadata_json={"content_base64": _b64("# 标题\n\n正文")},
+        )
+        db.add(job)
+        db.commit()
+
+        raised = {"count": 0}
+
+        def boom(session, flush_context, instances):  # noqa: ANN001
+            if raised["count"]:
+                return
+            if any(isinstance(obj, KnowledgeIngestJob) for obj in session.dirty):
+                raised["count"] += 1
+                raise RuntimeError("A string literal cannot contain NUL (0x00) characters.")
+
+        event.listen(Session, "before_flush", boom)
+        try:
+            KnowledgeService(db)._run_ingest_job("kjob_flush_fail")  # noqa: SLF001
+        finally:
+            event.remove(Session, "before_flush", boom)
+
+        db.expire_all()
+        row = db.get(KnowledgeIngestJob, "kjob_flush_fail")
+        assert raised["count"] == 1
+        assert row.status == "failed"
+        assert "NUL" in (row.error or "")
+
+# ---------------------------------------------------------------------------
+# 文档列表服务端分页（避免一次返回全量，响应时间随文档数线性变慢）
+# ---------------------------------------------------------------------------
+
+
+def test_list_documents_paginates_instead_of_returning_all() -> None:
+    """回归：documents 接口此前返回全量；现在返回 {items,total,page,...} 信封并分页。"""
+
+    from datetime import timedelta
+
+    from app.api.knowledge import list_documents
+
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_doc", name="Doc Tenant"))
+        db.add(
+            AgentProfile(
+                id="agent_overall_doc",
+                tenant_id="tenant_doc",
+                name="Overall",
+                is_overall=True,
+                status="active",
+            )
+        )
+        db.add(KnowledgeBase(id="kb_doc", tenant_id="tenant_doc", name="KB", status="active"))
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_doc",
+                agent_id="agent_overall_doc",
+                resource_type="knowledge_base",
+                resource_id="kb_doc",
+                status="active",
+            )
+        )
+        base = utc_now()
+        for i in range(25):
+            db.add(
+                KnowledgeDocument(
+                    id=f"doc_{i}",
+                    tenant_id="tenant_doc",
+                    knowledge_base_id="kb_doc",
+                    filename=f"f{i}.md",
+                    file_type="md",
+                    status="succeeded",
+                    created_at=base - timedelta(minutes=25 - i),
+                )
+            )
+        db.commit()
+
+        page1 = list_documents("tenant_doc", "kb_doc", None, True, 1, 10, db)
+        assert page1["total"] == 25
+        assert page1["page"] == 1
+        assert page1["page_size"] == 10
+        assert page1["total_pages"] == 3
+        assert len(page1["items"]) == 10
+        # 按 created_at desc：最新的一篇在最前
+        assert page1["items"][0].id == "doc_24"
+
+        page3 = list_documents("tenant_doc", "kb_doc", None, True, 3, 10, db)
+        assert len(page3["items"]) == 5
+        assert page3["items"][0].id == "doc_4"
+
+        # 越界页码返回空页，不报错
+        page4 = list_documents("tenant_doc", "kb_doc", None, True, 4, 10, db)
+        assert page4["items"] == []

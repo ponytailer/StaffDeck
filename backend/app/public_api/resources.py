@@ -4,7 +4,7 @@ import base64
 from time import sleep
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from sqlmodel import Session, select
 
 from app.api import general_skills as internal_general_skills
@@ -243,12 +243,27 @@ def list_knowledge_documents(
     agent_id: str,
     knowledge_base_id: str,
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(50, ge=1, le=200, description="每页条数"),
     db: Session = Depends(get_session),
 ) -> dict:
-    rows = internal_knowledge.list_documents(
-        principal.tenant_id, knowledge_base_id, agent_id, False, db
+    result = internal_knowledge.list_documents(
+        principal.tenant_id,
+        knowledge_base_id,
+        agent_id,
+        False,
+        page=page,
+        page_size=page_size,
+        db=db,
     )
-    return {"data": [_dump(row) for row in rows], "next_cursor": None}
+    return {
+        "data": [_dump(row) for row in result["items"]],
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "total_pages": result["total_pages"],
+        "next_cursor": None,
+    }
 
 
 @router.patch("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}", response_model=dict)
