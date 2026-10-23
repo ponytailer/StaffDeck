@@ -687,6 +687,81 @@ def test_list_knowledge_bases_paginates_instead_of_returning_all() -> None:
         assert page99["total_pages"] == 3
 
 
+def test_list_knowledge_bases_hides_empty_default_and_stale_branches_keeps_uniform_pages() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_target", tenant_id="tenant_demo", name="研发员工", is_overall=False
+            )
+        )
+        db.flush()
+        # 12 个普通库 + 1 个空的「默认知识库」+ 2 个上传创建但从未入库的空库（三类都应被隐藏）
+        for index in range(12):
+            db.add(
+                KnowledgeBase(
+                    id=f"kb_{index}", tenant_id="tenant_demo", name=f"知识库 {index}", status="active"
+                )
+            )
+        db.add(
+            KnowledgeBase(
+                id="kb_default_0",
+                tenant_id="tenant_demo",
+                name="默认知识库",
+                status="active",
+            )
+        )
+        for index in range(2):
+            db.add(
+                KnowledgeBase(
+                    id=f"kb_upload_{index}",
+                    tenant_id="tenant_demo",
+                    name=f"上传未入库 {index}",
+                    status="active",
+                    metadata_json={"created_from_document_upload": True},
+                )
+            )
+        db.flush()
+        all_kbs = db.exec(
+            select(KnowledgeBase).where(KnowledgeBase.tenant_id == "tenant_demo")
+        ).all()
+        for kb in all_kbs:
+            ensure_knowledge_base_version(db, kb)
+            # 每个库都建分支，另加一条指向已删除知识库的陈旧分支
+            db.add(
+                AgentKnowledgeBranch(
+                    tenant_id="tenant_demo",
+                    agent_id="agent_target",
+                    knowledge_base_id=kb.id,
+                    status="active",
+                )
+            )
+        db.add(
+            AgentKnowledgeBranch(
+                tenant_id="tenant_demo",
+                agent_id="agent_target",
+                knowledge_base_id="kb_ghost_deleted",
+                status="active",
+            )
+        )
+        db.commit()
+
+        page1 = list_knowledge_bases(
+            tenant_id="tenant_demo", agent_id="agent_target", db=db, page=1, page_size=10
+        )
+        # 空默认库与陈旧分支都不计入 total：12 条，两页，每页满 10 条
+        assert page1["total"] == 12
+        assert page1["total_pages"] == 2
+        assert len(page1["items"]) == 10
+        page2 = list_knowledge_bases(
+            tenant_id="tenant_demo", agent_id="agent_target", db=db, page=2, page_size=10
+        )
+        assert page2["total"] == 12
+        assert len(page2["items"]) == 2
+        assert all(item.name != "默认知识库" for item in page1["items"] + page2["items"])
+        assert all(not item.name.startswith("上传未入库") for item in page1["items"] + page2["items"])
+
+
 def test_list_agents_knowledge_count_ignores_stale_or_empty_default_bindings() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))

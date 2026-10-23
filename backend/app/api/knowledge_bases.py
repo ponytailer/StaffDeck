@@ -86,6 +86,7 @@ def list_knowledge_bases(
     db: Session = Depends(get_session),
     page: Annotated[int, Query(ge=1, le=200, description="页码，从 1 开始")] = 1,
     page_size: Annotated[int, Query(ge=1, le=200, description="每页条数")] = 50,
+    hide_empty_default: bool = True,
 ) -> dict[str, object]:
     """列出知识库。
 
@@ -111,15 +112,40 @@ def list_knowledge_bases(
             )
             .order_by(AgentKnowledgeBranch.updated_at.desc())
         ).all()
-        if not branches:
+        # 先剔除两类「看不见」的库，再计数和切片，保证每页条数恒定：
+        # 1) 指向已不存在（或跨租户）知识库的陈旧分支；
+        # 2) 空默认知识库（与前端 isEmptyDefaultKnowledgeBase 同一判定）。
+        branch_ids = [branch.knowledge_base_id for branch in branches]
+        existing_ids = set(
+            db.exec(
+                select(KnowledgeBase.id).where(
+                    KnowledgeBase.tenant_id == tenant_id,
+                    KnowledgeBase.id.in_(branch_ids) if branch_ids else KnowledgeBase.id == "__none__",
+                )
+            ).all()
+        )
+        ordered_branches = [
+            branch for branch in branches if branch.knowledge_base_id in existing_ids
+        ]
+        if hide_empty_default and ordered_branches:
+            hidden_ids = _empty_default_knowledge_base_ids(
+                db, tenant_id, [branch.knowledge_base_id for branch in ordered_branches]
+            )
+            if hidden_ids:
+                ordered_branches = [
+                    branch
+                    for branch in ordered_branches
+                    if branch.knowledge_base_id not in hidden_ids
+                ]
+        if not ordered_branches:
             return _empty_knowledge_base_envelope(page, page_size)
-        ordered_ids = [branch.knowledge_base_id for branch in branches]
+        ordered_ids = [branch.knowledge_base_id for branch in ordered_branches]
         total = _count_knowledge_bases(db, tenant_id, ordered_ids)
         summary = _knowledge_base_summary(db, tenant_id, ordered_ids)
         offset = (page - 1) * page_size
         if offset >= total:
             return _empty_knowledge_base_envelope(page, page_size, summary, total=total)
-        page_branches = branches[offset : offset + page_size]
+        page_branches = ordered_branches[offset : offset + page_size]
         page_kb_ids = [branch.knowledge_base_id for branch in page_branches]
         rows_by_id = {
             row.id: row
@@ -166,6 +192,12 @@ def list_knowledge_bases(
             .order_by(KnowledgeBase.updated_at.desc())
         ).all()
     ]
+    if hide_empty_default and ordered_ids:
+        hidden_ids = _empty_default_knowledge_base_ids(db, tenant_id, ordered_ids)
+        if hidden_ids:
+            ordered_ids = [kb_id for kb_id in ordered_ids if kb_id not in hidden_ids]
+    if not ordered_ids:
+        return _empty_knowledge_base_envelope(page, page_size)
     total = _count_knowledge_bases(db, tenant_id, ordered_ids)
     summary = _knowledge_base_summary(db, tenant_id, ordered_ids)
     offset = (page - 1) * page_size
@@ -195,6 +227,59 @@ def list_knowledge_bases(
         for row in rows
     ]
     return _knowledge_base_envelope(items, total, page, page_size, summary)
+
+
+def _empty_default_knowledge_base_ids(
+    db: Session, tenant_id: str, kb_ids: list[str]
+) -> set[str]:
+    """与前端 isEmptyDefaultKnowledgeBase 对齐：返回应隐藏的「空默认知识库」 id。
+
+    判定（无任何内容为前提，计数跨全部版本）：
+    - metadata.created_from_document_upload 且无 source_document_id（上传创建但从未入库）；
+    - 名字为「默认知识库」的空库。
+    """
+    if not kb_ids:
+        return set()
+    rows = db.exec(
+        select(KnowledgeBase.id, KnowledgeBase.name, KnowledgeBase.metadata_json).where(
+            KnowledgeBase.tenant_id == tenant_id,
+            KnowledgeBase.id.in_(kb_ids),
+        )
+    ).all()
+
+    def _counts(model: type) -> dict[str, int]:
+        return {
+            knowledge_base_id: int(count or 0)
+            for knowledge_base_id, count in db.exec(
+                select(model.knowledge_base_id, func.count(model.id))
+                .where(
+                    model.tenant_id == tenant_id,
+                    model.knowledge_base_id.in_(kb_ids),
+                )
+                .group_by(model.knowledge_base_id)
+            ).all()
+        }
+
+    doc_counts = _counts(KnowledgeDocument)
+    bucket_counts = _counts(KnowledgeBucket)
+    chunk_counts = _counts(KnowledgeChunk)
+    empty_ids: set[str] = set()
+    for kb_id, name, metadata_json in rows:
+        has_content = (
+            doc_counts.get(kb_id, 0) > 0
+            or bucket_counts.get(kb_id, 0) > 0
+            or chunk_counts.get(kb_id, 0) > 0
+        )
+        if has_content:
+            continue
+        metadata = metadata_json or {}
+        if metadata.get("created_from_document_upload") and not metadata.get(
+            "source_document_id"
+        ):
+            empty_ids.add(kb_id)
+        elif name == "默认知识库":
+            empty_ids.add(kb_id)
+    return empty_ids
 
 
 def _visible_open_gallery_knowledge_base_ids(db: Session, tenant_id: str) -> list[str]:

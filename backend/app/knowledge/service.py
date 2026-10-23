@@ -150,6 +150,38 @@ QUERY_NOISE_PHRASES = (
     "哪个",
     "一下",
 )
+# 疑问/恳求外壳只允许在**词项首尾**剥离（见 ``_strip_query_noise``）。
+# 旧实现用 ``str.replace`` 全局删除，会在词中间挖洞并把相邻字粘成新词：
+# 「怎么去重庆」→「去重庆」+「去重」（真的会命中「去重」语义）、
+# 「怎么去啊」→「去啊」（0 命中，整句词法全灭）——2026-10-23 线上
+# 「怎么去啊」检索不到 / 「怎么去项目」假命中的共同根因。
+# 句末语气词：剥掉后利于「怎么去啊」→「去」→ 单字被丢弃，不再产生「去啊」残片。
+QUERY_TRAILING_PARTICLES = "啊呀吧呢吗哦啦嘛哟哇咯嘞呐喔嗷呜捏的了吗呢哈"
+# 无实义虚字：词项**完全由这些字组成**，或剥掉它们后不足 2 字，即视为噪声残片
+# （「去啊」「么去」「去项」「哪里」）。只列虚字，绝不包含实体字。
+QUERY_STOP_CHARS = frozenset(
+    "去到来走在的了啊呀吧呢吗哦啦嘛么怎如何什哪些个是有能要想问说看"
+    "请帮我你他她它们这那会可以又还就都也很大太更最和与及给用做干整咋咱您"
+    "什么怎哪咋多几嘛呢"
+)
+# 高频泛词：在单文档「百问百搭」类资料里几乎块块都有，命中了也不代表相关。
+# 只拦**整词等于泛词**的情形（「项目」「内容」），带实体的组合词
+# （「重庆项目」「设备参数」）不受影响。
+QUERY_STOP_TERMS = frozenset(
+    {
+        "项目", "内容", "情况", "事项", "相关", "具体", "问题", "信息", "资料",
+        "方面", "要求", "规定", "标准", "是否", "可以", "需要", "能够", "多少",
+        "一个", "现在", "然后", "就是", "还是", "这个", "那个", "我们", "你们",
+        "他们", "什么", "怎样", "如何", "怎么", "哪些", "哪个", "一下", "请问",
+    }
+)
+# 词法零信号兜底：query 里没有任何可用实词（「怎么去啊」）或命中词全是泛词
+# （「怎么去项目」只剩「项目」）时，逐块打分必然全部低于 SEARCH_MIN_CHUNK_SCORE。
+# 此时桶路由**已经**选定了检索范围，返回空结果等于白花了路由成本，也让用户
+# 看到「没有找到相关知识」——而正确行为是让模型看到该范围讲了什么，从而明确
+# 回答「资料里没有这条」。兜底只取每个桶的代表块（首块），数量与 max_chunks
+# 共同收敛，不改变正常命中路径。
+WEAK_FALLBACK_MAX_BUCKETS = 3
 
 INGEST_STAGES: list[dict[str, Any]] = [
     {"key": "queued", "label": "排队中", "progress": 0.0},
@@ -1233,6 +1265,19 @@ class KnowledgeService:
             ranked_candidates = _rank_chunks(
                 query, chunks, selected_buckets, expanded_sections
             )
+            if not ranked_candidates and chunks:
+                # 词法零信号：query 没有可用实词（「怎么去啊」）或可用词全是泛词
+                # （「怎么去项目」只剩「项目」）。桶路由已选定范围，这里取各桶
+                # 代表块兜底，让模型能诚实回答「资料里没有这条」而不是空手。
+                ranked_candidates = _weak_fallback_chunks(chunks, selected_buckets)
+                route_trace.append(
+                    {
+                        "phase": "chunk_lexical_empty_fallback",
+                        "message": "问题没有可用于检索的关键词，已给出所选索引的代表内容",
+                        "chunk_count": len(ranked_candidates),
+                        "candidate_count": len(chunks),
+                    }
+                )
             ranked_hits = _select_diverse_chunk_hits(
                 ranked_candidates, selected_buckets, request.max_chunks
             )
@@ -2971,6 +3016,43 @@ def _rank_chunks(
     return [chunk for _score, chunk in scored]
 
 
+def _weak_fallback_chunks(
+    chunks: list[KnowledgeChunk],
+    selected_buckets: list[KnowledgeBucket],
+) -> list[KnowledgeChunk]:
+    """词法零信号兜底：按桶顺序取每个桶的代表块（chunk_index 最小者）。
+
+    触发条件见 ``_search``：query 没有任何可用实词，或可用词全是泛词，逐块
+    打分必然全部低于 ``SEARCH_MIN_CHUNK_SCORE``。桶路由此时已经选定了范围，
+    返回空结果既浪费路由成本、又只能让用户看到「没有找到相关知识」；给出
+    各桶首块能让模型明确回答「资料里没有这条」而不是凭标题猜。
+
+    只在零命中时启用，不影响任何正常命中路径；数量受
+    ``WEAK_FALLBACK_MAX_BUCKETS`` 与下游 ``max_chunks`` 双重收敛。
+    """
+
+    if not chunks:
+        return []
+    by_bucket: dict[str, list[KnowledgeChunk]] = {}
+    for chunk in chunks:
+        by_bucket.setdefault(chunk.bucket_id, []).append(chunk)
+    picked: list[KnowledgeChunk] = []
+    seen: set[str] = set()
+    ordered_bucket_ids = [bucket.id for bucket in selected_buckets] or list(by_bucket)
+    for bucket_id in ordered_bucket_ids:
+        if len(picked) >= WEAK_FALLBACK_MAX_BUCKETS:
+            break
+        bucket_chunks = by_bucket.get(bucket_id) or []
+        if not bucket_chunks:
+            continue
+        first = min(bucket_chunks, key=lambda item: item.chunk_index)
+        if first.id in seen:
+            continue
+        seen.add(first.id)
+        picked.append(first)
+    return picked
+
+
 def _select_diverse_chunk_hits(
     ranked_chunks: list[KnowledgeChunk],
     selected_buckets: list[KnowledgeBucket],
@@ -3226,18 +3308,62 @@ def _safe_key(text: str, fallback: str) -> str:
     return key[:64] or fallback
 
 
+def _strip_query_noise(term: str) -> str:
+    """只在词项首尾剥离疑问/礼貌外壳，并剥掉句末语气词。
+
+    绝不 ``replace`` 全局删除：那会在词中间挖洞、把不相邻的字粘成新词。
+    返回可能为单字/空串，由调用方按长度与虚字规则丢弃。
+    """
+
+    text = term
+    for _ in range(4):
+        before = text
+        for phrase in QUERY_NOISE_PHRASES:
+            if len(text) > len(phrase):
+                if text.startswith(phrase):
+                    text = text[len(phrase) :]
+                if len(text) > len(phrase) and text.endswith(phrase):
+                    text = text[: -len(phrase)]
+        text = text.rstrip(QUERY_TRAILING_PARTICLES)
+        if text == before:
+            break
+    return text
+
+
+def _is_query_noise_term(term: str) -> bool:
+    """判断词项是否为「无实义残片」/「高频泛词」，这类词不参与词法召回。
+
+    两类：
+    1. 由纯虚字组成（「去啊」「么去」「哪里」），或剥掉虚字后不足 2 字（「去项」）；
+    2. 整词等于高频泛词（「项目」「内容」）——单文档资料里块块都命中，命中
+       也不代表相关（「怎么去项目」曾因此假命中 23/51 块无关内容）。
+    """
+
+    if not term:
+        return True
+    if term in QUERY_STOP_TERMS:
+        return True
+    if not re.fullmatch(r"[\u4e00-\u9fff]+", term):
+        return False
+    residue = "".join(char for char in term if char not in QUERY_STOP_CHARS)
+    # 剥完虚字只剩泛词（「去项目」→「项目」）同样属于噪声
+    return len(residue) < 2 or residue in QUERY_STOP_TERMS
+
+
 def _query_terms(query: str) -> list[str]:
     terms: list[str] = []
     for term in re.findall(r"[A-Za-z0-9_.-]{2,}|[\u4e00-\u9fff]{2,}", query or ""):
         normalized = term.lower()
-        if re.fullmatch(r"[\u4e00-\u9fff]+", normalized):
-            for phrase in QUERY_NOISE_PHRASES:
-                normalized = normalized.replace(phrase, "")
+        is_cjk = bool(re.fullmatch(r"[\u4e00-\u9fff]+", normalized))
+        if is_cjk:
+            normalized = _strip_query_noise(normalized)
         normalized = normalized.strip()
         if len(normalized) < 2:
             continue
         terms.append(normalized)
-        if re.fullmatch(r"[\u4e00-\u9fff]{3,}", normalized):
+        # n-gram 展开仍基于剥壳后的整串：长句里嵌着的实体词（「重庆项目百问」
+        # → 「重庆」「百问」）靠它召回，噪声残片由 _is_query_noise_term 拦下。
+        if is_cjk:
             for size in (4, 3, 2):
                 if len(normalized) <= size:
                     continue
@@ -3246,9 +3372,10 @@ def _query_terms(query: str) -> list[str]:
     seen: set[str] = set()
     for term in terms:
         normalized = term.lower().strip()
-        if normalized not in seen:
-            seen.add(normalized)
-            result.append(normalized)
+        if normalized in seen or _is_query_noise_term(normalized):
+            continue
+        seen.add(normalized)
+        result.append(normalized)
     return result[:96]
 
 
