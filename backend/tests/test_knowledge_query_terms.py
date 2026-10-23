@@ -201,6 +201,17 @@ def test_normal_query_does_not_trigger_fallback(_no_route_cache) -> None:
         assert [chunk.id for chunk in response.chunks] == ["kchunk_3"]
 
 
+def test_query_with_real_terms_but_no_hit_stays_empty(_no_route_cache) -> None:
+    """带实词的查询零命中＝库里确实没有，必须保持空结果，不能塞无关代表块。"""
+
+    with _test_session() as db:
+        _seed_project_kb(db)
+        response = _search(db, "年假政策")
+        phases = [item["phase"] for item in response.route_trace]
+        assert "chunk_lexical_empty_fallback" not in phases
+        assert response.chunks == []
+
+
 # ---------------------------------------------------------------------------
 # 底层函数：兜底只取代表块，且不越过上限
 # ---------------------------------------------------------------------------

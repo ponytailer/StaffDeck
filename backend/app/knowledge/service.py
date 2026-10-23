@@ -1265,10 +1265,12 @@ class KnowledgeService:
             ranked_candidates = _rank_chunks(
                 query, chunks, selected_buckets, expanded_sections
             )
-            if not ranked_candidates and chunks:
-                # 词法零信号：query 没有可用实词（「怎么去啊」）或可用词全是泛词
-                # （「怎么去项目」只剩「项目」）。桶路由已选定范围，这里取各桶
-                # 代表块兜底，让模型能诚实回答「资料里没有这条」而不是空手。
+            if not ranked_candidates and chunks and not _query_terms(query):
+                # 词法零信号：query 里**没有任何可用实词**（「怎么去啊」「怎么去项目」
+                # 剥完外壳/泛词后为空）。桶路由已选定范围，这里取各桶代表块兜底，
+                # 让模型能诚实回答「资料里没有这条」而不是空手。
+                # 注意门槛是「无实词」而不是「无命中」：带实词的查询（如「年假政策」
+                # 查项目资料）零命中说明库里确实没有，必须保持空结果，不能塞无关内容。
                 ranked_candidates = _weak_fallback_chunks(chunks, selected_buckets)
                 route_trace.append(
                     {
