@@ -280,3 +280,30 @@ def test_ocr_dpi_range_is_shared_by_both_surfaces(monkeypatch, dpi: int, ok: boo
         with pytest.raises(HTTPException) as excinfo:
             agent_apps.execute_ocr_upload([upload], dpi=dpi)
         assert excinfo.value.status_code == 400
+
+
+def test_ocr_markdown_format_returns_the_plain_text_body(monkeypatch) -> None:
+    """回归：format=md/text 时上游回纯文本，曾经的实现会把它当解析失败报 502。"""
+
+    _settings(monkeypatch)
+    client, admin_token = _client(monkeypatch)
+    key = _api_key(client, admin_token, ["ocr:run"])
+    _patch_upstream(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, text="# 标题\n\n正文", headers={"content-type": "text/markdown; charset=utf-8"}
+        ),
+    )
+
+    response = client.post(
+        OCR_PATH,
+        headers={"Authorization": f"Bearer {key}"},
+        files={"files": ("scan.pdf", b"%PDF-1.4", "application/pdf")},
+        data={"format": "md"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["plain_text"] is True
+    assert body["results"][0]["pages"][0]["markdown"] == "# 标题\n\n正文"
+    assert body["summary"]["page_count"] == 1

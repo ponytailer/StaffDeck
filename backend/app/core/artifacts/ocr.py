@@ -28,6 +28,13 @@ OCR_RUN_PATH = "/v1/ocr"
 #: 允许的输出格式。``json`` 带行坐标与版面块，``md`` / ``text`` 是纯文本形态。
 ALLOWED_FORMATS = ("json", "md", "text")
 
+#: 上游在这两种格式下**直接回纯文本正文**（indra.md 的示例是 `-o out.md`），
+#: 不是一个 JSON 信封。解析回包时要按格式区分处理。
+PLAIN_TEXT_FORMATS = ("md", "text")
+
+#: 纯文本回包里的分页符（pdftotext 一类工具的传统做法）。没有就按单页处理。
+PAGE_BREAK = "\f"
+
 #: 单页最多保留多少行 / 版面块。极端扫描件一页能出上千行，全量回包会把浏览器打顿；
 #: 这里只截断展示用的结构，``markdown`` / ``text`` 仍然是完整的。
 MAX_LINES_PER_PAGE = 2000
@@ -173,6 +180,89 @@ def normalize_ocr_response(body: Any, *, filenames: Sequence[str] = ()) -> dict[
     }
 
 
+def normalize_plain_text_response(
+    body: str,
+    *,
+    filenames: Sequence[str] = (),
+    format: str = "md",
+    content_type: str = "",
+) -> dict[str, Any]:
+    """把 ``format=md`` / ``text`` 的纯文本回包收敛成与 JSON 形态同构的结果。
+
+    上游这两种格式不回 JSON 信封，直接给正文（一份文档一段文本）。为了不让前端
+    分叉出两套渲染逻辑，这里把它包成「单文件 + 按 ``\\f`` 分页」的结构：
+    行坐标与版面块必然为空（纯文本本来就没有），``source`` 统一记 ``text``，
+    并在 ``note`` 里说明原因 —— 页面上那个徽章才不会被误读成「走了 OCR 模型」。
+    """
+
+    text = body or ""
+    # 分页符之外的连续空行没有信息量，去掉尾部空白即可
+    chunks = text.split(PAGE_BREAK) if PAGE_BREAK in text else [text]
+    pages: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunk for chunk in chunks if chunk.strip() or len(chunks) == 1):
+        pages.append(
+            {
+                "index": index,
+                "source": "text",
+                "note": f"纯文本输出（format={format}）：只有正文，没有行坐标与版面块",
+                "rotation": 0,
+                "skew": 0.0,
+                "vertical": False,
+                "n_lines": sum(1 for line in chunk.splitlines() if line.strip()),
+                "markdown": chunk,
+                "text": chunk,
+                "lines": [],
+                "blocks": [],
+                "timings": {},
+            }
+        )
+
+    if not pages:
+        pages.append(
+            {
+                "index": 0,
+                "source": "text",
+                "note": "上游返回了空的纯文本结果",
+                "rotation": 0,
+                "skew": 0.0,
+                "vertical": False,
+                "n_lines": 0,
+                "markdown": "",
+                "text": "",
+                "lines": [],
+                "blocks": [],
+                "timings": {},
+            }
+        )
+
+    name = filenames[0] if filenames else "ocr"
+    if len(filenames) > 1:
+        # 纯文本回包不区分文件，强行拆会张冠李戴，不如如实说明
+        pages[0]["note"] = (
+            f"{pages[0]['note']}；本次上传了 {len(filenames)} 个文件，纯文本回包不区分文件"
+        )
+    return {
+        "model": "indra-ocr",
+        "results": [
+            {
+                "filename": name,
+                "n_pages": len(pages),
+                "elapsed_ms": None,
+                "error": None,
+                "pages": pages,
+            }
+        ],
+        "summary": {
+            "file_count": 1,
+            "page_count": len(pages),
+            "elapsed_ms": None,
+            "error_count": 0,
+        },
+        "plain_text": True,
+        "content_type": content_type,
+    }
+
+
 def _describe_http_error(exc: httpx.HTTPStatusError) -> str:
     """把上游 4xx/5xx 压成一句可读错误（正文可能是 HTML，截断即可）。"""
 
@@ -259,6 +349,7 @@ def run_ocr(
         ("files", (name, content, mime or "application/octet-stream"))
         for name, content, mime in files
     ]
+    filenames = [name for name, _content, _mime in files]
     effective_timeout = timeout if timeout is not None else settings.indra_ocr_timeout_seconds
     try:
         with httpx.Client(timeout=effective_timeout) as client:
@@ -269,7 +360,36 @@ def run_ocr(
                 headers=headers,
             )
             response.raise_for_status()
-            body = response.json()
+            content_type = response.headers.get("content-type", "")
+            try:
+                body = response.json()
+            except ValueError as exc:
+                # md / text 是纯文本回包（indra.md 的示例就是 `-o out.md`），
+                # 当成解析失败会误报成 502 —— 这里按格式走纯文本归一化。
+                if options.format not in PLAIN_TEXT_FORMATS:
+                    hint = f"（content-type: {content_type or '未知'}）"
+                    raise OcrError(
+                        f"OCR 服务返回了非 JSON 响应{hint}",
+                        kind="decode",
+                    ) from exc
+                return normalize_plain_text_response(
+                    response.text,
+                    filenames=filenames,
+                    format=options.format,
+                    content_type=content_type,
+                )
+            # 有的实现只回结果数组：包一层，别让用户看到莫须有的 decode 错误
+            if isinstance(body, list):
+                body = {"results": body}
+            # 极端情况：md/text 下回了个「JSON 标量」而不是信封，同样按纯文本收下
+            if options.format in PLAIN_TEXT_FORMATS and not isinstance(body, dict):
+                raw = body if isinstance(body, str) else response.text
+                return normalize_plain_text_response(
+                    raw,
+                    filenames=filenames,
+                    format=options.format,
+                    content_type=content_type,
+                )
     except httpx.TimeoutException as exc:
         raise OcrError(
             f"OCR 识别超时（超过 {int(effective_timeout)} 秒），请减少页数或稍后重试",
@@ -286,7 +406,5 @@ def run_ocr(
             f"无法连接 OCR 服务（{base_url}）：{exc.__class__.__name__}",
             kind="network",
         ) from exc
-    except ValueError as exc:
-        raise OcrError("OCR 服务返回了非 JSON 响应", kind="decode") from exc
 
-    return normalize_ocr_response(body, filenames=[name for name, _content, _mime in files])
+    return normalize_ocr_response(body, filenames=filenames)

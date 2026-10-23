@@ -60,6 +60,11 @@ export type OcrResponse = {
     elapsed_ms: number | null;
     error_count: number;
   };
+  /**
+   * `format=md` / `text` 时上游回的是纯文本正文，后端会把它包成同构结果并打上这个标记：
+   * 只有一页（或按 \f 分页），没有行坐标与版面块。前端不需要分支渲染，仅用于展示说明。
+   */
+  plain_text?: boolean;
 };
 
 export type OcrStatus = {

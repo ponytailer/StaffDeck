@@ -232,8 +232,13 @@ function PageCard({
         </div>
       </header>
 
-      {page.source === 'error' && page.note && (
-        <div className="mx-[12px] mt-[8px] rounded-[6px] bg-[#fdecec] px-[10px] py-[6px] text-[11px] leading-[1.6] text-[#c0392b]">
+      {page.note && (
+        <div
+          className={cn(
+            'mx-[12px] mt-[8px] rounded-[6px] px-[10px] py-[6px] text-[11px] leading-[1.6]',
+            page.source === 'error' ? 'bg-[#fdecec] text-[#c0392b]' : 'bg-[#f7f8fa] text-[#6b7280]',
+          )}
+        >
           {page.note}
         </div>
       )}

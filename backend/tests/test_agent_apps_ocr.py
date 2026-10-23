@@ -393,3 +393,99 @@ def test_sample_response_matches_documented_shape() -> None:
     page = payload["results"][0]["pages"][0]
     assert {"index", "source", "note", "rotation", "skew", "vertical", "n_lines"} <= set(page)
     assert {"markdown", "text", "lines", "blocks", "timings"} <= set(page)
+
+
+# ---------------------------------------------------------------------------
+# 纯文本输出形态（format=md / text）
+# ---------------------------------------------------------------------------
+
+
+def test_run_ocr_accepts_plain_text_body_for_md_format(monkeypatch) -> None:
+    """format=md 时上游直接回正文（indra.md 的 `-o out.md`），不能当成解析失败报 502。"""
+
+    _settings(monkeypatch)
+    body = "# 行李寄存\n\n住客可在 L 层免费寄存。"
+    _patch_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, text=body, headers={"content-type": "text/markdown; charset=utf-8"}
+        ),
+    )
+
+    result = run_ocr(
+        [("scan.pdf", b"%PDF-1.4", "application/pdf")],
+        OcrOptions(format="md"),
+    )
+
+    assert result["plain_text"] is True
+    assert result["summary"]["page_count"] == 1
+    page = result["results"][0]["pages"][0]
+    assert page["index"] == 0
+    assert page["source"] == "text"
+    assert page["markdown"] == body
+    assert page["lines"] == [] and page["blocks"] == []
+    assert "纯文本输出" in page["note"]
+    assert result["results"][0]["filename"] == "scan.pdf"
+
+
+def test_run_ocr_splits_plain_text_pages_on_form_feed(monkeypatch) -> None:
+    _settings(monkeypatch)
+    _patch_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, text="第一页\n正文\f第二页\n正文", headers={"content-type": "text/plain"}
+        ),
+    )
+
+    result = run_ocr([("a.pdf", b"%PDF-1.4", "")], OcrOptions(format="text"))
+
+    pages = result["results"][0]["pages"]
+    assert [page["index"] for page in pages] == [0, 1]
+    assert pages[0]["text"] == "第一页\n正文"
+    assert pages[1]["text"] == "第二页\n正文"
+    assert pages[0]["n_lines"] == 2
+
+
+def test_run_ocr_notes_when_plain_text_covers_multiple_files(monkeypatch) -> None:
+    _settings(monkeypatch)
+    _patch_transport(
+        monkeypatch, lambda request: httpx.Response(200, text="合并正文", headers={})
+    )
+
+    result = run_ocr(
+        [("a.pdf", b"%PDF-1.4", ""), ("b.pdf", b"%PDF-1.4", "")],
+        OcrOptions(format="md"),
+    )
+
+    assert result["summary"]["file_count"] == 1
+    assert "2 个文件" in result["results"][0]["pages"][0]["note"]
+
+
+def test_run_ocr_still_rejects_non_json_body_for_json_format(monkeypatch) -> None:
+    _settings(monkeypatch)
+    _patch_transport(
+        monkeypatch, lambda request: httpx.Response(200, text="<html>oops</html>", headers={})
+    )
+
+    with pytest.raises(OcrError) as excinfo:
+        run_ocr([("a.pdf", b"%PDF-1.4", "")], OcrOptions(format="json"))
+    assert excinfo.value.kind == "decode"
+
+
+def test_run_ocr_wraps_a_bare_results_array(monkeypatch) -> None:
+    """个别实现只回结果数组，别把它当成结构异常。"""
+
+    _settings(monkeypatch)
+    _patch_transport(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            json=[{"filename": "a.pdf", "pages": [{"index": 0, "markdown": "正文"}]}],
+            headers={"content-type": "application/json"},
+        ),
+    )
+
+    result = run_ocr([("a.pdf", b"%PDF-1.4", "")], OcrOptions(format="json"))
+
+    assert result["results"][0]["pages"][0]["markdown"] == "正文"
+    assert result["summary"]["page_count"] == 1

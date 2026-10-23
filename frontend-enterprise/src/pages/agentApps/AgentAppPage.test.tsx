@@ -583,6 +583,67 @@ describe('AgentAppPage', () => {
       expect(screen.getByText(/dpi/, { selector: 'code' })).toBeTruthy();
     });
 
+    it('输出形态选 Markdown 时，纯文本回包也能正常渲染（曾经会 502）', async () => {
+      const calls: FormData[] = [];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/ocr:status')) return jsonCapable(ocrStatus);
+        if (url.includes('/ocr:run')) {
+          calls.push(init?.body as FormData);
+          return jsonCapable({
+            model: 'indra-ocr',
+            plain_text: true,
+            results: [
+              {
+                filename: 'scan.pdf',
+                n_pages: 1,
+                elapsed_ms: null,
+                error: null,
+                pages: [
+                  {
+                    index: 0,
+                    source: 'text',
+                    note: '纯文本输出（format=md）：只有正文，没有行坐标与版面块',
+                    rotation: 0,
+                    skew: 0,
+                    vertical: false,
+                    n_lines: 2,
+                    markdown: '# 行李寄存\n\n住客可在 L 层免费寄存。',
+                    text: '# 行李寄存\n\n住客可在 L 层免费寄存。',
+                    lines: [],
+                    blocks: [],
+                    timings: {},
+                  },
+                ],
+              },
+            ],
+            summary: { file_count: 1, page_count: 1, elapsed_ms: null, error_count: 0 },
+          });
+        }
+        return jsonResponse({});
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      renderPage('ocr-assistant');
+
+      await userEvent.setup().click(await screen.findByRole('button', { name: 'Markdown' }));
+      const input = (await screen.findByLabelText('选择要识别的文件')) as HTMLInputElement;
+      fireEvent.change(input, {
+        target: { files: [new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf' })] },
+      });
+      const run = await screen.findByRole('button', { name: /开始识别/ });
+      await waitFor(() => expect((run as HTMLButtonElement).disabled).toBe(false));
+      await userEvent.setup().click(run);
+
+      expect(await screen.findByText('第 1 页')).toBeTruthy();
+      expect(await screen.findByText(/住客可在 L 层免费寄存/)).toBeTruthy();
+      // 纯文本回包要说明原因，而不是让用户以为走了 OCR
+      expect(screen.getByText(/纯文本输出（format=md）/)).toBeTruthy();
+      // 没有行 / 版面块，两个视图必须禁用而不是空白可点
+      expect((screen.getByRole('button', { name: '行' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole('button', { name: '版面块' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(calls[0].get('format')).toBe('md');
+    });
+
     it('服务未配置时提示并禁用识别', async () => {
       vi.stubGlobal(
         'fetch',
