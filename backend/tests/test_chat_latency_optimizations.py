@@ -576,3 +576,123 @@ def test_task_action_keeps_configured_thinking(monkeypatch) -> None:
 
     assert calls
     assert "extra_body" not in calls[0] or "thinking" not in (calls[0].get("extra_body") or {})
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-23：知识库作答快速路径单独关思考（只作用这一个 operation）
+# 现场实测（deepseek-v4.1-flash + 同一份 20.3K 证据 payload）：
+#   思考开 TTFT 8.51s / 总 16.13s；思考关 TTFT 1.62s / 总 6.19s
+# 该轮 TTFT 12.60s，占整轮 56%，是「最快模式仍慢」的主因。
+# ---------------------------------------------------------------------------
+
+
+def test_knowledge_answer_thinking_policy_scope() -> None:
+    """只关闭 `response.knowledge_answer`；通用作答 operation 必须不受影响。"""
+
+    assert OPERATION_THINKING_MODE["response.knowledge_answer"] == "disabled"
+    assert operation_thinking_mode("response.knowledge_answer", "enabled") == "disabled"
+    assert operation_thinking_mode("response.knowledge_answer", "provider_default") == "disabled"
+    # 反证：通用作答不能被动到（否则会拖低所有对话的回答质量）
+    assert "response.generate" not in OPERATION_THINKING_MODE
+    assert "response.generate_stream" not in OPERATION_THINKING_MODE
+    assert operation_thinking_mode("response.generate_stream", "enabled") == "enabled"
+    assert operation_thinking_mode("response.generate", "enabled") == "enabled"
+
+
+def test_knowledge_answer_request_disables_provider_thinking(monkeypatch) -> None:
+    """知识库作业流作答的下发请求必须带 thinking.type=disabled。"""
+    calls: list[dict] = []
+    _patch_client_driver(monkeypatch, calls)
+
+    client = llm_client_module.LLMClient(_model_config())
+    with llm_operation("response.knowledge_answer"):
+        client.generate_text("系统提示", "用户问题")
+
+    assert calls
+    assert calls[0]["extra_body"]["thinking"]["type"] == "disabled"
+
+
+def test_generic_response_keeps_configured_thinking(monkeypatch) -> None:
+    """反证：通用作答（response.generate_stream）不注入 thinking 覆盖。"""
+    calls: list[dict] = []
+    _patch_client_driver(monkeypatch, calls)
+
+    client = llm_client_module.LLMClient(_model_config())
+    with llm_operation("response.generate_stream"):
+        client.generate_text("系统提示", "用户问题")
+
+    assert calls
+    assert "extra_body" not in calls[0] or "thinking" not in (calls[0].get("extra_body") or {})
+
+
+def test_response_generator_forwards_operation_override(monkeypatch) -> None:
+    """接线验证：ResponseGenerator 把 `operation` 透传给 llm_operation。
+
+    这是「知识库作业流关思考」生效的前提：只有 operation 名真的落到 span 上，
+    output_policy 的覆盖才会命中。默认（不传）必须仍是通用作答 operation。
+    """
+    from contextlib import contextmanager
+
+    import app.core.converse.response as response_module
+    from app.core.converse.response import ResponseGenerator
+    from app.db.models import ChatSession
+    from app.session.session_schema import RouterDecision, StepAgentResult
+
+    seen: list[str] = []
+
+    @contextmanager
+    def _record_operation(name: str, **_attributes):
+        seen.append(name)
+        yield
+
+    class _FakeClient:
+        def __init__(self, _config) -> None:
+            pass
+
+        def generate_text_stream(self, _system_prompt, _payload):
+            yield "答案"
+
+        def generate_text(self, _system_prompt, _payload):
+            return "答案"
+
+    monkeypatch.setattr(response_module, "llm_operation", _record_operation)
+    monkeypatch.setattr(response_module, "LLMClient", _FakeClient)
+
+    session = ChatSession(id="s1", tenant_id="t", user_id="u", agent_id="a")
+    decision = RouterDecision(decision="answer_only")
+    step_result = StepAgentResult()
+    config = _model_config()
+
+    generator = ResponseGenerator()
+    list(
+        generator.generate_stream(
+            "问题",
+            session,
+            None,
+            decision,
+            step_result,
+            None,
+            config,
+            operation="response.knowledge_answer",
+        )
+    )
+    generator.generate(
+        "问题",
+        session,
+        None,
+        decision,
+        step_result,
+        None,
+        config,
+        operation="response.knowledge_answer",
+    )
+    # 不传 operation → 保持通用作答 operation（不改变既有全部调用方语义）
+    list(generator.generate_stream("问题", session, None, decision, step_result, None, config))
+    generator.generate("问题", session, None, decision, step_result, None, config)
+
+    assert seen == [
+        "response.knowledge_answer",
+        "response.knowledge_answer",
+        "response.generate_stream",
+        "response.generate",
+    ]

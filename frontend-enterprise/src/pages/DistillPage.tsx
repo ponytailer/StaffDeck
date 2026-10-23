@@ -312,6 +312,7 @@ import { api, ApiError, streamGet, streamPost, TENANT_ID } from '../api/client';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import type {
   GeneralSkillRead,
+  KnowledgeBasePage,
   KnowledgeBaseRead,
   ModelConfigRead,
   SkillCard,
@@ -858,15 +859,15 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       api.get<GeneralSkillRead[]>(
         `/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentQuery}&include_files=0`,
       ),
-      api.get<KnowledgeBaseRead[]>(
-        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentQuery}`,
+      api.get<KnowledgeBasePage>(
+        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentQuery}&page=1&page_size=200`,
       ),
       api.get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${agentQuery}`),
     ]);
     if (requestId !== capabilityCatalogRequestRef.current) return;
     if (toolResult.status === 'fulfilled') setTools(toolResult.value);
     if (skillResult.status === 'fulfilled') setGeneralSkills(skillResult.value);
-    if (knowledgeResult.status === 'fulfilled') setKnowledgeBases(knowledgeResult.value);
+    if (knowledgeResult.status === 'fulfilled') setKnowledgeBases(knowledgeResult.value.items);
     if (sopResult.status === 'fulfilled') setSopSkills(sopResult.value);
   }, [active, agentQuery]);
 

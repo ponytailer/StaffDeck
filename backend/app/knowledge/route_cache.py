@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from app import object_cache
@@ -49,6 +50,9 @@ KIND_BUCKET = "bucket"
 
 # 查询噪声词：纯提问方式差异，不影响路由语义。归一时剔除以聚合相似问法。
 # 扩充自 app/knowledge/service.py QUERY_NOISE_PHRASES（那是打分用，这里是 key 归一）。
+# 2026-10-23 扩充：原列表只覆盖「怎么/如何/什么/哪些」这一层，实测「发现安全隐患
+# 应该怎么上报？流程是什么？」归一后仍带「应该」，而「安全隐患上报流程」归一后
+# 不含它 → 同一问题两种问法落到两个 key，缓存永远 miss（该轮两次路由冷调 ~6.2s）。
 _ROUTE_NOISE_PHRASES = (
     "我想知道",
     "麻烦帮我",
@@ -67,7 +71,49 @@ _ROUTE_NOISE_PHRASES = (
     "哪些",
     "哪个",
     "么样",  # 「怎么样」残片
+    # ——— 2026-10-23 扩充：疑问/口语化外壳 ———
+    "怎么办",
+    "怎么回事",
+    "为什么",
+    "为啥",
+    "是什么",
+    "是多少",
+    "有没有",
+    "有没",
+    "是否",
+    "能否",
+    "可否",
+    "是不是",
+    "可不可以",
+    "可以",
+    "应该",
+    "应当",
+    "想问",
+    "请教",
+    "说说",
+    "说一下",
+    "讲一下",
+    "介绍一下",
+    "介绍下",
+    "了解一下",
+    "看看",
+    "查一下",
+    "查查",
 )
+
+# 噪声词必须**长词优先**：否则「什么」会先把「是什么」截成「是」，
+# 「一下」会先把「介绍一下」截成「介绍」。这里在模块加载时按长度降序排一次，
+# 新增词就不用关心插入位置了。
+_ROUTE_NOISE_PHRASES = tuple(sorted(set(_ROUTE_NOISE_PHRASES), key=len, reverse=True))
+
+# 句末语气助词：只在**尾部**剥离，且只剥「吗 / 呢」。
+# - 「吧 / 啊 / 呀」不进这里：「酒吧」「网吧」「贴吧」这类实词以它们结尾，
+#   整词剔除会把「酒吧」压成「酒」（实测踩过），收益远小于风险。
+# - 剥完不足 2 字符则不剥，避免把单词削成单字。
+_TRAILING_PARTICLES_RE = re.compile(r"[吗呢]+$")
+
+# 归一前先做的空白/标点清理（NFKC 之后执行）。
+_PUNCT_SPACE_RE = re.compile(r"[？?！!。.，,、\s：:；;\"'“”‘’（）()【】\[\]<>《》—…~～]+")
 
 
 @dataclass(frozen=True)
@@ -86,19 +132,27 @@ class RouteCacheSlot:
 
 
 def query_norm(query: str) -> str:
-    """查询归一：去标点空白、去提问噪声词、小写。
+    """查询归一：全半角归一 + 去标点空白 + 去提问噪声词 + 剥句末语气词 + 小写。
 
     例：「如何申领电脑」「怎么申领电脑」「我想知道如何申领电脑？」「申领电脑」
     归一后同为「申领电脑」。
+
+    2026-10-23：增加 NFKC 全半角归一（「ＸＦ１２８３」与「XF1283」应同一 key）
+    与句末语气词剥离（「…的流程吗」与「…的流程」应同一 key），两者都直接提升
+    路由缓存命中率，而不会改变缓存语义（仍是同一问法的不同写法）。
     """
 
-    text = (query or "").strip().lower()
+    text = unicodedata.normalize("NFKC", (query or "").strip().lower())
     # 去标点与空白
-    text = re.sub(r"[？?！!。.，,、\s：:；;]+", "", text)
+    text = _PUNCT_SPACE_RE.sub("", text)
     # 去噪声词（多轮替换处理相邻组合）
     for _ in range(2):
         for phrase in _ROUTE_NOISE_PHRASES:
             text = text.replace(phrase, "")
+    # 句末语气助词（仅尾部且仅 吗/呢，剥完不足 2 字则不剥）
+    stripped = _TRAILING_PARTICLES_RE.sub("", text)
+    if len(stripped) >= 2:
+        text = stripped
     return text.strip()
 
 

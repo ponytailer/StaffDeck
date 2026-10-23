@@ -959,6 +959,51 @@ def test_lexical_fast_path_unit_boundary_conditions() -> None:
     assert _lexical_fast_path_top(rows, [18.0, 2.0, 1.0], 2, content_verifier=lambda row: True) == ["a", "b"]
 
 
+def test_lexical_fast_path_relative_dominance_rule() -> None:
+    """相对主导度通道（2026-10-23）：绝对差距不足、但 top1 是 top2 近两倍时也放行。
+
+    大库（如消防规范库 99 文档 / 794 桶）第二名常是同主题条目，绝对差距天然被
+    压在 8 以内，原规则会让「top1 满分命中」也白走两次 LLM 路由。
+    """
+
+    rows = ["a", "b", "c"]
+    # gap 6 < 8，但 16 / 9 ≈ 1.78 < 1.8 → 仍不放行（保持原严格口径的边界）
+    assert _lexical_fast_path_top(rows, [16.0, 9.0, 1.0], 5) is None
+    # gap 7 < 8，14 / 7 = 2.0 ≥ 1.8 → 相对主导，放行
+    assert _lexical_fast_path_top(rows, [14.0, 7.0, 1.0], 2) == ["a", "b"]
+    # 绝对差距仍然优先：18 / 9 gap 9 → 放行（与新增通道无关）
+    assert _lexical_fast_path_top(rows, [18.0, 9.0, 1.0], 2) == ["a", "b"]
+    # top1 未过强命中门槛（14）时不因比例生效：13 / 1 = 13 倍也不放行
+    assert _lexical_fast_path_top(rows, [13.0, 1.0, 0.5], 5) is None
+    # top2 为 0 时不走比例通道（避免 0 除/无意义领先），仅靠绝对差距
+    assert _lexical_fast_path_top(rows, [14.0, 0.0, 0.0], 2) == ["a", "b"]  # gap 14 ≥ 8
+    assert _lexical_fast_path_top(rows, [7.0, 0.0, 0.0], 2) is None  # 未过门槛
+
+
+def test_lexical_fast_path_tie_group_rule() -> None:
+    """并列组通道（2026-10-23）：top1 与后续候选几乎并列、且组内数量够填满 max_count。
+
+    真实场景（消防规范库）：桶分数 21.06 / 20.88 / 19.92 / 19.92 / 15.31，
+    gap 仅 0.18，旧规则（含主导度通道）全部落空 → 白走一次 bucket_route。
+    「并列时把领跑者全取」与 LLM 路由的选择一致，风险低于按 top1 强推。
+    """
+
+    rows = ["a", "b", "c", "d", "e"]
+    # 前 4 个在 top1 的 90% 以内，max_count=4 → 组内够填满，放行
+    assert _lexical_fast_path_top(rows, [21.06, 20.88, 19.92, 19.92, 15.31], 4) == [
+        "a",
+        "b",
+        "c",
+        "d",
+    ]
+    # 只有 3 个并列，max_count=4 → 凑不满，不放行
+    assert _lexical_fast_path_top(rows, [21.06, 20.88, 19.92, 15.31, 9.0], 4) is None
+    # max_count=1 时并列通道必须关闭（否则「top1 自己 ≥ 0.9×top1」恒真）
+    assert _lexical_fast_path_top(rows, [20.0, 19.5], 1) is None
+    # 并列通道同样受 MIN_SCORE 强命中门槛约束
+    assert _lexical_fast_path_top(rows, [13.0, 12.9, 12.8, 12.7, 1.0], 4) is None
+
+
 def test_score_with_scores_helpers_match_legacy_functions() -> None:
     """带分数版与原版排序结果一致（复用关系防回归）。"""
 
@@ -1325,9 +1370,21 @@ def test_list_documents_without_agent_scope_returns_only_open_gallery_documents(
         ensure_open_gallery_binding(db, "tenant_demo", "knowledge_base", "kb_open", "active")
         db.commit()
 
-        rows = list_documents("tenant_demo", None, None, True, db)
+        # 关键字传参：list_documents 的签名此后加了 include_all_versions/page/page_size，
+        # 旧的位置传参会把 db 落到 page 上（int(Session) 报错）。
+        # list_documents 已改为服务端分页（返回 {items,total,page,...}），且签名多了
+        # include_all_versions/page/page_size；旧的位置传参 + 直接迭代行都会失败。
+        result = list_documents(
+            tenant_id="tenant_demo",
+            knowledge_base_id=None,
+            agent_id=None,
+            include_all_versions=True,
+            page=1,
+            page_size=50,
+            db=db,
+        )
 
-        assert {row.id for row in rows} == {"kdoc_open"}
+        assert {row.id for row in result["items"]} == {"kdoc_open"}
 
 
 def test_update_document_syncs_document_card_and_okf_source_concept() -> None:

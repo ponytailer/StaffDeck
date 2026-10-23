@@ -78,6 +78,8 @@ class ResponseGenerator:
         memory_context: list[dict[str, object]] | None = None,
         conversation_context: dict[str, object] | None = None,
         task_results: list[dict[str, object]] | None = None,
+        *,
+        operation: str | None = None,
     ) -> str:
         if self._can_use_step_reply_directly(step_result, tool_result, task_results):
             return step_result.reply.strip()
@@ -96,7 +98,7 @@ class ResponseGenerator:
         try:
             if tool_result and not tool_result.success and not task_results:
                 return tool_failure_reply(tool_result)
-            with llm_operation("response.generate"):
+            with llm_operation(operation or "response.generate"):
                 text = LLMClient(model_config).generate_text(
                     unified_system_prompt(), payload
                 )
@@ -120,6 +122,8 @@ class ResponseGenerator:
         memory_context: list[dict[str, object]] | None = None,
         conversation_context: dict[str, object] | None = None,
         task_results: list[dict[str, object]] | None = None,
+        *,
+        operation: str | None = None,
     ) -> Iterator[str]:
         if self._can_use_step_reply_directly(step_result, tool_result, task_results):
             yield from self.chunk_text(step_result.reply or "")
@@ -144,7 +148,7 @@ class ResponseGenerator:
             if router_decision.decision == "clarify" and step_result.reply:
                 yield from self.chunk_text(step_result.reply)
                 return
-            with llm_operation("response.generate_stream"):
+            with llm_operation(operation or "response.generate_stream"):
                 stream = LLMClient(model_config).generate_text_stream(
                     unified_system_prompt(), payload
                 )

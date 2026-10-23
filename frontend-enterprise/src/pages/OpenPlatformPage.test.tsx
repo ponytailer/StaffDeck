@@ -59,16 +59,23 @@ function stubPlatformFetch() {
     if (url.includes('/api/enterprise/agents/') && url.includes('/skills')) return jsonResponse([]);
     if (url.includes('/api/enterprise/agents')) return jsonResponse([overallAgent, galleryAgent]);
     if (url.includes('/api/enterprise/knowledge-bases')) {
-      return jsonResponse([{
-        id: 'kb-1',
-        tenant_id: 'tenant_demo',
-        name: '产品知识库',
-        description: '产品资料',
-        status: 'active',
-        document_count: 3,
-        bucket_count: 2,
-        chunk_count: 10,
-      }]);
+      return jsonResponse({
+        items: [{
+          id: 'kb-1',
+          tenant_id: 'tenant_demo',
+          name: '产品知识库',
+          description: '产品资料',
+          status: 'active',
+          document_count: 3,
+          bucket_count: 2,
+          chunk_count: 10,
+        }],
+        total: 1,
+        page: 1,
+        page_size: 200,
+        total_pages: 1,
+        summary: { active: 1, archived: 0, documents: 3 },
+      });
     }
     if (url.includes('/api/enterprise/general-skills')) return jsonResponse([]);
     if (url.includes('/api/enterprise/tools')) return jsonResponse([]);

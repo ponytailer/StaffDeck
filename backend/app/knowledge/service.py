@@ -99,6 +99,22 @@ SEARCH_MIN_EVIDENCE_SCORE = 2.0
 # chunk 零命中、检索空结果——宁可少跳，不可跳错（2026-09-09 线上教训）。
 LEXICAL_FAST_PATH_MIN_SCORE = 14.0
 LEXICAL_FAST_PATH_MIN_GAP = 8.0
+# 相对主导度兜底（2026-10-23）：绝对差距 MIN_GAP 是「按主库分数尺度」定的硬门槛，
+# 而真实大库（如消防规范库 99 文档 / 794 桶）里第二名往往也是被强命中的同主题条目，
+# 绝对差距天然压在 8 以内 —— 于是「top1 明显是满分命中」也照样白走两次 LLM 路由
+# （现场实测 6.21s 检索里 2 次冷路由占绝大部分）。
+# 因此增加一条**只放宽、不放松质量门槛**的通道：top1 仍须 ≥ MIN_SCORE（强命中），
+# 且 top1 ≥ top2 × 1.8（≈第二名的一倍）。取 1.8 而非更低，是因为 1.5 量级在
+# 同主题条目上常见（14.0 / 9.3 = 1.5），不足以支撑「跳过语义路由」。
+LEXICAL_FAST_PATH_DOMINANCE_RATIO = 1.8
+# 并列组通道（2026-10-23）：与「主导度」互补的另一种确定形态 —— top1 与紧随其后的
+# 若干候选几乎并列（分差 < 10%），且这个并列组的规模已够填满 max_count。
+# 此时「取前 max_count 个」不是赌某一个赢家，而是**把并列的领跑者全取**，与 LLM
+# 路由会给出的选择高度一致，风险低于「按 top1 强推」。
+# 现场依据（消防规范库，问「发现安全隐患应该怎么上报？流程是什么？」）：
+#   桶分数 21.06 / 20.88 / 19.92 / 19.92 / 15.31 → 前 4 个并列，旧规则 gap=0.18 直接
+#   放弃快速路径，白走一次 bucket_route（~2-3s）。
+LEXICAL_FAST_PATH_TIE_RATIO = 0.9
 # 快速路径桶级验证：选出的桶内必须存在达到 chunk 门槛的词法命中内容，
 # 否则视为「标题命中、内容无关」，放弃快速路径退回 LLM 路由。
 LEXICAL_FAST_PATH_CHUNK_FLOOR = 3.0
@@ -2848,6 +2864,15 @@ def _lexical_fast_path_top(
     content_verifier：可选的内容验证回调（row → bool）。提供时入选的每行都必须
     通过验证（如「桶内 chunk 确有词法命中」），任一行不通过则整体放弃快速路径，
     防止「标题命中、内容无关」的误导性选择导致最终检索空结果。
+
+    差距判定有三条通道（任一满足即可）：
+    1. **绝对差距** ``top1 - top2 >= MIN_GAP``（原规则，主库尺度）；
+    2. **相对主导度** ``top1 >= top2 * DOMINANCE_RATIO``（2026-10-23 新增）。
+       大库里第二名常是同主题条目，绝对差距天然被压缩，「top1 是第二名近两倍」
+       已足以支撑跳过语义路由；top1 仍受 ``MIN_SCORE`` 强命中门槛约束。
+    3. **并列组** ``分数 >= top1 * TIE_RATIO`` 的候选数 >= ``max_count``（2026-10-23
+       新增）。并列时取前 ``max_count`` 就是「把领跑者全取」，不是赌单一赢家。
+       仅在 ``max_count >= 2`` 时生效（max_count==1 会退化成恒真）。
     """
 
     if not scored_rows:
@@ -2855,9 +2880,23 @@ def _lexical_fast_path_top(
     top_score = scored_scores[0]
     if top_score < LEXICAL_FAST_PATH_MIN_SCORE:
         return None
-    second_score = scored_scores[1] if len(scored_scores) > 1 else 0.0
-    if top_score - second_score < LEXICAL_FAST_PATH_MIN_GAP and len(scored_rows) > 1:
-        return None
+    if len(scored_rows) > 1:
+        second_score = scored_scores[1]
+        gap_ok = top_score - second_score >= LEXICAL_FAST_PATH_MIN_GAP
+        dominance_ok = (
+            second_score > 0
+            and top_score >= second_score * LEXICAL_FAST_PATH_DOMINANCE_RATIO
+        )
+        tie_group_ok = max_count >= 2 and (
+            sum(
+                1
+                for score in scored_scores
+                if score >= top_score * LEXICAL_FAST_PATH_TIE_RATIO
+            )
+            >= max_count
+        )
+        if not (gap_ok or dominance_ok or tie_group_ok):
+            return None
     picked = list(scored_rows[:max_count])
     if content_verifier is not None and not all(content_verifier(row) for row in picked):
         return None

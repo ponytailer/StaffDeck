@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -10,10 +12,12 @@ from app.capability_scope import normalize_capability_scope
 from app.db import get_session
 from app.db.bulk_delete import bulk_delete_matching
 from app.agents.branching import (
+    _binding_is_private,
     ensure_agent_private_knowledge_branch,
     ensure_knowledge_base_version,
     ensure_open_gallery_binding,
     get_agent,
+    get_overall_agent,
     hide_open_gallery_binding,
     is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
@@ -74,15 +78,29 @@ router = APIRouter(
 
 
 @router.get(
-    "", response_model=list[KnowledgeBaseRead], dependencies=[Depends(require_agent_scope_viewer)]
+    "", response_model=None, dependencies=[Depends(require_agent_scope_viewer)]
 )
 def list_knowledge_bases(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
-) -> list[KnowledgeBaseRead]:
+    page: Annotated[int, Query(ge=1, le=200, description="页码，从 1 开始")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200, description="每页条数")] = 50,
+) -> dict[str, object]:
+    """列出知识库。
+
+    服务端分页：返回 ``{items, total, page, page_size, total_pages, summary}``。
+    ``total`` 以及 ``summary``（已上线 / 已下线 / 文档总数）均由独立的 SQL 聚合查询得出，
+    不再依赖把全部知识库行拉进内存后再计数；列表本身也只回当前页，响应时间不再随知识库
+    总量增长。
+    """
+
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+
     ensure_tenant(db, tenant_id)
     agent = get_agent(db, tenant_id, agent_id)
+
     if agent and not agent.is_overall:
         branches = db.exec(
             select(AgentKnowledgeBranch)
@@ -94,57 +112,184 @@ def list_knowledge_bases(
             .order_by(AgentKnowledgeBranch.updated_at.desc())
         ).all()
         if not branches:
-            return []
-        knowledge_base_ids = [branch.knowledge_base_id for branch in branches]
+            return _empty_knowledge_base_envelope(page, page_size)
+        ordered_ids = [branch.knowledge_base_id for branch in branches]
+        total = _count_knowledge_bases(db, tenant_id, ordered_ids)
+        summary = _knowledge_base_summary(db, tenant_id, ordered_ids)
+        offset = (page - 1) * page_size
+        if offset >= total:
+            return _empty_knowledge_base_envelope(page, page_size, summary, total=total)
+        page_branches = branches[offset : offset + page_size]
+        page_kb_ids = [branch.knowledge_base_id for branch in page_branches]
         rows_by_id = {
             row.id: row
             for row in db.exec(
                 select(KnowledgeBase).where(
                     KnowledgeBase.tenant_id == tenant_id,
-                    KnowledgeBase.id.in_(knowledge_base_ids),
+                    KnowledgeBase.id.in_(page_kb_ids),
                 )
             ).all()
         }
         versions: dict[str, KnowledgeBaseVersion] = {}
-        for branch in branches:
+        for branch in page_branches:
             kb = rows_by_id.get(branch.knowledge_base_id)
             if kb:
                 versions[kb.id] = ensure_knowledge_base_version(db, kb, branch.head_version)
-        stats = _knowledge_base_stats(db, tenant_id, [version.id for version in versions.values()])
+        stats = _knowledge_base_stats(
+            db, tenant_id, [version.id for version in versions.values()]
+        )
         branch_meta = _knowledge_branch_meta(db, tenant_id, agent_id)
-        return [
+        items = [
             knowledge_base_read(
                 rows_by_id[branch.knowledge_base_id],
-                stats.get(branch.knowledge_base_id, {}),
-                version_row=versions.get(branch.knowledge_base_id),
-                branch_meta=branch_meta.get(branch.knowledge_base_id),
+                stats.get(rows_by_id[branch.knowledge_base_id].id, {}),
+                version_row=versions.get(rows_by_id[branch.knowledge_base_id].id),
+                branch_meta=branch_meta.get(rows_by_id[branch.knowledge_base_id].id),
             )
-            for branch in branches
+            for branch in page_branches
             if branch.knowledge_base_id in rows_by_id
         ]
-    visible_versions = _management_knowledge_base_versions(db, tenant_id, agent_id)
-    visible_ids = list(visible_versions.keys())
+        return _knowledge_base_envelope(items, total, page, page_size, summary)
+
+    # 开放广场 / 管理员视角：可见知识库 = 在整体智能体上有「未删除、非私有」绑定的知识库。
+    visible_ids = _visible_open_gallery_knowledge_base_ids(db, tenant_id)
+    if not visible_ids:
+        return _empty_knowledge_base_envelope(page, page_size)
+    ordered_ids = [
+        row[0]
+        for row in db.exec(
+            select(KnowledgeBase.id, KnowledgeBase.updated_at)
+            .where(
+                KnowledgeBase.tenant_id == tenant_id,
+                KnowledgeBase.id.in_(visible_ids),
+            )
+            .order_by(KnowledgeBase.updated_at.desc())
+        ).all()
+    ]
+    total = _count_knowledge_bases(db, tenant_id, ordered_ids)
+    summary = _knowledge_base_summary(db, tenant_id, ordered_ids)
+    offset = (page - 1) * page_size
+    if offset >= total:
+        return _empty_knowledge_base_envelope(page, page_size, summary, total=total)
+    page_ids = ordered_ids[offset : offset + page_size]
     rows = db.exec(
         select(KnowledgeBase)
         .where(
             KnowledgeBase.tenant_id == tenant_id,
-            KnowledgeBase.id.in_(visible_ids) if visible_ids else KnowledgeBase.id == "__none__",
+            KnowledgeBase.id.in_(page_ids),
         )
         .order_by(KnowledgeBase.updated_at.desc())
     ).all()
+    versions = {row.id: ensure_knowledge_base_version(db, row) for row in rows}
     stats = _knowledge_base_stats(
-        db, tenant_id, [version.id for version in visible_versions.values()]
+        db, tenant_id, [version.id for version in versions.values()]
     )
     branch_meta = _knowledge_branch_meta(db, tenant_id, agent_id)
-    return [
+    items = [
         knowledge_base_read(
             row,
             stats.get(row.id, {}),
-            version_row=visible_versions.get(row.id),
+            version_row=versions.get(row.id),
             branch_meta=branch_meta.get(row.id),
         )
         for row in rows
     ]
+    return _knowledge_base_envelope(items, total, page, page_size, summary)
+
+
+def _visible_open_gallery_knowledge_base_ids(db: Session, tenant_id: str) -> list[str]:
+    """整体智能体上「未删除、非私有」绑定的知识库 id（轻量 id-only 查询，不加载知识库行）。"""
+    overall = get_overall_agent(db, tenant_id)
+    if not overall:
+        return []
+    bindings = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == overall.id,
+            AgentResourceBinding.resource_type == "knowledge_base",
+            AgentResourceBinding.status != "deleted",
+        )
+    ).all()
+    return [
+        binding.resource_id
+        for binding in bindings
+        if binding.resource_id and not _binding_is_private(binding)
+    ]
+
+
+def _count_knowledge_bases(db: Session, tenant_id: str, kb_ids: list[str]) -> int:
+    if not kb_ids:
+        return 0
+    return int(
+        db.exec(
+            select(func.count())
+            .select_from(KnowledgeBase)
+            .where(
+                KnowledgeBase.tenant_id == tenant_id,
+                KnowledgeBase.id.in_(kb_ids),
+            )
+        ).one()
+    )
+
+
+def _knowledge_base_summary(
+    db: Session, tenant_id: str, kb_ids: list[str]
+) -> dict[str, int]:
+    if not kb_ids:
+        return {"active": 0, "archived": 0, "documents": 0}
+    status_rows = db.exec(
+        select(KnowledgeBase.status, func.count(KnowledgeBase.id))
+        .where(
+            KnowledgeBase.tenant_id == tenant_id,
+            KnowledgeBase.id.in_(kb_ids),
+        )
+        .group_by(KnowledgeBase.status)
+    ).all()
+    status_counts = {status: int(count) for status, count in status_rows}
+    documents = int(
+        db.exec(
+            select(func.count(KnowledgeDocument.id)).where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.knowledge_base_id.in_(kb_ids),
+            )
+        ).one()
+        or 0
+    )
+    return {
+        "active": status_counts.get("active", 0) + status_counts.get("published", 0),
+        "archived": status_counts.get("archived", 0),
+        "documents": documents,
+    }
+
+
+def _empty_knowledge_base_envelope(
+    page: int, page_size: int, summary: dict[str, int] | None = None, total: int = 0
+) -> dict[str, object]:
+    return {
+        "items": [],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, math.ceil(total / page_size)) if total else 0,
+        "summary": summary or {"active": 0, "archived": 0, "documents": 0},
+    }
+
+
+def _knowledge_base_envelope(
+    items: list[KnowledgeBaseRead],
+    total: int,
+    page: int,
+    page_size: int,
+    summary: dict[str, int],
+) -> dict[str, object]:
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, math.ceil(total / page_size)),
+        "summary": summary,
+    }
 
 
 @router.post("", response_model=KnowledgeBaseRead)

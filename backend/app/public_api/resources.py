@@ -71,8 +71,10 @@ def list_knowledge_bases(
 ) -> dict:
     enforce_agent_access(principal, agent_id)
     ensure_public_agent(db, principal, agent_id)
-    rows = internal_knowledge_bases.list_knowledge_bases(principal.tenant_id, agent_id, db)
-    return {"data": [_dump(row) for row in rows], "next_cursor": None}
+    page = internal_knowledge_bases.list_knowledge_bases(
+        principal.tenant_id, agent_id, db, 1, 200
+    )
+    return {"data": [_dump(row) for row in page["items"]], "next_cursor": None}
 
 
 @router.post("/agents/{agent_id}/knowledge-bases", response_model=dict, status_code=201)

@@ -47,7 +47,7 @@ import {
   employeeProfile,
   resourceDisplayNameWithCreator,
 } from '../employee';
-import type { AgentProfileRead, GeneralSkillRead, KnowledgeBaseRead, SkillRead, ToolRead } from '../types';
+import type { AgentProfileRead, GeneralSkillRead, KnowledgeBasePage, KnowledgeBaseRead, SkillRead, ToolRead } from '../types';
 
 import AppHeader from '@/components/AppHeader';
 import { Button as UIButton } from '@/components/ui/button';
@@ -526,7 +526,7 @@ export default function OpenPlatformPage({
       }
       const agentRows = await fetchAgents();
       if (target === 'knowledge') {
-        setKnowledgeBases(await api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}`));
+        setKnowledgeBases((await api.get<KnowledgeBasePage>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}&page=1&page_size=200`)).items);
       } else if (target === 'general-skills') {
         // include_files=0：广场只要元信息，文件包内容单租户就有 MB 级体量
         setGeneralSkills(await api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${overallSuffixFor(agentRows)}&include_files=0`));

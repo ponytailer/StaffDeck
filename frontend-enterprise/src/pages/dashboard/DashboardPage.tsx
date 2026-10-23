@@ -48,6 +48,7 @@ import type {
   EnterpriseChatSessionRead,
   FeedbackSummaryRead,
   GeneralSkillRead,
+  KnowledgeBasePage,
   KnowledgeBaseRead,
   ModelConfigRead,
   ScheduledTaskRead,
@@ -105,7 +106,7 @@ export default function DashboardPage({
       api.get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       // include_files=0：dashboard 只用技能计数与列表元信息，文件包 MB 级不拉
       api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}&include_files=0`),
-      api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
+      api.get<KnowledgeBasePage>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}&page=1&page_size=200`),
       api.get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`),
       api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
@@ -136,7 +137,7 @@ export default function DashboardPage({
         }
         setSkills(skillRows);
         setGeneralSkills(generalSkillRows);
-        setKnowledgeBases(kbRows);
+        setKnowledgeBases(kbRows.items);
         setTools(toolRows);
         setSessions(sessionRows);
         setFeedbackSummary(feedbackRows);

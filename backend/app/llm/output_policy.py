@@ -103,6 +103,18 @@ def operation_timeout_seconds(operation: str | None, default_seconds: float) -> 
 OPERATION_THINKING_MODE: dict[str, str] = {
     "knowledge.document_route": "disabled",
     "knowledge.bucket_route": "disabled",
+    # 知识库作答快速路径（`_run_knowledge_workflow` 的**那一次**作答调用）。
+    #
+    # 2026-10-23 实测（deepseek-v4.1-flash + 阿里云网关，同一份 20.3K 字符证据 payload）：
+    #   思考开启：TTFT 8.51s / 总 16.13s / 输出 1235 字
+    #   思考关闭：TTFT 1.62s / 总  6.19s / 输出  773 字
+    # 现场轮次（session_0799c70f6cc8400e）TTFT 12.60s、作答阶段 15.98s，占整轮 71%。
+    # 该路径是「证据已由代码检索好、只需按证据成文」的模板化改写，不需要模型自行推理，
+    # 因此关思考收益极大。
+    #
+    # 只覆盖这一个 operation：**不要**改成 `response.generate_stream` / `response.generate`，
+    # 那两个是通用对话/多轮综合的作答 operation，全局关思考会拖低通用回答质量。
+    "response.knowledge_answer": "disabled",
 }
 
 

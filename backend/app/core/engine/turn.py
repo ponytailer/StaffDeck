@@ -143,6 +143,10 @@ logger = logging.getLogger(__name__)
 
 INTENT_CACHE_TTL_SECONDS = 600
 
+# 知识库作业流唯一一次作答的 operation 名。单独命名是为了让 output_policy
+# 能精确地「只关这条路径的思考链」，不波及通用对话作答。
+KNOWLEDGE_ANSWER_OPERATION = "response.knowledge_answer"
+
 
 
 def _intent_cache_key(
@@ -721,12 +725,18 @@ class HarnessV2Engine:
         )
         self._emit_stream_status("preparing", "正在整理知识答案")
         stream = self.turn_stream
+        # 专用 operation 名（`response.knowledge_answer`）：仅在 output_policy 里对该
+        # operation 关掉思考链。通用作答仍走 response.generate(_stream)，不受影响。
         if stream is None:
-            return self.owner.response_generator.generate(*arguments)
+            return self.owner.response_generator.generate(
+                *arguments, operation=KNOWLEDGE_ANSWER_OPERATION
+            )
         # 真流式：逐 token 下发；中途失败会把已下发内容作废并抛给调用方降级
         # （见 _run_knowledge_workflow 的 except）。
         parts: list[str] = []
-        for chunk in self.owner.response_generator.generate_stream(*arguments):
+        for chunk in self.owner.response_generator.generate_stream(
+            *arguments, operation=KNOWLEDGE_ANSWER_OPERATION
+        ):
             parts.append(chunk)
             self._emit_stream_delta(chunk)
         return "".join(parts).strip()

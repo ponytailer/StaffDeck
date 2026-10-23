@@ -206,6 +206,30 @@ def test_query_norm_aggregates_similar_phrasings() -> None:
     assert query_norm("Hello World！") == "helloworld"
 
 
+def test_query_norm_question_shell_and_width_normalization() -> None:
+    """2026-10-23：疑问/口语外壳与全半角都应归一到同一个 key（提升缓存命中率）。"""
+
+    # 疑问外壳：是什么 / 应该 / 有没有 / 是否可以
+    assert query_norm("发现安全隐患应该怎么上报？流程是什么？") == "发现安全隐患上报流程"
+    assert query_norm("消防器材在哪里是什么") == "消防器材在哪里"
+    assert query_norm("有没有灭火器") == query_norm("灭火器")
+    assert query_norm("是否可以带宠物") == query_norm("可以带宠物")
+    # 句末语气词：仅剥 吗/呢
+    assert query_norm("怎么申领电脑吗？") == query_norm("申领电脑")
+    assert query_norm("申领电脑呢") == query_norm("申领电脑")
+    # 全半角归一（NFKC）
+    assert query_norm("ＸＦ１２８３条款") == query_norm("XF1283条款")
+
+
+def test_query_norm_does_not_corrupt_real_words() -> None:
+    """语气词只在句尾且只剥 吗/呢：不能把「酒吧」压成「酒」。"""
+
+    assert query_norm("酒吧") == "酒吧"
+    assert query_norm("网吧在哪里") == "网吧在哪里"
+    # 剥完不足 2 字则不剥
+    assert query_norm("呢") == "呢"
+
+
 def test_route_cache_slot_boundaries() -> None:
     # 空租户 / 空 query / 纯噪声 query → None
     assert route_cache_slot("", None, ["kb"], "查询", kind=KIND_DOCUMENT) is None

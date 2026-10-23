@@ -111,14 +111,17 @@ def test_rejected_without_knowledge_search_authorization() -> None:
 class _FakeResponseGenerator:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
+        self.operations: list[str | None] = []
         self.stream_chunks: list[str] = ["身", "高", "体", "重"]
 
-    def generate(self, *args: Any) -> str:
+    def generate(self, *args: Any, **kwargs: Any) -> str:
         self.calls.append(args)
+        self.operations.append(kwargs.get("operation"))
         return "身高体重有要求 [1]。"
 
-    def generate_stream(self, *args: Any):  # noqa: ANN201
+    def generate_stream(self, *args: Any, **kwargs: Any):  # noqa: ANN201
         self.calls.append(args)
+        self.operations.append(kwargs.get("operation"))
         yield from self.stream_chunks
 
 
@@ -202,6 +205,8 @@ def test_workflow_retrieves_in_code_then_answers_once() -> None:
     ]
     # 只发生一次作答 LLM
     assert len(rg.calls) == 1
+    # 作答必须打上专用 operation（output_policy 据此只关这条路径的思考链）
+    assert rg.operations == ["response.knowledge_answer"]
     assert [t for t, _ in events] == [
         "harness_tool_completed",
         "knowledge_workflow_completed",
@@ -242,6 +247,7 @@ def test_workflow_streams_answer_when_turn_stream_present() -> None:
     assert sink.statuses == [("preparing", "正在整理知识答案")]
     # 只调一次作答，且必须是流式版本
     assert len(rg.calls) == 1
+    assert rg.operations == ["response.knowledge_answer"]
 
 
 def test_workflow_smalltalk_skips_retrieval() -> None:

@@ -24,6 +24,23 @@ from app.db.models import (
 )
 
 
+def _visible_documents(db: Session, tenant_id: str, knowledge_base_id, agent_id, include_all_versions: bool):
+    """`list_documents` 已改为服务端分页（返回 ``{items,total,...}``）且签名新增了
+    include_all_versions/page/page_size；旧的位置传参会把 db 落到 page 上。
+    本文件只关心「哪些文档可见」，统一走关键字传参并取出 items。
+    """
+
+    return list_documents(
+        tenant_id=tenant_id,
+        knowledge_base_id=knowledge_base_id,
+        agent_id=agent_id,
+        include_all_versions=include_all_versions,
+        page=1,
+        page_size=200,
+        db=db,
+    )["items"]
+
+
 def test_private_skill_detail_and_versions_require_the_bound_agent_scope() -> None:
     with _test_session() as db:
         owner_agent, other_agent = _seed_private_scope(db)
@@ -110,14 +127,14 @@ def test_private_knowledge_details_documents_and_jobs_require_the_bound_agent_sc
             with pytest.raises(HTTPException) as job_error:
                 get_job(job.id, "tenant_demo", scope, db)
             assert job_error.value.status_code == 404
-            assert list_documents("tenant_demo", None, scope, True, db) == []
+            assert _visible_documents(db, "tenant_demo", None, scope, True) == []
             assert list_jobs("tenant_demo", scope, None, 8, db) == []
 
         assert get_knowledge_base(knowledge_base.id, "tenant_demo", owner_agent.id, db).id == knowledge_base.id
         assert list_knowledge_base_versions(knowledge_base.id, "tenant_demo", owner_agent.id, db)
         assert get_document(document.id, "tenant_demo", owner_agent.id, db).id == document.id
         assert get_job(job.id, "tenant_demo", owner_agent.id, db).id == job.id
-        assert [row.id for row in list_documents("tenant_demo", None, owner_agent.id, True, db)] == [document.id]
+        assert [row.id for row in _visible_documents(db, "tenant_demo", None, owner_agent.id, True)] == [document.id]
         assert [row.id for row in list_jobs("tenant_demo", owner_agent.id, None, 8, db)] == [job.id]
 
 
@@ -160,8 +177,8 @@ def test_visible_knowledge_history_has_consistent_list_and_detail_access() -> No
         db.add(current_document)
         db.commit()
 
-        current_rows = list_documents("tenant_demo", knowledge_base.id, owner_agent.id, False, db)
-        history_rows = list_documents("tenant_demo", knowledge_base.id, owner_agent.id, True, db)
+        current_rows = _visible_documents(db, "tenant_demo", knowledge_base.id, owner_agent.id, False)
+        history_rows = _visible_documents(db, "tenant_demo", knowledge_base.id, owner_agent.id, True)
 
         assert [row.id for row in current_rows] == [current_document.id]
         assert {row.id for row in history_rows} == {historical_document.id, current_document.id}

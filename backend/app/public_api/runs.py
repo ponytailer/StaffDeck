@@ -26,6 +26,7 @@ from app.db.models import (
     Message,
 )
 from app.harness import HarnessArtifactAccessError, normalize_harness_artifact_path, open_harness_artifact
+from app.observability.spans import reset_span_sink, set_span_sink
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
@@ -204,8 +205,41 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
     worker_result: dict[str, Any] = {}
 
     def execute_harness() -> None:
+        span_sink_token = None
         try:
             with Session(engine) as worker_db:
+
+                def persist_span(event_type: str, payload: dict[str, object]) -> None:
+                    """把 LLM/检索 span 落成 AgentEvent，供耗时归因。
+
+                    为什么需要显式绑定：本轮跑在本函数新建的线程里，而 span sink 是
+                    ContextVar——父线程（rq/job 线程池）里即使有 sink 也不会传播进来。
+                    此前该路径**一条 span 都不落**（现场 session_0799c70f6cc8400e：
+                    整轮 22s，两次路由 + 一次作答全部无 `llm_call_finished`），
+                    只能靠人工复现才能定位慢在哪一步。
+
+                    用**独立 Session**：worker_db 正被 AgentLoop 在同一个线程里复用，
+                    在 LLM 调用中间共用它提交会互相踩事务状态。写失败只丢一条观测，
+                    不影响业务（与 spans.py 的「观测绝不改变业务结果」口径一致）。
+                    """
+                    try:
+                        with Session(engine) as span_db:
+                            span_db.add(
+                                AgentEvent(
+                                    tenant_id=job.tenant_id,
+                                    session_id=session_id,
+                                    event_type=event_type,
+                                    payload_json={
+                                        **dict(payload),
+                                        "client_turn_id": job.id,
+                                    },
+                                )
+                            )
+                            span_db.commit()
+                    except Exception:
+                        return
+
+                span_sink_token = set_span_sink(persist_span)
                 for item in AgentLoop(worker_db).handle_turn_stream(request):
                     if item.get("event") != "complete":
                         continue
@@ -217,6 +251,8 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 - re-raised at persistent job boundary.
             worker_result["error"] = exc
         finally:
+            if span_sink_token is not None:
+                reset_span_sink(span_sink_token)
             worker_done.set()
 
     thread = threading.Thread(target=execute_harness, name=f"public-run-{job.id}", daemon=True)

@@ -628,11 +628,63 @@ def test_copy_overall_scope_to_agent_does_not_auto_bind_open_gallery_knowledge_b
 
         assert bindings == []
         assert visible_knowledge_base_versions(db, "tenant_demo", target.id) == {}
-        assert list_knowledge_bases(tenant_id="tenant_demo", agent_id=target.id, db=db) == []
+        assert list_knowledge_bases(tenant_id="tenant_demo", agent_id=target.id, db=db)["items"] == []
         open_knowledge = list_knowledge_bases(
             tenant_id="tenant_demo", agent_id="agent_overall", db=db
         )
-        assert [row.id for row in open_knowledge] == [kb.id]
+        assert [row.id for row in open_knowledge["items"]] == [kb.id]
+
+
+def test_list_knowledge_bases_paginates_instead_of_returning_all() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.flush()
+        kbs = []
+        for index in range(12):
+            kb = KnowledgeBase(
+                id=f"kb_{index}",
+                tenant_id="tenant_demo",
+                name=f"知识库 {index}",
+                status="active" if index % 2 == 0 else "archived",
+            )
+            db.add(kb)
+            kbs.append(kb)
+        db.flush()
+        for kb in kbs:
+            ensure_knowledge_base_version(db, kb)
+            ensure_open_gallery_binding(db, "tenant_demo", "knowledge_base", kb.id, "active")
+        db.commit()
+
+        # 第 1 页（page_size=5）：只回 5 条，total 仍是 12，且由独立 SQL 聚合统计。
+        page1 = list_knowledge_bases(
+            tenant_id="tenant_demo", agent_id="agent_overall", db=db, page=1, page_size=5
+        )
+        assert page1["total"] == 12
+        assert page1["total_pages"] == 3
+        assert len(page1["items"]) == 5
+        assert page1["summary"]["active"] == 6
+        assert page1["summary"]["archived"] == 6
+        assert page1["summary"]["documents"] == 0
+
+        # 第 3 页（offset=10）：只剩 2 条，不回全部。
+        page3 = list_knowledge_bases(
+            tenant_id="tenant_demo", agent_id="agent_overall", db=db, page=3, page_size=5
+        )
+        assert page3["total"] == 12
+        assert len(page3["items"]) == 2
+
+        # 越界页：空列表，但 total 与 total_pages 仍准确（独立 SQL 统计）。
+        page99 = list_knowledge_bases(
+            tenant_id="tenant_demo", agent_id="agent_overall", db=db, page=99, page_size=5
+        )
+        assert page99["items"] == []
+        assert page99["total"] == 12
+        assert page99["total_pages"] == 3
 
 
 def test_list_agents_knowledge_count_ignores_stale_or_empty_default_bindings() -> None:

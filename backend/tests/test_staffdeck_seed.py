@@ -160,7 +160,9 @@ def test_staffdeck_seed_exposes_selected_agents_with_knowledge_bases() -> None:
                 for resource in agent.resources
                 if resource.resource_type == "knowledge_base" and resource.status == "active"
             )
-            scoped_knowledge = list_knowledge_bases("tenant_demo", agent.id, db=db)
+            scoped_knowledge = list_knowledge_bases(
+                "tenant_demo", agent.id, db=db, page_size=200
+            )["items"]
 
             assert bound_count == expected_count
             assert len(scoped_knowledge) == expected_count

@@ -82,7 +82,6 @@ import {
   resourceCreatorName,
   visibleEmployeeAgents,
 } from '../employee';
-import { useClientPagination } from '../hooks/useClientPagination';
 import { renderMarkdownBlocks } from './chat/chatHelpers';
 import { getDateLocale } from '@/i18n';
 import { formatClientMonthDayTime } from '@/lib/timezone';
@@ -95,6 +94,7 @@ import type {
   KnowledgeDiscoveryRead,
   KnowledgeDocumentRead,
   KnowledgeDocumentPage,
+  KnowledgeBasePage,
   KnowledgeIngestJobRead,
   KnowledgeSearchResponse,
   AgentProfileRead,
@@ -178,6 +178,14 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   const [searchParams, setSearchParams] = useSearchParams();
   const [documents, setDocuments] = useState<KnowledgeDocumentRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
+  const [kbPage, setKbPage] = useState(1);
+  const [kbTotal, setKbTotal] = useState(0);
+  const [kbTotalPages, setKbTotalPages] = useState(1);
+  const [kbSummary, setKbSummary] = useState<KnowledgeBasePage['summary']>({
+    active: 0,
+    archived: 0,
+    documents: 0,
+  });
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocumentRead | null>(null);
   const [ingestPollTick, setIngestPollTick] = useState(0);
   const [buckets, setBuckets] = useState<KnowledgeBucketRead[]>([]);
@@ -284,13 +292,12 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   const listEmptyText = isOverallAgent ? '暂无知识库，点击「新增」创建一个吧' : '当前员工暂无知识库';
 
   const stats = useMemo(() => ({
-    total: visibleKnowledgeBases.length,
-    active: visibleKnowledgeBases.filter((item) => item.status === 'active' || item.status === 'published').length,
-    archived: visibleKnowledgeBases.filter((item) => item.status === 'archived').length,
-    documents: visibleKnowledgeBases.reduce((sum, item) => sum + (item.document_count || 0), 0),
-  }), [visibleKnowledgeBases]);
+    total: kbTotal,
+    active: kbSummary.active,
+    archived: kbSummary.archived,
+    documents: kbSummary.documents,
+  }), [kbTotal, kbSummary]);
 
-  const pagination = useClientPagination(filteredKnowledgeBases, KNOWLEDGE_PAGE_SIZE, documentSearch);
 
   useEffect(() => {
     void loadAgentScope();
@@ -400,6 +407,10 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   function clearKnowledgeViewState() {
     setDocuments([]);
     setKnowledgeBases([]);
+    setKbPage(1);
+    setKbTotal(0);
+    setKbTotalPages(1);
+    setKbSummary({ active: 0, archived: 0, documents: 0 });
     setSelectedDocument(null);
     setBuckets([]);
     setOkfConcepts([]);
@@ -425,6 +436,30 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     }
   }
 
+  async function fetchKnowledgeBases(page: number, agentId: string = effectiveAgentId): Promise<KnowledgeBasePage> {
+    const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    const pageData = await api.get<KnowledgeBasePage>(
+      `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}&page=${page}&page_size=${KNOWLEDGE_PAGE_SIZE}`,
+    );
+    setKnowledgeBases(pageData.items);
+    setKbPage(pageData.page);
+    setKbTotal(pageData.total);
+    setKbTotalPages(pageData.total_pages);
+    setKbSummary(pageData.summary);
+    return pageData;
+  }
+
+  async function changeKbPage(targetPage: number) {
+    setLoading(true);
+    try {
+      await fetchKnowledgeBases(targetPage);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '加载知识库失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function refresh(
     scopedAgentId = effectiveAgentId,
     preferredDocument: KnowledgeDocumentRead | null = selectedDocument,
@@ -443,13 +478,12 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       const docQuery = scopedKbId
         ? `${suffix}&knowledge_base_id=${encodeURIComponent(scopedKbId)}&page=1&page_size=200`
         : `${suffix}&page=1&page_size=50`;
-      const [docPage, kbRows] = await Promise.all([
+      const [docPage, kbPageData] = await Promise.all([
         api.get<KnowledgeDocumentPage>(`/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${docQuery}`),
-        api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}`),
+        fetchKnowledgeBases(1, scopedAgentId),
       ]);
       const docRows = docPage.items;
       setDocuments(docRows);
-      setKnowledgeBases(kbRows);
       const scopedDocRows =
         knowledgeBaseFilter === '__all__'
           ? docRows
@@ -468,7 +502,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
         await loadBuckets(current, false);
       } else {
         setBuckets([]);
-        const visibleKbRows = kbRows.filter((item) => !isEmptyDefaultKnowledgeBase(item));
+        const visibleKbRows = kbPageData.items.filter((item) => !isEmptyDefaultKnowledgeBase(item));
         const fallbackKnowledgeBaseId =
           knowledgeBaseFilter !== '__all__' ? knowledgeBaseFilter : visibleKbRows[0]?.id || '';
         await loadOkfConcepts(fallbackKnowledgeBaseId, false);
@@ -650,10 +684,10 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     setImportSelectedKnowledgeBaseIds([]);
     if (!sourceAgentId) return [];
     try {
-      const rows = await api.get<KnowledgeBaseRead[]>(
-        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(sourceAgentId)}`,
+      const page = await api.get<KnowledgeBasePage>(
+        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(sourceAgentId)}&page=1&page_size=200`,
       );
-      const activeRows = rows.filter((item) => item.status === 'active');
+      const activeRows = page.items.filter((item) => item.status === 'active');
       setImportSourceKnowledgeBases(activeRows);
       return activeRows;
     } catch (error) {
@@ -1280,7 +1314,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
 
           <div className="grid gap-[10px] md:hidden">
             {filteredKnowledgeBases.length ? (
-              pagination.pagedItems.map(renderMobileKnowledgeBaseCard)
+              filteredKnowledgeBases.map(renderMobileKnowledgeBaseCard)
             ) : (
               <div className="py-[40px] text-center text-[13px] text-[#858b9c]">{listEmptyText}</div>
             )}
@@ -1290,7 +1324,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
             <DataTable
               aria-label="知识库列表"
               columns={knowledgeBaseColumns}
-              data={pagination.pagedItems}
+              data={filteredKnowledgeBases}
               rowKey={(row) => row.id}
               loading={loading}
               emptyText={listEmptyText}
@@ -1298,11 +1332,11 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
             />
           </div>
 
-          {filteredKnowledgeBases.length > 0 && (
+          {kbTotalPages > 1 && (
             <Paginator
-              page={pagination.page}
-              pageCount={pagination.pageCount}
-              onChange={pagination.setPage}
+              page={kbPage}
+              pageCount={kbTotalPages}
+              onChange={(next) => void changeKbPage(next)}
             />
           )}
         </div>
@@ -1898,8 +1932,10 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
     }
     try {
       const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
-      const rows = await api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}`);
-      setKnowledgeBases(rows);
+      const page = await api.get<KnowledgeBasePage>(
+        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}&page=1&page_size=200`,
+      );
+      setKnowledgeBases(page.items);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载知识库失败');
     }

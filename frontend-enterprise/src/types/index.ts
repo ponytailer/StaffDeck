@@ -99,6 +99,21 @@ export type KnowledgeDocumentPage = {
   total_pages: number;
 };
 
+export type KnowledgeBaseSummary = {
+  active: number;
+  archived: number;
+  documents: number;
+};
+
+export type KnowledgeBasePage = {
+  items: KnowledgeBaseRead[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  summary: KnowledgeBaseSummary;
+};
+
 export type KnowledgeBucketRead = {
   id: string;
   tenant_id: string;
