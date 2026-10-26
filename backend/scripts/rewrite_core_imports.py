@@ -79,6 +79,11 @@ MOVES: dict[str, str] = {
     # 批次 3：旧执行路径残留，标 deprecated 但不删（仍被 3 个测试使用）
     "app.core.step_agent": "app.core.engine.deprecated.step_agent",
     "app.core.reflection_agent": "app.core.engine.deprecated.reflection_agent",
+    # 批次 4：engine/session 包四合一为单文件（lock/lease/turn_store/cleanup）
+    "app.core.engine.session.cleanup": "app.core.engine.session",
+    "app.core.engine.session.lease": "app.core.engine.session",
+    "app.core.engine.session.lock": "app.core.engine.session",
+    "app.core.engine.session.turn_store": "app.core.engine.session",
 }
 
 SCAN_ROOTS = ("app", "tests", "scripts")

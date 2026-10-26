@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.core.engine.session.turn_store import (
+from app.core.engine.session import (
     HarnessTurnConflict,
     HarnessTurnStore,
 )

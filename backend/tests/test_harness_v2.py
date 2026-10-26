@@ -34,7 +34,7 @@ from app.core.engine.invoke import (
     HarnessCapabilityInvoker,
     _failure_was_not_sent,
 )
-from app.core.engine.session.cleanup import harness_task_workspace_path
+from app.core.engine.session import harness_task_workspace_path
 from app.core.engine.turn import (
     HarnessV2Engine,
     _combine_results,

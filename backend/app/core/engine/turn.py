@@ -31,16 +31,16 @@ from app.core.engine.attachments import (
 from app.core.engine.invoke import HarnessCapabilityInvoker
 from app.core.knowledge_flow.prefetch import is_smalltalk
 from app.core.capability.deliverables import list_published_deliverables
-from app.core.engine.session.lease import (
+from app.core.engine.session import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
     HarnessSessionLeaseToken,
 )
-from app.core.engine.session.lock import (
+from app.core.engine.session import (
     acquire_harness_session,
     release_harness_session,
 )
-from app.core.engine.session.turn_store import HarnessTurnStore
+from app.core.engine.session import HarnessTurnStore
 from app.core.plan.slash import (
     SlashCommandError,
     SlashCommandSelection,

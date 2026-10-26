@@ -56,7 +56,8 @@ python scripts/rewrite_core_imports.py         # 搬文件后批量改引用（�
 | 1 | `base`(6) + `converse`(2) | 完成，57 处引用已改 |
 | 2 | `plan`(4) + `capability`(4) + `sop`(6+`slots/`) + `knowledge_flow`(3) + `artifacts`(4)，另 `graph_rules` 入 `base` | 完成，97 处引用已改 |
 | 3 | `engine`(16)，含 `session/`(4) 与 `deprecated/`(2) | 完成，105 处引用已改 |
-| 4 | 拆 6 个超大文件（最大 3023 行） | 待做 |
+| 4.1 | `engine/session/` 四合一为 `session.py`（lock+lease+turn_store+cleanup，718 行） | 完成，15 处引用已改 |
+| 4.2-4.6 | 拆 6 个超大文件（最大 3033 行） | 待做 |
 
 批次 3 后 `app/core/` 顶层只剩 `__init__.py`（一行 re-export `AgentLoop`）。全部 46 个模块分属 8 个包，
 层级越界 0、跨包循环 0。剩下的是体积问题：`engine/turn.py` 3023 行、`engine/facade.py` 1908 行等 6 个文件超 800 行，由批次 4 处理。

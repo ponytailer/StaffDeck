@@ -25,8 +25,8 @@ from app.core.base.conversation_context import (
 from app.core.base.conversation_projection import ConversationProjection
 from app.core.base.graph_rules import GraphRules
 from app.core.engine.step_loop import HarnessExecutionCancelled
-from app.core.engine.session.lock import HarnessSessionBusy
-from app.core.engine.session.turn_store import HarnessTurnConflict
+from app.core.engine.session import HarnessSessionBusy
+from app.core.engine.session import HarnessTurnConflict
 from app.core.engine.turn import (
     HarnessV2Engine,
     _with_recoverable_first_session,

@@ -34,7 +34,7 @@ from app.core.capability.deliverables import (
     find_published_deliverable,
     list_published_deliverables,
 )
-from app.core.engine.session.cleanup import harness_task_workspace_path
+from app.core.engine.session import harness_task_workspace_path
 from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.capability.replay_policy import ToolReplayPolicy
 from app.db.models import (
