@@ -65,3 +65,26 @@ python scripts/rewrite_core_imports.py         # 搬文件后批量改引用（�
 单文件上限 800 行，批次 4 完成后由 `--strict` 守住。
 
 完整计划与执行记录在仓库根目录 `docs/core-refactor-plan.md` 与 `docs/core-refactor-log.md`（`/docs/` 未纳入版本库，属本地资料）。
+
+## 批次 4 完成记录（2026-10-26）
+
+| 批次 | 内容 | 状态 |
+|---|---|---|
+| 4.1 | `session/` 四合一 → `session.py`（718 行） | 完成 |
+| 4.2 | turn.py 模块级纯函数 → `turn_support.py` + `turn_context.py`（3033→2023） | 完成 |
+| 4.3 | turn.py 类体 mixin 化 → `turn_run` / `turn_frames` / `turn_knowledge`（→583） | 完成 |
+| 4.4 | sop/scenes.py 拆 `SceneContext` → `scene_context.py`（948→793） | 完成 |
+| 4.5 | frames.py → `frame_defs` / `frame_runs` / `frame_projection`（1144→684） | 完成 |
+| 4.6 | step_loop.py → `step_defs` / `step_support`（1339→716） | 完成 |
+| 4.7 | facade.py → `facade_stream` / `facade_graph` / `facade_runtime`（1800→531） | 完成 |
+| 4.8 | invoke.py → `invoke_support` / `invoke_tools` / `invoke_introspect`（1874→672） | 完成 |
+
+**验收**：`core_import_graph.py --strict` 0 违规（61 模块 / 8 包，无越界、无循环、无超大文件）；
+全量 2157 passed / 12 failed，失败清单与批次 4 基线逐条一致（3 迁移 + 6 SRT 沙盒 runner +
+1 launcher + 2 既有杂项）。所有新模块经 re-export 保持旧导入路径兼容。
+
+打桩缝约定（改代码前必读）：
+- `step_loop._deadline_llm_client`：LLMClient 唯一实例化点，测试 patch `step_loop.LLMClient`。
+- `facade._enqueue_memory_capture`：测试 patch `facade.enqueue_memory_capture`。
+- `invoke._search_knowledge` / `_invoke_external_tool`：测试 patch `invoke.KnowledgeService` / `invoke.ToolExecutor.execute`。
+- `scenes._extract_slots_llm`：SceneContext 经方法内 lazy import 引用，patch 路径不变。
