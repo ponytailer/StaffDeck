@@ -28,24 +28,18 @@ class Settings(BaseSettings):
     # 会被预检拦掉；同时地址属服务端内网，不应出现在前端产物里。
     laya_predict_url: str = "http://8.153.146.109:8080/predict"
     laya_timeout_seconds: float = 60.0
-    # ---- Laya 决策头接入 SOP 走向决策 ----
-    # 默认关闭：不开启时场景 L 的 guard 不通过，运行路径与改造前完全一致。
-    laya_sop_routing_enabled: bool = False
-    # P0 影子模式：只计算并记录 Laya 的判定，不真正改变路由（用于先看一致率）。
-    laya_sop_shadow_mode: bool = True
+    # ---- Laya 决策头接入 SOP 走向决策 / 知识路由（已转正式启用，开关已下线）----
+    # 2026-10-26 定案：两条旁路长期跑通、影子模式一致率验收完成，不再保留
+    # 「启用 / 影子」两个开关，构造处固定 enabled=True、shadow=False（真正采纳）。
+    # 只剩下面这些调参项；要临时止血请改 laya_predict_url 或 short-timeout，
+    # 而不是关开关（关了等于让旁路永久空转，历史教训见 docs/config-flags-audit.md）。
     # choice/score 赢家概率、noul 的 max(p,1-p)，低于该值一律回退主模型。
     laya_min_confidence: float = 0.7
     # 路由专用短超时：与页面「决策助手」的 60s 分开，避免拖慢对话链路。
     laya_sop_timeout_seconds: float = 6.0
     # 连续失败达到该次数后本帧熔断，后续节点直接回退 LLM。
     laya_sop_circuit_breaker_failures: int = 3
-    # ---- Laya 决策头接入知识路由（选文档 / 选桶，P2'）----
-    # 默认关闭：不开启时知识检索行为与改造前逐字节一致。
-    # 优先级固定为「缓存 / 小候选短路 / 词法 fast path > Laya > 现有 LLM」。
-    laya_knowledge_route_enabled: bool = False
-    # P0 影子模式：照常计算并记录 Laya 的候选判定，但不采用（用于看与 LLM 的一致率）。
-    laya_knowledge_shadow_mode: bool = True
-    # 候选数超过该值时直接回退 LLM：Laya 逐候选 noul 需 ceil(N/30) 次调用，
+    # 知识路由：候选数超过该值时直接回退 LLM：Laya 逐候选 noul 需 ceil(N/30) 次调用，
     # 多跳可能比一次 LLM 路由还慢。
     laya_knowledge_max_candidates: int = 30
     # 单次 /predict 携带的问题数上限（≤ 上游 MAX_QUESTIONS=30）。
@@ -125,11 +119,10 @@ class Settings(BaseSettings):
     # 知识路由决策缓存 TTL（秒）。知识库写路径会按库精准失效，此值仅作兜底，
     # 因此默认给 12 小时以拉高命中率；漏失效时最长 12 小时后自动新鲜。
     knowledge_route_cache_ttl_seconds: int = 12 * 3600
-    # Planner 词法快速路径（2026-09-16）：当结构性上下文排除了所有路由可能
-    # （无 SOP、无 pending 任务、非团队/定时、无待补槽）时，直接合成
-    # answer_only 计划，跳过 planner LLM（实测省 12-15s 固定开销）。
-    # 出问题置 False 一键回滚，无需改代码。
-    planner_fast_path_enabled: bool = True
+    # Planner 词法快速路径（2026-09-16，2026-10-26 已固化，开关下线）：
+    # 当结构性上下文排除了所有路由可能（无 SOP、无 pending 任务、非团队/定时、
+    # 无待补槽）时，直接合成 answer_only 计划，跳过 planner LLM（实测省 12-15s）。
+    # 已长期稳定运行 40 天，判定逻辑与守卫见 app/core/plan/planner_fastpath.py。
     # Planner 会话续跑短路（qa-optimization I6 增量，2026-10-26）：fast path 只覆盖
     # 「无任何 SOP」的员工；有 SOP 时短追问仍会白走一次 planner LLM（S5 场景实测
     # ~5s）。当无活跃 SOP/待处理任务/待补槽、有对话历史、消息 ≤20 字、且不命中任何

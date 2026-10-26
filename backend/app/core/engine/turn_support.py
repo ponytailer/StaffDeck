@@ -551,17 +551,16 @@ def _restore_session_state(
 
 
 def _build_laya_router(frame_kind: str) -> Any:
-    """按配置构造 Laya 出边决策旁路；未开启或非 sop 帧返回 None。
+    """构造 Laya 出边决策旁路；非 sop 帧返回 None。
 
-    每帧（每次 _run_frame）构造一个实例，熔断状态因此限定在单帧内，
-    下一帧自动恢复；独立短超时不影响页面「决策助手」的 60s 配置。
+    已转正式启用（2026-10-26 开关下线）：sop 帧一律构造，shadow=False 真正采纳
+    Laya 的出边判定。每帧（每次 _run_frame）构造一个实例，熔断状态因此限定在
+    单帧内，下一帧自动恢复；独立短超时不影响页面「决策助手」的 60s 配置。
     """
 
     if frame_kind != "sop":
         return None
     settings = get_settings()
-    if not settings.laya_sop_routing_enabled:
-        return None
     try:
         from app.core.knowledge_flow.routing import LayaRouter
     except Exception:  # noqa: BLE001 - 旁路不可用不影响主链路
@@ -569,7 +568,6 @@ def _build_laya_router(frame_kind: str) -> Any:
         return None
     return LayaRouter(
         enabled=True,
-        shadow=settings.laya_sop_shadow_mode,
         min_confidence=settings.laya_min_confidence,
         timeout=settings.laya_sop_timeout_seconds,
         max_failures=settings.laya_sop_circuit_breaker_failures,
@@ -577,15 +575,14 @@ def _build_laya_router(frame_kind: str) -> Any:
 
 
 def _build_knowledge_laya_router() -> Any:
-    """按配置构造 Laya 知识路由（选文档 / 选桶）旁路；未开启返回 None。
+    """构造 Laya 知识路由（选文档 / 选桶）旁路。
 
-    与 SOP 旁路分开实例：启用开关、影子模式、熔断状态都独立，
-    知识路由不可用不影响 SOP 出边决策，反之亦然。每帧构造一个。
+    已转正式启用（2026-10-26 开关下线）：一律构造，shadow=False 真正采纳。
+    与 SOP 旁路分开实例：熔断状态独立，知识路由不可用不影响 SOP 出边决策，
+    反之亦然。每帧构造一个。
     """
 
     settings = get_settings()
-    if not settings.laya_knowledge_route_enabled:
-        return None
     try:
         from app.core.knowledge_flow.routing import LayaRouter
     except Exception:  # noqa: BLE001 - 旁路不可用不影响主链路
@@ -593,7 +590,6 @@ def _build_knowledge_laya_router() -> Any:
         return None
     return LayaRouter(
         enabled=True,
-        shadow=settings.laya_knowledge_shadow_mode,
         min_confidence=settings.laya_min_confidence,
         timeout=settings.laya_knowledge_timeout_seconds,
         max_failures=settings.laya_sop_circuit_breaker_failures,

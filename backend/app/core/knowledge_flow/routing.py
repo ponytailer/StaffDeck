@@ -1,6 +1,6 @@
 """Laya 决策头接入（SOP 出边 + 知识路由）。
 
-两个落点共用这一个类，各自一个实例、各自一套启用开关：
+两个落点共用这一个类，各自一个实例、各自独立熔断：
 
 - :meth:`LayaRouter.route_edges` —— SOP 出边决策（场景 L）。确定性求值
   （``EdgeConditionSpec``，场景 G/D/C2）**判不了**时，用 Laya 做一次
@@ -12,13 +12,17 @@
   ``noul``「是否相关」，按相关概率排序取 top-k：**确定性路径（缓存 / 小候选
   短路 / 词法 fast path）> Laya > 现有 LLM 路由**。
 
+2026-10-26 起两条落路**均已转正式启用**：环境层「启用 / 影子」开关已下线
+（构造处固定 ``enabled=True``，``shadow`` 默认 ``False``）。
+
 设计约束（对应 .planning/quick/261008-jfj 的计划）：
 
 - 纯编排 + 一层网络调用，不引入新的持久化状态；失败绝不抛穿主链路。
 - ``state.background`` 只带判定必需的信息，不塞全量历史（Laya 是决策头，
   不是对话模型）。
 - 每帧一个实例，连续失败达到阈值即熔断（本帧内不再调用），下一帧自然恢复。
-- 影子模式（``shadow``）：照常计算并记录，但**绝不改变路由**，用于先看一致率。
+- ``shadow`` 参数仍保留（默认 ``False``）：只用于测试/离线对照复现
+  「只算不用」的影子行为，生产构造不会再传 ``True``。
 """
 
 from __future__ import annotations
@@ -315,7 +319,7 @@ class LayaRouter:
         self,
         *,
         enabled: bool,
-        shadow: bool = True,
+        shadow: bool = False,
         min_confidence: float = 0.7,
         timeout: float = 6.0,
         max_failures: int = 3,

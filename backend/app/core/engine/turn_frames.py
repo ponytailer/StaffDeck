@@ -319,8 +319,8 @@ class _FrameExecutionMixin:
             active_skill,
             frame.kind,
         )
-        # Laya 出边决策旁路（P0/P1）：仅 sop 帧、且配置开启时构造；
-        # 默认关闭 / 影子模式下不改路由，行为与改造前一致。
+        # Laya 出边决策旁路：仅 sop 帧构造（2026-10-26 已转正，开关下线，
+        # shadow=False 真正采纳 Laya 判定；低置信/超时/熔断仍回退 LLM）。
         laya_router = _build_laya_router(frame.kind)
         # Laya 知识路由旁路（P2'）：任何帧都可能触发知识检索，独立实例、独立熔断。
         knowledge_laya_router = _build_knowledge_laya_router()

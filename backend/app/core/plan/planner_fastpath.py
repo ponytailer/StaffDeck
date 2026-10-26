@@ -46,10 +46,10 @@ def _fast_path_plan(
     没有配置任何 SOP、也没有任何进行中/待处理的任务语义。此时 LLM 的理性
     输出几乎必然是 answer_only + conversation 帧，12-15s 的规划调用是纯
     固定开销。任何守卫不满足即返回 None，回落完整 LLM 规划（不猜语义）。
+
+    2026-10-26 起不再有 `PLANNER_FAST_PATH_ENABLED` 开关：模式长期稳定，
+    判定本身就是唯一路径（要回滚只能改代码，属于有意的取舍）。
     """
-    settings = get_settings()
-    if not settings.planner_fast_path_enabled:
-        return
     if (
         interaction_mode != "normal" or team_context is not None \
         # 有 SOP 可选时必须走 LLM：消息可能想触发某个 SOP 的 trigger_intents。

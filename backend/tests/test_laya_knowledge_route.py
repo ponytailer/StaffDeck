@@ -292,27 +292,30 @@ def test_select_documents_without_router_goes_straight_to_llm(monkeypatch: pytes
 # ---------------------------------------------------------------------------
 
 
-def test_build_knowledge_laya_router_respects_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_knowledge_laya_router_always_on_and_applied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """开关已下线（2026-10-26 转正式启用）：构造处固定 enabled + shadow=False。"""
+
     from app.core.engine import turn_support as engine_module
 
-    enabled = SimpleNamespace(
-        laya_knowledge_route_enabled=True,
-        laya_knowledge_shadow_mode=True,
+    stub = SimpleNamespace(
         laya_min_confidence=0.7,
+        laya_sop_timeout_seconds=6.0,
         laya_knowledge_timeout_seconds=6.0,
         laya_sop_circuit_breaker_failures=3,
         laya_knowledge_max_candidates=30,
         laya_knowledge_questions_per_call=30,
     )
-    monkeypatch.setattr(engine_module, "get_settings", lambda: enabled)
+    monkeypatch.setattr(engine_module, "get_settings", lambda: stub)
     router = engine_module._build_knowledge_laya_router()
     assert router is not None
-    assert router.enabled is True and router.shadow is True
+    # shadow=False 才真正采纳 Laya 的判定（旧默认是影子模式）
+    assert router.enabled is True and router.shadow is False
     assert router.max_candidates == 30
+    assert router.min_confidence == 0.7
 
-    monkeypatch.setattr(
-        engine_module,
-        "get_settings",
-        lambda: SimpleNamespace(laya_knowledge_route_enabled=False),
-    )
-    assert engine_module._build_knowledge_laya_router() is None
+    # SOP 旁路同理：sop 帧一律构造，非 sop 帧仍返回 None。
+    sop_router = engine_module._build_laya_router("sop")
+    assert sop_router is not None and sop_router.shadow is False
+    assert engine_module._build_laya_router("conversation") is None

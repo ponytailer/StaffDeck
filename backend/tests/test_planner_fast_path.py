@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from app.config import get_settings
 from app.core.plan.planner import TurnPlanner, _fast_path_plan
@@ -170,16 +169,12 @@ def test_fast_path_skips_on_slash_command_and_empty() -> None:
         assert plan is None, message
 
 
-def test_fast_path_skips_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = get_settings()
-    monkeypatch.setattr(settings, "planner_fast_path_enabled", False)
+def test_fast_path_has_no_kill_switch() -> None:
+    """开关已下线（2026-10-26 固化）：Settings 里不应再存在该字段。
 
-    plan = _fast_path_plan(
-        _chat_session(),
-        "冲浪勇士 安全吗",
-        available_skills=[],
-        task_frame_state=None,
-        interaction_mode="normal",
-        team_context=None,
-    )
-    assert plan is None
+    这是回归防线——如果有人想「顺手加个开关」，先看 docs/config-flags-audit.md
+    里那次影子模式空转 18 天的教训。
+    """
+
+    settings = get_settings()
+    assert not hasattr(settings, "planner_fast_path_enabled")
