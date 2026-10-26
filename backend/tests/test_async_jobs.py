@@ -144,7 +144,8 @@ def test_agent_loop_enqueues_memory_capture_without_running_it_inline(monkeypatc
     result = loop._enqueue_memory_capture(
         ChatTurnRequest(tenant_id="tenant_demo", user_id="user_demo", message="我叫hm"),
         ChatSession(id="session_test", tenant_id="tenant_demo", user_id="user_demo"),
-        StepAgentResult(),
+        # I5 门控：有槽位写入的轮次才算「有信息」，照常入队
+        StepAgentResult(slot_updates={"user_name": "hm"}),
         None,
         ModelConfig(
             id="model_test",

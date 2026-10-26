@@ -60,6 +60,8 @@ from app.knowledge.citations import (
     restore_truncated_atomic_references,
     strip_citation_markers,
 )
+from app.config import get_settings
+from app.core.knowledge_flow.prefetch import is_smalltalk
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import (
     resolve_model_config_for_runtime,
@@ -82,7 +84,39 @@ from app.tools.tool_schema import ToolResult
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
+# I5（qa-optimization-plan 第二批）：显式记忆请求关键词——命中即永不跳过
+# memory.capture，即使本轮没有任何槽位/结构化写入。
+_MEMORY_CAPTURE_EXPLICIT_KEYWORDS = ("记住", "记一下", "别忘了")
+
+
+def _memory_capture_skip_reason(
+    message: str,
+    step_result: StepAgentResult,
+) -> str | None:
+    """判定本轮 memory.capture 是否值得入队（I5）。
+
+    跳过两类：寒暄（is_smalltalk 词典）；「无槽位写入、无 handoff、无结构化
+    结果」的纯问答轮。显式记忆请求（「记住这个」）永不跳过。返回跳过原因，
+    None 表示照常入队。
+    """
+
+    settings = get_settings()
+    if not settings.memory_capture_skip_uninformative_enabled:
+        return None
+    text = str(message or "").strip()
+    if any(keyword in text for keyword in _MEMORY_CAPTURE_EXPLICIT_KEYWORDS):
+        return None
+    if is_smalltalk(text):
+        return "smalltalk"
+    has_state_write = (
+        bool(step_result.slot_updates)
+        or bool(step_result.handoff)
+        or step_result.structured_result is not None
+    )
+    if not has_state_write:
+        return "uninformative_turn"
+    return None
+
 
 from app.core.engine.facade_stream import AgentLoopPreconditionError  # noqa: F401  (re-export)
 from app.core.engine.facade_graph import _SkillGraphMixin
@@ -496,6 +530,18 @@ class AgentLoop(_TurnRuntimeMixin, _SkillGraphMixin):
         tool_result: ToolResult | None,
         model_config: ModelConfig,
     ) -> list[dict[str, object]]:
+        skip_reason = _memory_capture_skip_reason(
+            request.message, step_result
+        )
+        if skip_reason:
+            # I5：无信息轮不入队 memory.capture，事件留痕供漏答归因与统计。
+            self.events.record(
+                request.tenant_id,
+                chat_session.id,
+                "memory_capture_skipped",
+                {"reason": skip_reason},
+            )
+            return []
         try:
             job = enqueue_memory_capture(
                 request,

@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     # answer_only 计划，跳过 planner LLM（实测省 12-15s 固定开销）。
     # 出问题置 False 一键回滚，无需改代码。
     planner_fast_path_enabled: bool = True
+    # Planner 会话续跑短路（qa-optimization I6 增量，2026-10-26）：fast path 只覆盖
+    # 「无任何 SOP」的员工；有 SOP 时短追问仍会白走一次 planner LLM（S5 场景实测
+    # ~5s）。当无活跃 SOP/待处理任务/待补槽、有对话历史、消息 ≤20 字、且不命中任何
+    # SOP trigger_intents 关键词时，直接合成 answer_only 计划。出问题置 False 回滚。
+    planner_followup_shortcircuit_enabled: bool = True
+    # 记忆捕获跳过无信息轮（qa-optimization I5，2026-10-26）：寒暄（is_smalltalk 词典）
+    # 与「无槽位写入、无 handoff、无结构化结果」的纯问答轮不再入队 memory.capture
+    # （此前 96 次/7 天、每次 ~3K tokens）。显式记忆请求（消息含「记住」等）永不跳过。
+    memory_capture_skip_uninformative_enabled: bool = True
 
     # ---- 定时任务调度后端（PG 主源 + Redis 仅执行触发）----
     # "rq" = 独立 rq worker 进程经 Redis 调度（默认）；"poll" = 进程内轮询线程（旧实现）。

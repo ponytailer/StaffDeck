@@ -1012,6 +1012,7 @@ def test_turn_plan_defaults_null_container_fields() -> None:
 def test_turn_planner_retries_schema_invalid_json(monkeypatch) -> None:
     # 本用例测的是 LLM 路径的 schema 重试，需关掉快速路径直通。
     monkeypatch.setattr(get_settings(), "planner_fast_path_enabled", False)
+    monkeypatch.setattr(get_settings(), "planner_followup_shortcircuit_enabled", False)
 
     payloads: list[dict[str, object]] = []
     outputs = iter(
@@ -1085,6 +1086,7 @@ def test_turn_planner_compacts_context_to_dedicated_budget(monkeypatch) -> None:
     """
     # 本用例测的是 LLM 路径的压缩行为，需关掉快速路径直通。
     monkeypatch.setattr(get_settings(), "planner_fast_path_enabled", False)
+    monkeypatch.setattr(get_settings(), "planner_followup_shortcircuit_enabled", False)
 
     payloads: list[dict[str, object]] = []
 
@@ -1152,6 +1154,7 @@ def test_turn_planner_keeps_small_context_untouched(monkeypatch) -> None:
     """小上下文（< 6K）不做任何裁剪，语义与改造前一致。"""
     # 本用例测的是 LLM 路径行为，需关掉快速路径直通。
     monkeypatch.setattr(get_settings(), "planner_fast_path_enabled", False)
+    monkeypatch.setattr(get_settings(), "planner_followup_shortcircuit_enabled", False)
 
     payloads: list[dict[str, object]] = []
 
