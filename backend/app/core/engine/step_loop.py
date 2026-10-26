@@ -43,6 +43,7 @@ from app.core.engine.step_defs import (
     _MODEL_CONFIG_ERROR_CODES,
     _MODEL_FAILURE_REASONS,
     _MODEL_TRANSIENT_ERROR_CODES,
+    harness_system_prompt,
 )
 from app.core.engine.step_defs import TraceSink, CancellationCheck  # noqa: F401
 from app.core.engine.step_support import (  # noqa: F401  (re-export)
@@ -68,6 +69,7 @@ from app.core.engine.step_support import (  # noqa: F401  (re-export)
     _step_timeout_result,
     _capability_result_transcript_budget,
     _bounded_capability_result,
+    _slim_requirement_payload,
     _transcript_for_model,
     _is_general_skill_instruction_entry,
     _history_receipt,
@@ -147,7 +149,8 @@ class HarnessTaskAgent:
         # after its inputs or external state had changed.
         non_retryable_action_signatures: set[str] = set()
         allowed_names = requirement.capability_manifest.allowed_names()
-        system_prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
+        # I2：system prompt 经 lru_cache 缓存，逐字节稳定以命中上游 prompt cache。
+        system_prompt = harness_system_prompt()
         pending_actions: list[HarnessAction] = []
         # SOP 确定性执行器（P1）：预检索/纯流转/缺槽询问三类场景由代码直接判定，
         # 预填动作序列跳过首轮 task_action LLM 决策；不可判定返回空，走现有链路。
@@ -245,7 +248,10 @@ class HarnessTaskAgent:
                     artifacts=artifacts,
                     trace_sink=trace_sink,
                 ))
-            requirement_payload = requirement.model_dump(mode="json")
+            # I4：模型可见的 task_requirement 去重（判定逻辑仍用完整版模型）。
+            requirement_payload = _slim_requirement_payload(
+                requirement.model_dump(mode="json")
+            )
             attachment_descriptors, attachment_context = isolated_attachment_context(
                 requirement.attachments,
                 image_payloads,

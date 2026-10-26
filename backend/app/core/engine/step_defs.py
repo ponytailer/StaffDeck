@@ -7,6 +7,7 @@ step_loop.py 保持 re-export；_deadline_llm_client 是 LLMClient 的唯一实�
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import lru_cache
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -15,10 +16,17 @@ from app import paths
 
 PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "harness_agent_prompt.md"
 MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK = 2
-# 模型可见 tool result 的字符预算。知识检索走内联（≤24KB 的精简载荷），
-# 必须给它留出对应额度，否则会被截成半截 JSON 的 preview。
+# 模型可见 tool result 的字符预算。知识检索走内联（精简载荷，预算内分级降档），
+# 超出预算的部分由模型按 chunk_id 用 read_knowledge_chunk 取原文（I1）。
 _CAPABILITY_RESULT_TRANSCRIPT_MAX_CHARS = 12_000
-_KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS = 25_000
+# I1（qa-optimization-plan 第一批）：知识结果内联预算 25K → 10K。
+# 超预算走分级降档（KNOWLEDGE_RESULT_TIERED_INLINE），不再截成半截 JSON。
+_KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS = 10_000
+# I1 分级内联：evidence 前 N 条保留正文（各 ≤ 下一个常量），其余退化成定位索引。
+# 回滚开关：置 False 恢复「直接截断 preview」的旧行为。
+KNOWLEDGE_RESULT_TIERED_INLINE = True
+_KNOWLEDGE_TIER_FULL_EVIDENCE = 3
+_KNOWLEDGE_TIER_EVIDENCE_CONTENT_CHARS = 1_500
 
 # 动作生成（harness.task_action）单次模型调用最多尝试几次。此前上游超时/限流会
 # 直接终止整个 TaskFrame，把「瞬时不可用」当成「模型没按协议返回动作」，用户等了
@@ -61,6 +69,18 @@ _MODEL_CONFIG_ERROR_CODES = frozenset(
 ToolInvoker = Callable[[str, dict[str, Any]], dict[str, Any]]
 TraceSink = Callable[[str, dict[str, Any]], None]
 CancellationCheck = Callable[[], bool]
+
+
+@lru_cache(maxsize=1)
+def harness_system_prompt() -> str:
+    """task_action 的 system prompt（I2）。
+
+    返回值必须**逐字节稳定**：它是 prompt cache 的前缀，任何改动都会让上游
+    缓存全量失效一次。协议约束等不变段写在提示词文件前部；当前能力清单、
+    槽位、预算等每轮变化的内容只进 user payload，绝不拼进 system。
+    """
+
+    return PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 # 轻量节点直通（P1-1）：结构简单的 SOP 节点（唯一必执行能力 + 唯一无条件转移 +
 # 无缺槽）的模型决策是低风险分类/编排任务，优先用意图识别轻量模型 + 一次性

@@ -45,9 +45,13 @@ from app.core.engine.step_defs import (
     _ACTION_MODEL_ATTEMPTS,
     _CAPABILITY_RESULT_TRANSCRIPT_MAX_CHARS,
     _KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS,
+    _KNOWLEDGE_TIER_EVIDENCE_CONTENT_CHARS,
+    _KNOWLEDGE_TIER_FULL_EVIDENCE,
     _MODEL_CONFIG_ERROR_CODES,
     _MODEL_FAILURE_REASONS,
     _MODEL_TRANSIENT_ERROR_CODES,
+    KNOWLEDGE_RESULT_TIERED_INLINE,
+    harness_system_prompt,
 )
 
 
@@ -441,13 +445,111 @@ def _capability_result_transcript_budget(tool_name: str) -> int:
     """Model-visible tool result budget per capability.
 
     ``knowledge_search`` 的结果已由 app/knowledge/search_payload 压到 24KB 以内并内联
-    （见 KNOWLEDGE_PAYLOAD_MAX_CHARS）；这里必须留出同样量级的预算，否则会被截成一个
-    半截 JSON 的 ``preview``——比原来落沙箱文件更难用。其他能力沿用 12K 口径不变。
+    （见 KNOWLEDGE_PAYLOAD_MAX_CHARS）；内联预算（10K，I1）小于上游载荷预算，超出部分
+    走分级降档（``_tier_knowledge_result_data``），仍超限才退化为截断 preview。
+    其他能力沿用 12K 口径不变。
     """
 
     if tool_name == "knowledge_search":
         return _KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS
     return _CAPABILITY_RESULT_TRANSCRIPT_MAX_CHARS
+
+
+def _tier_knowledge_result_data(
+    data: dict[str, Any],
+    *,
+    keep_full_evidence: int = _KNOWLEDGE_TIER_FULL_EVIDENCE,
+) -> dict[str, Any]:
+    """知识检索结果三级降档（I1）。
+
+    ①``evidence`` 前 ``keep_full_evidence`` 条保留正文（各 ≤1.5K）；②其余 evidence
+    与全部 ``chunks`` 去掉正文、只留定位索引（chunk_id / 文档 / 页码 / 标题 / 摘要）；
+    ③模型需要原文时用已有的 ``read_knowledge_chunk`` 按 chunk_id 取。
+    """
+
+    tiered = dict(data)
+    evidence = tiered.get("evidence")
+    has_evidence = isinstance(evidence, list) and any(
+        isinstance(item, dict) for item in evidence
+    )
+    if isinstance(evidence, list):
+        projected: list[Any] = []
+        for index, item in enumerate(evidence):
+            if not isinstance(item, dict):
+                projected.append(item)
+                continue
+            entry = dict(item)
+            content = entry.get("content")
+            if isinstance(content, str) and content:
+                if index >= keep_full_evidence:
+                    entry.pop("content", None)
+                elif len(content) > _KNOWLEDGE_TIER_EVIDENCE_CONTENT_CHARS:
+                    entry["content"] = content[:_KNOWLEDGE_TIER_EVIDENCE_CONTENT_CHARS]
+            projected.append(entry)
+        tiered["evidence"] = projected
+    chunks = tiered.get("chunks")
+    if isinstance(chunks, list):
+        # chunks 与 evidence 同源：evidence 在场时正文是副本，一律退化成索引；
+        # 无 evidence 时 chunks 自己是正文载体，按同样的 top-N 口径保留。
+        def _strip_chunk(item: Any, index: int) -> Any:
+            if not isinstance(item, dict):
+                return item
+            entry = dict(item)
+            content = entry.get("content")
+            if isinstance(content, str) and content:
+                if has_evidence or index >= keep_full_evidence:
+                    entry.pop("content", None)
+                elif len(content) > _KNOWLEDGE_TIER_EVIDENCE_CONTENT_CHARS:
+                    entry["content"] = content[:_KNOWLEDGE_TIER_EVIDENCE_CONTENT_CHARS]
+            return entry
+
+        tiered["chunks"] = [
+            _strip_chunk(item, index) for index, item in enumerate(chunks)
+        ]
+    return tiered
+
+
+def _slim_requirement_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """task_requirement 的模型可见投影去重（I4）。
+
+    goal / requirements / completion_criteria 在规划层互相重复表述；判定与
+    兜底逻辑仍使用完整版 Pydantic 模型，这里只精简发给模型的字典：
+    requirements 去掉与 goal 重复及互相重复的条目，completion_criteria 收成
+    一句判定式。
+    """
+
+    slimmed = dict(payload)
+    goal = str(slimmed.get("goal") or "").strip()
+
+    def _norm(value: Any) -> str:
+        return "".join(str(value or "").split())
+
+    goal_key = _norm(goal)
+    requirements = [
+        str(item or "").strip()
+        for item in slimmed.get("requirements") or []
+        if str(item or "").strip()
+    ]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in requirements:
+        key = _norm(item)
+        if not key or key in seen:
+            continue
+        if goal_key and (goal_key in key or key in goal_key):
+            continue
+        seen.add(key)
+        deduped.append(item)
+    slimmed["requirements"] = deduped
+
+    criteria = [
+        str(item or "").strip()
+        for item in slimmed.get("completion_criteria") or []
+        if str(item or "").strip()
+    ]
+    if criteria:
+        slimmed["completion_criteria"] = "；".join(dict.fromkeys(criteria))
+    return slimmed
 
 
 def _bounded_capability_result(
@@ -479,6 +581,26 @@ def _bounded_capability_result(
     )
     if len(serialized) <= max_chars:
         return payload
+    # I1：知识检索结果超预算先分级降档（top-N 正文 + 其余定位索引），两档
+    # 都压不进预算才退化为旧行为的截断 preview。
+    if (
+        tool_name == "knowledge_search"
+        and KNOWLEDGE_RESULT_TIERED_INLINE
+        and isinstance(result.get("data"), dict)
+    ):
+        for keep_full in (_KNOWLEDGE_TIER_FULL_EVIDENCE, 0):
+            tiered = dict(payload)
+            tiered["data"] = _tier_knowledge_result_data(
+                result["data"], keep_full_evidence=keep_full
+            )
+            tiered_serialized = json.dumps(
+                tiered,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if len(tiered_serialized) <= max_chars:
+                return tiered
     truncated = {
         "tool_name": tool_name,
         "success": bool(result.get("success")),
