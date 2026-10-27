@@ -32,6 +32,7 @@ from app.db.models import (
     Tool,
     utc_now,
 )
+from app.knowledge.ocr_fallback import extract_pdf_via_ocr, should_attempt_ocr
 from app.knowledge.parser import KnowledgeParseError, extract_text, sanitize_text
 from app.llm.model_config_resolver import (
     ResolvedModelConfig,
@@ -584,6 +585,24 @@ class KnowledgeService:
             content = base64.b64decode(str(metadata.get("content_base64") or ""))
             text, file_type = extract_text(job.filename, content)
             self._raise_if_ingest_cancelled(job)
+            # 扫描件/影印件没有文字层：pypdf 抽不出字符，直接报「没有可用文本内容」
+            # 对用户毫无帮助。这里在判定失败之前改走 OCR，识别结果同样进后续链路。
+            if should_attempt_ocr(job.filename, text):
+                self._update_ingest_stage(
+                    job,
+                    "parsing",
+                    detail="PDF 没有文字层（疑似扫描件），正在调用 OCR 识别，请稍候",
+                    stats={
+                        "text_chars": len((text or "").strip()),
+                        "ocr_fallback": True,
+                    },
+                )
+                text = extract_pdf_via_ocr(job.filename, content)
+                self._raise_if_ingest_cancelled(job)
+                metadata["ocr_fallback"] = True
+                job.metadata_json = metadata
+                self.db.add(job)
+                self.db.commit()
             self._update_ingest_stage(
                 job,
                 "normalizing",

@@ -199,6 +199,17 @@ class Settings(BaseSettings):
     # 单次请求的文件数与单文件体积上限：先在服务端挡住滥用，别让上游被打满。
     indra_ocr_max_files: int = 10
     indra_ocr_max_file_mb: int = 50
+    # 扫描件 PDF 入库兜底（2026-10-27）：pypdf 只能抽「文字层」，影印/扫描件抽不出
+    # 任何字符时直接报「文档没有可用文本内容」。开启后，PDF 文字层为空（或字符数
+    # 低于 knowledge_ocr_min_text_chars）时自动改用 Indra OCR 逐页识别再入库。
+    # 依赖 indra_ocr_base_url 可达；不可达时退回原有报错，不影响其他格式。
+    knowledge_ocr_fallback_enabled: bool = True
+    # 文字层字符数低于此值即判定为「无有效文字层」而走 OCR。纯数字页/封面页
+    # 往往只有几十个字符，给 80 的门槛既能跳过空扫描件，又不误判正常短文档。
+    knowledge_ocr_min_text_chars: int = 80
+    # OCR 识别页数上限（0 = 不限）。扫描件页数多时 OCR 很慢，超限只识别前 N 页
+    # 并在正文末尾标注，避免一本几百页的标书把 worker 占满。
+    knowledge_ocr_max_pages: int = 300
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
