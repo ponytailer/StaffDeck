@@ -1557,7 +1557,7 @@
   companyTrigger.appendChild(el('span', 'color:#a3aaba;font-size:10px;flex:0 0 auto;', '▾'));
   var companyPanel = el('div', 'display:none;flex-direction:column;gap:5px;border:1px solid #e3e7f1;border-radius:9px;background:#fff;padding:6px;');
   var companySearch = el('input', INPUT);
-  companySearch.placeholder = '输入公司名称，支持模糊匹配, 回车确认';
+  companySearch.placeholder = '其它公司可输入公司名称，支持模糊匹配, 回车确认';
   companySearch.setAttribute('data-role', 'company-search');
   var companyListBox = el('div', 'display:flex;flex-direction:column;gap:2px;max-height:168px;overflow:auto;');
   companyPanel.appendChild(companySearch);

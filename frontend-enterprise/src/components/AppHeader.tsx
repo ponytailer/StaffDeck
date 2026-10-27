@@ -14,13 +14,14 @@ import { Bell, KeyRound } from 'lucide-react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconEdit from '../assets/icons/edit.svg?react';
 import IconLogout from '../assets/icons/logout.svg?react';
-import { api, TENANT_ID } from '../api/client';
+import { api } from '../api/client';
 import {
   getEnterpriseAuthSession,
   mergeEnterpriseAuthSessionUser,
   setEnterpriseAuthSession,
   type EnterpriseAuthUser,
 } from '../auth';
+import { fetchUnreadNotificationCount } from '../lib/unreadNotifications';
 import LanguageSwitcher from './LanguageSwitcher';
 import AccountApiKeyDialog from './AccountApiKeyDialog';
 import EditDepartmentDialog from './EditDepartmentDialog';
@@ -150,23 +151,27 @@ export default function AppHeader({
 
   useEffect(() => {
     let cancelled = false;
-    const loadUnread = () => {
+    // force=true：轮询/聚焦是「可能过期了」的重新确认；而同一批次里多个
+    // AppHeader 实例的首挂载会共享一次真实请求（见 unreadNotifications）。
+    const loadUnread = (force = false) => {
       if (!getEnterpriseAuthSession()?.token) {
         setUnreadNotificationCount(0);
         return;
       }
-      api
-        .get<{ count: number }>(`/api/enterprise/notifications/unread-count?tenant_id=${TENANT_ID}`)
-        .then((result) => {
-          if (!cancelled) setUnreadNotificationCount(Math.max(0, Number(result.count) || 0));
+      fetchUnreadNotificationCount({ force })
+        .then((count) => {
+          if (!cancelled) setUnreadNotificationCount(count);
         })
         .catch(() => {
           if (!cancelled) setUnreadNotificationCount(0);
         });
     };
+    // 首挂载不强制：DistillPage 与路由页两份 header 会同时挂载，强制会让
+    // TTL 失效、退回到各发一个请求。标记已读后的刷新走事件，那里才需要真实
+    // 的新值。
     loadUnread();
-    const timer = window.setInterval(loadUnread, 300_000);
-    const onChange = () => loadUnread();
+    const timer = window.setInterval(() => loadUnread(true), 300_000);
+    const onChange = () => loadUnread(true);
     window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onChange);
     window.addEventListener('focus', onChange);
     return () => {

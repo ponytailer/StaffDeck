@@ -2229,7 +2229,12 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
 
   return (
     <div className={DISTILL_PAGE_CLASS}>
-      <AppHeader className="shrink-0" onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />
+      {/* App.tsx 让本页常驻挂载，非 SOP 路由时父容器是 CSS `hidden`。此时再渲染
+          AppHeader 只会让它的取数 effect（未读通知数等）白跑一遍，并和路由页
+          那份 header 重复打同一个接口。隐藏态直接不挂载。 */}
+      {active && (
+        <AppHeader className="shrink-0" onLogout={onLogout} userName={currentUser?.username} title={pageTitle} />
+      )}
       <div className={DISTILL_ACTIONS_CLASS}>
         <UIButton variant="outline" className={RETURN_BUTTON_CLASS} onClick={() => navigate('/enterprise/skills')}>
           <ArrowLeftOutlined />

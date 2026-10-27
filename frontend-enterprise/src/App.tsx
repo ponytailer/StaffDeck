@@ -29,6 +29,7 @@ import StaffdeckIcon from "./components/StaffdeckIcon";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { EnterpriseRoute } from "./enums/routes";
 import { toClientDateISO } from "./lib/timezone";
+import { resetUnreadNotificationCache } from "./lib/unreadNotifications";
 import {
   employeeBlankMetadata,
   canAccessEmployeeAgent,
@@ -1131,6 +1132,7 @@ export default function App() {
         if (cancelled) return;
         if (isAuthError(error)) {
           clearEnterpriseAuthSession();
+          resetUnreadNotificationCache();
           setAuth(null);
         }
         setAuthChecked(true);
@@ -1142,6 +1144,8 @@ export default function App() {
 
   function logout() {
     clearEnterpriseAuthSession();
+    // 未读数是跨会话共享的模块级缓存，不清会让下一个账号短暂看到上一个账号的数字
+    resetUnreadNotificationCache();
     setAuth(null);
     setAuthChecked(true);
   }
