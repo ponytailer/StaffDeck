@@ -469,7 +469,7 @@ export default function ApiKeyApprovalsPage({
     setApproveConsumerName(`ailab_${item.username || 'user'}`);
     setApproveGroupId('');
     setApproveRuleId('');
-    setApproveApiUrl('https://ai-gateway.folidaymall.com/v1/chat/completions');
+    setApproveApiUrl('https://ai-gateway.folidaymall.com/ailab/v1/chat/completions');
   }
 
   async function confirmApprove() {
@@ -1779,7 +1779,7 @@ export default function ApiKeyApprovalsPage({
             <Input
               value={approveApiUrl}
               onChange={(e) => setApproveApiUrl(e.target.value)}
-              placeholder="https://ai-gateway.folidaymall.com/v1/chat/completions"
+              placeholder="https://ai-gateway.folidaymall.com/ailab/v1/chat/completions"
               className="h-[34px] font-mono text-[12px]"
             />
             <span className="text-[11px] leading-[16px] text-[#858b9c]">
