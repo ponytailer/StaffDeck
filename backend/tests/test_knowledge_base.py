@@ -1456,6 +1456,7 @@ def test_update_document_syncs_document_card_and_okf_source_concept() -> None:
             document.id,
             KnowledgeDocumentUpdateRequest(tenant_id="tenant_demo", title="新标题"),
             db,
+            current_user=_knowledge_admin(),
         )
 
         assert updated.title == "新标题"
@@ -1547,6 +1548,7 @@ def test_update_document_content_rebuilds_all_derived_knowledge() -> None:
                 expected_updated_at=document.updated_at.isoformat(),
             ),
             db,
+            current_user=_knowledge_admin(),
         )
 
         assert updated.title == "新版制度"
@@ -1657,6 +1659,7 @@ def test_update_chunk_refreshes_bucket_content_and_okf_topic() -> None:
             chunk.id,
             KnowledgeChunkUpdateRequest(tenant_id="tenant_demo", content="新退款规则内容", summary="新摘要"),
             db,
+            current_user=_knowledge_admin(),
         )
 
         refreshed_bucket = db.get(KnowledgeBucket, bucket.id)
@@ -2091,6 +2094,17 @@ def test_discovery_only_marks_valid_skill_as_pending(monkeypatch: pytest.MonkeyP
 
 def _b64(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def _knowledge_admin() -> User:
+    """内部管理端写操作需要一个真实用户（FastAPI 依赖在直调时不会注入）。"""
+    return User(
+        id="user_kb_admin",
+        tenant_id="tenant_demo",
+        username="kb_admin",
+        role="admin",
+        password_hash="x",
+    )
 
 
 def _test_session():

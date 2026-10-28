@@ -263,6 +263,36 @@ GET      /agents/{agent_id}/knowledge-bases/{knowledge_base_id}/concepts
 
 知识检索返回 `citations`。文本批量写入和文件导入返回持久化 Job。
 
+#### 个人知识库（账号级）
+
+个人知识库不绑定任何数字员工，也不进开放广场，只有属主本人可读写。它适合作为外部系统（例如 CMLG Office）**问答 / 改文档的依据**：外部只保存 `knowledge_base_id`，即可长期引用。
+
+```text
+GET  /knowledge-bases                              列出「我的知识库」
+GET  /knowledge-bases/{knowledge_base_id}          单库状态（status / version / 计数）
+GET  /knowledge-bases/{knowledge_base_id}/documents 文档清单（分页）
+POST /knowledge-bases/{knowledge_base_id}:search   检索（返回 citations / evidence）
+```
+
+```bash
+# 1) 拿到自己的知识库 id
+curl "$BASE/knowledge-bases" -H "Authorization: Bearer $STAFFDECK_API_KEY"
+
+# 2) 检索：把命中的 citations 作为问答 / 改文档的依据
+curl -X POST "$BASE/knowledge-bases/$KB_ID:search" \
+  -H "Authorization: Bearer $STAFFDECK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"差旅住宿标准","mode":"debug","max_depth":2}'
+```
+
+约束与语义：
+
+- **仅限账号级密钥**（`/me/api-credentials` 创建的密钥）。员工级密钥绑定单个员工，访问这些接口返回 `403 ACCOUNT_KEY_REQUIRED`。
+- 非属主访问统一返回 `404 KNOWLEDGE_BASE_NOT_FOUND`，不会暴露知识库是否存在。
+- 知识库只能**下线**（`status=archived`）不能删除，所以 `knowledge_base_id` 永远有效：列表仍返回该行，`search` 返回 `409 KNOWLEDGE_BASE_ARCHIVED`，外部可据此提示「知识库已下线」。
+- `search` 响应额外带 `knowledge_base_id` 与 `knowledge_base_version`，用于外部缓存失效（版本变化即需重新取数）。
+- 需要写入（上传文档 / 批量写条目）时走员工级接口，或把个人库导入到某个数字员工后再写入（个人库本身保持只读引用）。
+
 ### 通用技能、工具和 MCP
 
 ```text

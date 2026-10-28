@@ -4,7 +4,7 @@ import base64
 from time import sleep
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from sqlmodel import Session, select
 
 from app.api import general_skills as internal_general_skills
@@ -17,6 +17,7 @@ from app.db.models import APIJob, AgentResourceBinding, KnowledgeIngestJob, Tool
 from app.general_skills.schema import GeneralSkillImportRequest, GeneralSkillRunRequest
 from app.knowledge.schema import (
     KnowledgeBaseCreateRequest,
+    KnowledgeBaseRead,
     KnowledgeBaseUpdateRequest,
     KnowledgeBaseRollbackRequest,
     KnowledgeDocumentUpdateRequest,
@@ -293,6 +294,140 @@ def archive_knowledge_document(
     return update_knowledge_document(
         agent_id, knowledge_base_id, document_id, {"status": "archived"}, principal, db
     )
+
+
+# ---------------------------------------------------------------------------
+# 个人知识库（账号级）
+#
+# CMLG Office 等外部系统以 ``knowledge_base_id`` 作稳定引用，拿自己的知识库当
+# 问答 / 改文档的依据。个人库不属于任何员工，所以走独立的 ``/knowledge-bases``
+# 命名空间；且只对「账号级全量密钥」开放（员工级密钥绑定单个员工，无权访问
+# 属主的个人空间）。
+# ---------------------------------------------------------------------------
+
+
+def _require_account_key(principal: PublicPrincipal) -> None:
+    if principal.agent_id is not None:
+        raise PublicAPIError(
+            403,
+            "ACCOUNT_KEY_REQUIRED",
+            "Personal knowledge bases require an account-level API key.",
+        )
+
+
+def _personal_knowledge_base_or_error(
+    db: Session,
+    principal: PublicPrincipal,
+    knowledge_base_id: str,
+) -> KnowledgeBaseRead:
+    """取「我的个人知识库」；非属主 / 不存在统一 404，避免探测别人的库。"""
+    try:
+        return internal_knowledge_bases.get_knowledge_base(
+            knowledge_base_id,
+            principal.tenant_id,
+            None,
+            db,
+            principal.actor_user,
+        )
+    except HTTPException as exc:
+        if exc.status_code in (403, 404):
+            raise PublicAPIError(
+                404, "KNOWLEDGE_BASE_NOT_FOUND", "Knowledge base not found."
+            ) from exc
+        raise PublicAPIError(
+            exc.status_code, "KNOWLEDGE_BASE_ERROR", str(exc.detail)
+        ) from exc
+
+
+@router.get("/knowledge-bases", response_model=dict)
+def list_personal_knowledge_bases(
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+    db: Session = Depends(get_session),
+) -> dict:
+    _require_account_key(principal)
+    page = internal_knowledge_bases.list_knowledge_bases(
+        principal.tenant_id,
+        None,
+        db,
+        1,
+        200,
+        hide_empty_default=False,
+        mine=True,
+        current_user=principal.actor_user,
+    )
+    return {"data": [_dump(row) for row in page["items"]], "next_cursor": None}
+
+
+@router.get("/knowledge-bases/{knowledge_base_id}", response_model=dict)
+def get_personal_knowledge_base(
+    knowledge_base_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+    db: Session = Depends(get_session),
+) -> dict:
+    _require_account_key(principal)
+    row = _personal_knowledge_base_or_error(db, principal, knowledge_base_id)
+    return _dump(row)
+
+
+@router.get("/knowledge-bases/{knowledge_base_id}/documents", response_model=dict)
+def list_personal_knowledge_documents(
+    knowledge_base_id: str,
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(50, ge=1, le=200, description="每页条数"),
+    db: Session = Depends(get_session),
+) -> dict:
+    _require_account_key(principal)
+    _personal_knowledge_base_or_error(db, principal, knowledge_base_id)
+    result = internal_knowledge.list_documents(
+        principal.tenant_id,
+        knowledge_base_id,
+        None,
+        False,
+        page=page,
+        page_size=page_size,
+        db=db,
+        mine=True,
+        current_user=principal.actor_user,
+    )
+    return {
+        "data": [_dump(row) for row in result["items"]],
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "total_pages": result["total_pages"],
+        "next_cursor": None,
+    }
+
+
+@router.post("/knowledge-bases/{knowledge_base_id}:search", response_model=dict)
+def search_personal_knowledge_base(
+    knowledge_base_id: str,
+    body: dict[str, Any],
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+    db: Session = Depends(get_session),
+) -> dict:
+    _require_account_key(principal)
+    row = _personal_knowledge_base_or_error(db, principal, knowledge_base_id)
+    if row.status != "active":
+        raise PublicAPIError(
+            409,
+            "KNOWLEDGE_BASE_ARCHIVED",
+            "This knowledge base is archived; re-activate it in StaffDeck to search again.",
+        )
+    request = KnowledgeSearchRequest(
+        tenant_id=principal.tenant_id,
+        agent_id=None,
+        mine=True,
+        knowledge_base_ids=[knowledge_base_id],
+        **body,
+    )
+    result = internal_knowledge.search_knowledge(request, db, principal.actor_user)
+    payload = _dump(result)
+    payload["citations"] = payload.get("okf_citations") or payload.get("evidence_pack") or []
+    payload["knowledge_base_id"] = knowledge_base_id
+    payload["knowledge_base_version"] = row.version
+    return payload
 
 
 @router.get("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/concepts", response_model=dict)

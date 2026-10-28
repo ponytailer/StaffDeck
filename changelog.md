@@ -1,6 +1,12 @@
 # Changelog
 
-> 按天归纳（2026-08-24 → 2026-10-10）。
+> 按天归纳（2026-08-24 → 2026-10-28）。
+
+## 202610 w4
+
+- **New**: 个人知识库（不再强绑数字员工）——「我的数字员工」新增「知识库」tab，可独立维护 / 下线（只允许下线，保证外部引用稳定），并支持「从我的知识库导入」到任一数字员工
+- **New**: 个人知识库页「API 接入」指引（对齐 OCR 助手样式）：账号级密钥 + `POST /v1/knowledge-bases/{kb_id}:search` 端点 + cURL/Python/Node 示例，接入信息由 `GET /api/enterprise/knowledge-bases/api-access` 下发
+- **New**: 开放 API 新增账号级个人知识库接口（列表 / 详情 / 文档 / `:search`），供 CMLG Office 等外部系统作问答与改文档的依据；非属主 404、下线库 409 `KNOWLEDGE_BASE_ARCHIVED`
 
 ## 202610 w2-w3
 

@@ -116,9 +116,12 @@ class AgentResourcesUpdateRequest(BaseModel):
 
 class AgentResourceImportRequest(BaseModel):
     tenant_id: str
-    source_agent_id: str
+    # 从个人知识库导入时不传 source_agent_id（个人库不属于任何员工）
+    source_agent_id: str = ""
     resource_type: AgentResourceType
     resource_ids: list[str] = Field(default_factory=list)
+    # True：source_agent_id 忽略，资源取当前用户的「个人知识库」
+    source_personal: bool = False
 
 
 class AgentModelBindingInput(BaseModel):

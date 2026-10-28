@@ -15,15 +15,17 @@ from sqlmodel import Session, select
 
 from app.agents.branching import (
     ensure_agent_private_knowledge_branch,
+    ensure_knowledge_base_version,
     ensure_open_gallery_binding,
-    is_open_gallery_resource,
+    is_personal_knowledge_base,
     knowledge_version_for_upload,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
     metadata_preserving_creator,
+    personal_knowledge_base_rows,
+    personal_knowledge_metadata,
     user_creator_metadata,
     visible_knowledge_base_versions,
-    visible_knowledge_base_version_ids,
 )
 from app.db import get_session
 from app.db.models import (
@@ -74,7 +76,9 @@ from app.knowledge.service import (
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import (
     ensure_agent_scope_manager,
+    ensure_knowledge_base_writer,
     ensure_open_gallery_admin,
+    ensure_personal_knowledge_owner,
     require_agent_scope_viewer,
 )
 from app.security.tenant import ensure_tenant
@@ -94,6 +98,8 @@ def upload_document(
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    # mine=1：创建 / 追加到「我的个人知识库」（不绑定数字员工）
+    mine: bool = False,
 ) -> KnowledgeIngestJobRead:
     ensure_tenant(db, request.tenant_id)
     creator_metadata = user_creator_metadata(current_user, request.metadata or {})
@@ -103,12 +109,13 @@ def upload_document(
         agent_id,
         current_user,
         creator_metadata=creator_metadata,
+        mine=mine,
     )
     version = knowledge_version_for_upload(
         db,
         request.tenant_id,
         knowledge_base.id,
-        agent_id,
+        None if mine else agent_id,
         metadata_json=creator_metadata,
     )
     db.commit()
@@ -166,12 +173,13 @@ def import_okf_bundle(
         request.agent_id,
         current_user,
         creator_metadata=creator_metadata,
+        mine=request.mine,
     )
     version = knowledge_version_for_upload(
         db,
         request.tenant_id,
         knowledge_base.id,
-        request.agent_id,
+        None if request.mine else request.agent_id,
         metadata_json=creator_metadata,
     )
     document = KnowledgeDocument(
@@ -247,6 +255,7 @@ def _resolve_upload_knowledge_base(
     agent_id: str | None,
     current_user: object | None = None,
     creator_metadata: dict[str, Any] | None = None,
+    mine: bool = False,
 ) -> KnowledgeBase:
     agent = (
         ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
@@ -262,12 +271,14 @@ def _resolve_upload_knowledge_base(
         ):
             raise HTTPException(status_code=404, detail="Knowledge base not found")
         if not (agent and not agent.is_overall):
-            _ensure_open_gallery_knowledge_admin(
+            ensure_knowledge_base_writer(
                 db, request.tenant_id, knowledge_base.id, current_user
             )
         return knowledge_base
 
-    if not (agent and not agent.is_overall):
+    if mine:
+        ensure_current_user_tenant(request.tenant_id, current_user)
+    elif not (agent and not agent.is_overall):
         ensure_open_gallery_admin(request.tenant_id, current_user)
     base_name = _knowledge_base_name_from_upload(request)
     name = _unique_knowledge_base_name(db, request.tenant_id, base_name)
@@ -277,7 +288,15 @@ def _resolve_upload_knowledge_base(
         description=f"由文档 {request.filename} 创建",
         status="active",
         capability_scope=request.capability_scope,
-        metadata_json={
+        metadata_json=personal_knowledge_metadata(
+            {
+                **(creator_metadata or user_creator_metadata(current_user, request.metadata or {})),
+                "created_from_document_upload": True,
+                "source_filename": request.filename,
+            }
+        )
+        if mine
+        else {
             **(creator_metadata or user_creator_metadata(current_user, request.metadata or {})),
             "created_from_document_upload": True,
             "source_filename": request.filename,
@@ -286,7 +305,10 @@ def _resolve_upload_knowledge_base(
     db.add(knowledge_base)
     db.flush()
 
-    if agent and not agent.is_overall:
+    if mine:
+        # 个人知识库不建立任何 AgentResourceBinding（不进广场、不被员工检索）
+        pass
+    elif agent and not agent.is_overall:
         mark_resource_private_for_agent(knowledge_base, agent.id, creator_metadata)
         ensure_agent_private_knowledge_branch(
             db,
@@ -342,12 +364,22 @@ def list_jobs(
     status: str | None = Query(None),
     limit: int = Query(8, ge=1, le=50),
     db: Session = Depends(get_session),
+    mine: bool = False,
+    current_user: User | None = Depends(get_current_user),
 ) -> list[KnowledgeIngestJobRead]:
     ensure_tenant(db, tenant_id)
     KnowledgeService(db).finalize_stale_cancel_requested_jobs(tenant_id)
-    visible_version_ids = visible_knowledge_base_version_ids(
-        db, tenant_id, agent_id, include_inactive=True
-    )
+    visible_version_ids = [
+        version.id
+        for version in _scoped_knowledge_versions(
+            db,
+            tenant_id,
+            agent_id,
+            current_user,
+            mine=mine,
+            include_inactive=True,
+        ).values()
+    ]
     if not visible_version_ids:
         return []
     statement = select(KnowledgeIngestJob).where(
@@ -376,12 +408,15 @@ def get_job(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> KnowledgeIngestJobRead:
     ensure_tenant(db, tenant_id)
     job = db.get(KnowledgeIngestJob, job_id)
     if not job or job.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Knowledge ingest job not found")
-    _ensure_knowledge_version_visible(db, tenant_id, job.knowledge_base_version_id, agent_id)
+    _ensure_knowledge_version_visible(
+        db, tenant_id, job.knowledge_base_version_id, agent_id, current_user
+    )
     KnowledgeService(db).finalize_stale_cancel_requested_job(job)
     return job_read(job)
 
@@ -419,6 +454,8 @@ def list_documents(
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(50, ge=1, le=200, description="每页条数"),
     db: Session = Depends(get_session),
+    mine: bool = False,
+    current_user: User | None = Depends(get_current_user),
 ) -> dict[str, Any]:
     """列出知识文档。
 
@@ -431,8 +468,8 @@ def list_documents(
     page_size = max(1, min(int(page_size), 200))
 
     ensure_tenant(db, tenant_id)
-    visible_versions = visible_knowledge_base_versions(
-        db, tenant_id, agent_id, include_inactive=True
+    visible_versions = _scoped_knowledge_versions(
+        db, tenant_id, agent_id, current_user, mine=mine, include_inactive=True
     )
     if not visible_versions:
         return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0}
@@ -496,9 +533,12 @@ def get_document(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> KnowledgeDocumentRead:
     row = _get_document(db, tenant_id, document_id)
-    _ensure_knowledge_version_visible(db, tenant_id, row.knowledge_base_version_id, agent_id)
+    _ensure_knowledge_version_visible(
+        db, tenant_id, row.knowledge_base_version_id, agent_id, current_user
+    )
     return document_read(row)
 
 
@@ -617,9 +657,12 @@ def get_document_buckets(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> list[KnowledgeBucketRead]:
     document = _get_document(db, tenant_id, document_id)
-    _ensure_knowledge_version_visible(db, tenant_id, document.knowledge_base_version_id, agent_id)
+    _ensure_knowledge_version_visible(
+        db, tenant_id, document.knowledge_base_version_id, agent_id, current_user
+    )
     rows = _safe_document_bucket_rows(db, tenant_id, document_id)
     chunk_counts = dict(
         db.exec(
@@ -683,12 +726,15 @@ def get_bucket_chunks(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> list[KnowledgeChunkRead]:
     ensure_tenant(db, tenant_id)
     bucket = db.get(KnowledgeBucket, bucket_id)
     if not bucket or bucket.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Knowledge bucket not found")
-    _ensure_knowledge_version_visible(db, tenant_id, bucket.knowledge_base_version_id, agent_id)
+    _ensure_knowledge_version_visible(
+        db, tenant_id, bucket.knowledge_base_version_id, agent_id, current_user
+    )
     rows = _safe_bucket_chunk_rows(db, tenant_id, bucket_id)
     return [_chunk_read_mapping(row) for row in rows]
 
@@ -738,11 +784,16 @@ def search_knowledge(
     require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
     ensure_tenant(db, request.tenant_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    visible_version_ids = visible_knowledge_base_version_ids(
+    scoped_versions = _scoped_knowledge_versions(
         db,
         request.tenant_id,
         request.agent_id,
+        current_user,
+        mine=request.mine,
+        include_inactive=request.mine,
+        knowledge_base_ids=request.knowledge_base_ids or None,
     )
+    visible_version_ids = [version.id for version in scoped_versions.values()]
     if not visible_version_ids:
         trace = [{"phase": "no_visible_knowledge", "message": "当前范围没有可见知识"}]
         return KnowledgeSearchResponse(trace=trace, route_trace=trace)
@@ -831,10 +882,12 @@ def list_discoveries(
     status: str | None = Query(None),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    mine: bool = False,
+    current_user: User | None = Depends(get_current_user),
 ) -> list[KnowledgeDiscoveryRead]:
     ensure_tenant(db, tenant_id)
-    visible_versions = visible_knowledge_base_versions(
-        db, tenant_id, agent_id, include_inactive=True
+    visible_versions = _scoped_knowledge_versions(
+        db, tenant_id, agent_id, current_user, mine=mine, include_inactive=True
     )
     if knowledge_base_id and knowledge_base_id not in visible_versions:
         return []
@@ -1216,6 +1269,7 @@ def _ensure_knowledge_version_visible(
     tenant_id: str,
     knowledge_base_version_id: str | None,
     agent_id: str | None,
+    current_user: object | None = None,
 ) -> None:
     if not knowledge_base_version_id:
         raise HTTPException(
@@ -1228,6 +1282,11 @@ def _ensure_knowledge_version_visible(
             status_code=404,
             detail=f"Knowledge-base version {knowledge_base_version_id} does not exist in tenant {tenant_id}",
         )
+    knowledge_base = db.get(KnowledgeBase, version.knowledge_base_id)
+    if knowledge_base is not None and is_personal_knowledge_base(knowledge_base):
+        # 个人知识库不走员工 / 广场作用域：属主即可见
+        ensure_personal_knowledge_owner(knowledge_base, current_user)
+        return
     visible_base_ids = set(
         visible_knowledge_base_versions(db, tenant_id, agent_id, include_inactive=True)
     )
@@ -1256,19 +1315,48 @@ def _ensure_open_gallery_knowledge_admin(
     knowledge_base_id: str,
     current_user: object | None,
 ) -> None:
-    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
-    metadata = (
-        knowledge_base.metadata_json
-        if knowledge_base and isinstance(knowledge_base.metadata_json, dict)
-        else {}
+    """知识库写权限（保留旧名，语义已扩到个人知识库属主）。"""
+    ensure_knowledge_base_writer(db, tenant_id, knowledge_base_id, current_user)
+
+
+def _scoped_knowledge_versions(
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None,
+    current_user: object | None,
+    *,
+    mine: bool = False,
+    include_inactive: bool = True,
+    knowledge_base_ids: list[str] | None = None,
+) -> dict[str, KnowledgeBaseVersion]:
+    """当前请求可见的知识库版本。
+
+    ``mine=True`` 只返回当前用户的个人知识库（不进广场、不绑员工）；
+    否则沿用既有的员工分支 / 广场口径。请求显式指定 ``knowledge_base_ids`` 时
+    先做存在性 / 归属 / 下线态校验，避免“猜到 id 就能读”。
+    """
+    if not mine:
+        return visible_knowledge_base_versions(
+            db, tenant_id, agent_id, include_inactive=include_inactive
+        )
+    if not isinstance(current_user, User):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    ensure_current_user_tenant(tenant_id, current_user)
+    rows = personal_knowledge_base_rows(
+        db, tenant_id, current_user.id, include_inactive=True
     )
-    owner_agent_id = metadata.get("owner_agent_id")
-    if isinstance(owner_agent_id, str) and owner_agent_id:
-        ensure_agent_scope_manager(db, tenant_id, owner_agent_id, current_user)
-        return
-    if (
-        knowledge_base
-        and knowledge_base.tenant_id == tenant_id
-        and is_open_gallery_resource(db, tenant_id, "knowledge_base", knowledge_base)
-    ):
-        ensure_open_gallery_admin(tenant_id, current_user)
+    if knowledge_base_ids:
+        requested = {str(item) for item in knowledge_base_ids if item}
+        known = {row.id for row in rows}
+        if requested - known:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        archived = [
+            row.id for row in rows if row.id in requested and row.status != "active"
+        ]
+        if archived:
+            # 显式按 id 访问已下线的个人库：给出可区分信号（对外 API 也是这个码）
+            raise HTTPException(status_code=409, detail="Knowledge base is archived")
+        rows = [row for row in rows if row.id in requested]
+    if not include_inactive:
+        rows = [row for row in rows if row.status == "active"]
+    return {row.id: ensure_knowledge_base_version(db, row) for row in rows}

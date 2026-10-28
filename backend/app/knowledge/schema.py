@@ -192,11 +192,15 @@ class KnowledgeOkfImportRequest(BaseModel):
     filename: str
     content_base64: str
     agent_id: Optional[str] = None
+    # True 时写入「我的个人知识库」（不绑定数字员工）
+    mine: bool = False
 
 
 class KnowledgeSearchRequest(BaseModel):
     tenant_id: str
     agent_id: Optional[str] = None
+    # True 时只检索当前用户的个人知识库
+    mine: bool = False
     query: str
     query_type: Literal["answer", "policy_check", "tool_discovery", "skill_discovery"] = "answer"
     desired_evidence: Optional[str] = None

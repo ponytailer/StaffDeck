@@ -5,10 +5,12 @@ from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.capability_scope import normalize_capability_scope
+from app.config import get_settings
 from app.db import get_session
 from app.db.bulk_delete import bulk_delete_matching
 from app.agents.branching import (
@@ -21,10 +23,13 @@ from app.agents.branching import (
     hide_open_gallery_binding,
     is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
+    is_personal_knowledge_base,
     knowledge_version_for_upload,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
     metadata_preserving_creator,
+    personal_knowledge_base_rows,
+    personal_knowledge_metadata,
     promote_knowledge_branch_to_overall,
     rollback_knowledge_branch,
     sync_knowledge_branch_from_overall,
@@ -62,10 +67,11 @@ from app.knowledge.okf import (
     persist_lint_issues,
     upsert_concepts,
 )
-from app.security.auth import get_current_user
+from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import (
     ensure_agent_scope_manager,
     ensure_open_gallery_admin,
+    ensure_personal_knowledge_owner,
     require_agent_scope_viewer,
 )
 from app.security.tenant import ensure_tenant
@@ -75,6 +81,22 @@ router = APIRouter(
     tags=["enterprise:knowledge-bases"],
     dependencies=[Depends(get_current_user)],
 )
+
+# 个人知识库对外开放的检索接口（账号级密钥）。路径里保留 ``{knowledge_base_id}``
+# 占位符：前端会把它替换成用户当前选中的库，展示成可直接复制的示例。
+KNOWLEDGE_OPEN_API_SCOPE = "knowledge:read"
+KNOWLEDGE_OPEN_API_ENDPOINT_PATH = "/api/v1/knowledge-bases/{knowledge_base_id}:search"
+KNOWLEDGE_OPEN_API_DOCS_PATH = "/api/v1/docs"
+
+
+class KnowledgeApiAccessResponse(BaseModel):
+    """「API 接入」指引弹窗要展示的接入信息（路径与对外基址都由后端给）。"""
+
+    required_scope: str
+    endpoint_path: str
+    docs_path: str
+    # 来自 PUBLIC_BASE_URL；为空表示未配置，前端回退到当前 origin
+    public_base_url: str
 
 
 @router.get(
@@ -87,6 +109,10 @@ def list_knowledge_bases(
     page: Annotated[int, Query(ge=1, le=200, description="页码，从 1 开始")] = 1,
     page_size: Annotated[int, Query(ge=1, le=200, description="每页条数")] = 50,
     hide_empty_default: bool = True,
+    # 「我的个人知识库」范围：不跟随任何数字员工，按创建者（owner_user_id）过滤。
+    # 与 general-skills 的 ``mine=1`` 同一约定。数值型裸默认值方便测试直接调用。
+    mine: bool = False,
+    current_user: User | None = Depends(get_current_user),
 ) -> dict[str, object]:
     """列出知识库。
 
@@ -94,12 +120,29 @@ def list_knowledge_bases(
     ``total`` 以及 ``summary``（已上线 / 已下线 / 文档总数）均由独立的 SQL 聚合查询得出，
     不再依赖把全部知识库行拉进内存后再计数；列表本身也只回当前页，响应时间不再随知识库
     总量增长。
+
+    ``mine=1`` 时返回当前用户的个人知识库（不绑定数字员工、不进广场）。
     """
 
     page = max(1, int(page))
     page_size = max(1, min(int(page_size), 200))
 
     ensure_tenant(db, tenant_id)
+    if mine:
+        if not isinstance(current_user, User):
+            raise HTTPException(status_code=401, detail="Authentication required")
+        ensure_current_user_tenant(tenant_id, current_user)
+        rows = personal_knowledge_base_rows(
+            db, tenant_id, current_user.id, include_inactive=True
+        )
+        return _knowledge_base_page_from_ids(
+            db,
+            tenant_id,
+            [row.id for row in rows],
+            page,
+            page_size,
+            hide_empty_default,
+        )
     agent = get_agent(db, tenant_id, agent_id)
 
     if agent and not agent.is_overall:
@@ -192,6 +235,20 @@ def list_knowledge_bases(
             .order_by(KnowledgeBase.updated_at.desc())
         ).all()
     ]
+    return _knowledge_base_page_from_ids(
+        db, tenant_id, ordered_ids, page, page_size, hide_empty_default
+    )
+
+
+def _knowledge_base_page_from_ids(
+    db: Session,
+    tenant_id: str,
+    ordered_ids: list[str],
+    page: int,
+    page_size: int,
+    hide_empty_default: bool = True,
+) -> dict[str, object]:
+    """把「已排好序的可见知识库 id」切成服务端分页（广场 / 个人库共用）。"""
     if hide_empty_default and ordered_ids:
         hidden_ids = _empty_default_knowledge_base_ids(db, tenant_id, ordered_ids)
         if hidden_ids:
@@ -205,26 +262,28 @@ def list_knowledge_bases(
         return _empty_knowledge_base_envelope(page, page_size, summary, total=total)
     page_ids = ordered_ids[offset : offset + page_size]
     rows = db.exec(
-        select(KnowledgeBase)
-        .where(
+        select(KnowledgeBase).where(
             KnowledgeBase.tenant_id == tenant_id,
             KnowledgeBase.id.in_(page_ids),
         )
-        .order_by(KnowledgeBase.updated_at.desc())
     ).all()
-    versions = {row.id: ensure_knowledge_base_version(db, row) for row in rows}
+    rows_by_id = {row.id: row for row in rows}
+    versions = {
+        kb_id: ensure_knowledge_base_version(db, rows_by_id[kb_id])
+        for kb_id in page_ids
+        if kb_id in rows_by_id
+    }
     stats = _knowledge_base_stats(
         db, tenant_id, [version.id for version in versions.values()]
     )
-    branch_meta = _knowledge_branch_meta(db, tenant_id, agent_id)
     items = [
         knowledge_base_read(
-            row,
-            stats.get(row.id, {}),
-            version_row=versions.get(row.id),
-            branch_meta=branch_meta.get(row.id),
+            rows_by_id[kb_id],
+            stats.get(kb_id, {}),
+            version_row=versions.get(kb_id),
         )
-        for row in rows
+        for kb_id in page_ids
+        if kb_id in rows_by_id
     ]
     return _knowledge_base_envelope(items, total, page, page_size, summary)
 
@@ -383,6 +442,8 @@ def create_knowledge_base(
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    # mine=1：在「我的个人知识库」中新建（不绑定数字员工、不进广场）。
+    mine: bool = False,
 ) -> KnowledgeBaseRead:
     ensure_tenant(db, request.tenant_id)
     name = request.name.strip()
@@ -395,21 +456,34 @@ def create_knowledge_base(
     ).first()
     if existing:
         raise HTTPException(status_code=409, detail="Knowledge base name already exists")
-    agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
-    if not (agent and not agent.is_overall):
-        ensure_open_gallery_admin(request.tenant_id, current_user)
+    agent = None
+    if mine:
+        if not isinstance(current_user, User):
+            raise HTTPException(status_code=401, detail="Authentication required")
+        ensure_current_user_tenant(request.tenant_id, current_user)
+    else:
+        agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
+        if not (agent and not agent.is_overall):
+            ensure_open_gallery_admin(request.tenant_id, current_user)
     creator_metadata = user_creator_metadata(current_user, request.metadata)
     row = KnowledgeBase(
         tenant_id=request.tenant_id,
         name=name,
         description=request.description,
         capability_scope=request.capability_scope,
-        metadata_json=creator_metadata,
+        metadata_json=(
+            personal_knowledge_metadata(creator_metadata) if mine else creator_metadata
+        ),
         status="active",
     )
     db.add(row)
     db.flush()
-    if agent and not agent.is_overall:
+    if mine:
+        # 个人知识库刻意不建任何 AgentResourceBinding：
+        # 广场列表、员工检索（visible_knowledge_base_versions）因此天然看不到它，
+        # 只有显式「导入到数字员工」才会派生一份分支副本。
+        pass
+    elif agent and not agent.is_overall:
         mark_resource_private_for_agent(row, agent.id, creator_metadata)
         ensure_agent_private_knowledge_branch(
             db,
@@ -433,6 +507,25 @@ def create_knowledge_base(
     return knowledge_base_read(row, {}, version_row=ensure_knowledge_base_version(db, row))
 
 
+@router.get("/api-access", response_model=KnowledgeApiAccessResponse)
+def knowledge_api_access(
+    current_user: User = Depends(get_current_user),
+) -> KnowledgeApiAccessResponse:
+    """给「API 接入」窗口用的接入信息。
+
+    必须声明在 ``@router.get("/{knowledge_base_id}")`` 之前：FastAPI 按声明顺序
+    匹配路由，否则 ``/api-access`` 会被当成一个知识库 id。
+    """
+
+    settings = get_settings()
+    return KnowledgeApiAccessResponse(
+        required_scope=KNOWLEDGE_OPEN_API_SCOPE,
+        endpoint_path=KNOWLEDGE_OPEN_API_ENDPOINT_PATH,
+        docs_path=KNOWLEDGE_OPEN_API_DOCS_PATH,
+        public_base_url=(settings.public_base_url or "").rstrip("/"),
+    )
+
+
 @router.get(
     "/{knowledge_base_id}",
     response_model=KnowledgeBaseRead,
@@ -443,9 +536,12 @@ def get_knowledge_base(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> KnowledgeBaseRead:
     row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
-    visible_version = _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
+    visible_version = _visible_knowledge_version(
+        db, tenant_id, knowledge_base_id, agent_id, current_user
+    )
     stats = _knowledge_base_stats(
         db,
         tenant_id,
@@ -553,7 +649,11 @@ def update_knowledge_base(
                 "status": branch.status,
             },
         )
-    ensure_open_gallery_admin(request.tenant_id, current_user)
+    personal = is_personal_knowledge_base(row)
+    if personal:
+        ensure_personal_knowledge_owner(row, current_user)
+    else:
+        ensure_open_gallery_admin(request.tenant_id, current_user)
     version = ensure_knowledge_base_version(db, row)
     if request.name is not None:
         name = request.name.strip()
@@ -580,20 +680,23 @@ def update_knowledge_base(
         row.status = request.status
         version.status = request.status
     if request.metadata is not None:
-        row.metadata_json = metadata_preserving_creator(
-            row.metadata_json,
-            request.metadata,
-        )
-        version.metadata_json = metadata_preserving_creator(
+        # 个人库的归属标记（visibility=personal / owner_user_id）不允许被编辑请求抹掉
+        row_metadata = metadata_preserving_creator(row.metadata_json, request.metadata)
+        version_metadata = metadata_preserving_creator(
             version.metadata_json,
             request.metadata,
         )
+        if personal:
+            row_metadata = personal_knowledge_metadata(row_metadata)
+            version_metadata = personal_knowledge_metadata(version_metadata)
+        row.metadata_json = row_metadata
+        version.metadata_json = version_metadata
     row.updated_at = utc_now()
     version.updated_at = utc_now()
     db.add(row)
     db.add(version)
     db.flush()
-    if request.status is not None:
+    if request.status is not None and not personal:
         ensure_open_gallery_binding(
             db,
             request.tenant_id,
@@ -616,9 +719,10 @@ def list_knowledge_base_versions(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> list[dict[str, object]]:
     row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
-    _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
+    _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id, current_user)
     agent = get_agent(db, tenant_id, agent_id)
     branch = None
     if agent and not agent.is_overall:
@@ -678,8 +782,11 @@ def list_okf_concepts(
     agent_id: str | None = Query(None),
     concept_type: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> list[KnowledgeConceptRead]:
-    version = _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
+    version = _visible_knowledge_version(
+        db, tenant_id, knowledge_base_id, agent_id, current_user
+    )
     _ensure_okf_concepts_for_version(db, tenant_id, knowledge_base_id, version.id)
     stmt = select(KnowledgeConcept).where(
         KnowledgeConcept.tenant_id == tenant_id,
@@ -704,8 +811,11 @@ def get_okf_concept(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> KnowledgeConceptRead:
-    version = _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
+    version = _visible_knowledge_version(
+        db, tenant_id, knowledge_base_id, agent_id, current_user
+    )
     _ensure_okf_concepts_for_version(db, tenant_id, knowledge_base_id, version.id)
     row = _get_concept(db, tenant_id, knowledge_base_id, version.id, concept_id)
     return concept_read(row)
@@ -752,9 +862,12 @@ def export_okf(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> Response:
     kb = _get_knowledge_base(db, tenant_id, knowledge_base_id)
-    version = _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
+    version = _visible_knowledge_version(
+        db, tenant_id, knowledge_base_id, agent_id, current_user
+    )
     _ensure_okf_concepts_for_version(db, tenant_id, knowledge_base_id, version.id)
     rows = db.exec(
         select(KnowledgeConcept)
@@ -786,8 +899,11 @@ def lint_okf(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
 ) -> dict[str, object]:
-    version = _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
+    version = _visible_knowledge_version(
+        db, tenant_id, knowledge_base_id, agent_id, current_user
+    )
     _ensure_okf_concepts_for_version(db, tenant_id, knowledge_base_id, version.id)
     issues = lint_okf_concepts(db, tenant_id, knowledge_base_id, version.id)
     persist_lint_issues(db, tenant_id, knowledge_base_id, version.id, issues)
@@ -851,6 +967,14 @@ def delete_knowledge_base(
         db.commit()
         invalidate_knowledge_base(tenant_id, row.id)
         return {"status": "hidden"}
+    if is_personal_knowledge_base(row):
+        # 个人知识库只支持下线：外部（如 CMLG Office）可能以 knowledge_base_id 作
+        # 稳定引用，硬删会让引用失效；属主想“清理”就下线（status=archived）。
+        ensure_personal_knowledge_owner(row, current_user)
+        raise HTTPException(
+            status_code=400,
+            detail="Personal knowledge bases can only be archived, not deleted",
+        )
     ensure_open_gallery_admin(tenant_id, current_user)
     # 子表一律批量 DELETE：KnowledgeChunk.content / KnowledgeConcept.content_md /
     # KnowledgeDiscoverySuggestion.payload_json 都可能是 MB 级，一个大库有数千 chunk，
@@ -1017,8 +1141,13 @@ def _visible_knowledge_version(
     tenant_id: str,
     knowledge_base_id: str,
     agent_id: str | None,
+    current_user: User | None = None,
 ) -> KnowledgeBaseVersion:
-    _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    if is_personal_knowledge_base(row):
+        # 个人知识库是 trunk 本体（没有分支），可见性只看属主。
+        ensure_personal_knowledge_owner(row, current_user)
+        return ensure_knowledge_base_version(db, row)
     versions = _management_knowledge_base_versions(db, tenant_id, agent_id)
     version = versions.get(knowledge_base_id)
     if not version:
@@ -1033,7 +1162,10 @@ def _writable_knowledge_version(
     agent_id: str | None,
     current_user: User,
 ) -> KnowledgeBaseVersion:
-    _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    if is_personal_knowledge_base(row):
+        ensure_personal_knowledge_owner(row, current_user)
+        return ensure_knowledge_base_version(db, row)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
         version = knowledge_version_for_upload(

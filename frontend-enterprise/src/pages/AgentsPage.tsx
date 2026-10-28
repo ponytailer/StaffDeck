@@ -21,6 +21,7 @@ import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import MyCreatedToolsPanel from '../components/MyCreatedToolsPanel';
+import KnowledgeManagePage from './KnowledgePage';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import { RevealGroup } from '../components/RevealGroup';
 import {
@@ -64,8 +65,9 @@ export default function AgentsPage({
   const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline'>('all');
-  // 页面级 tab：数字员工 / 技能管理 / 工具管理。
-  const [pageTab, setPageTab] = useState<'employees' | 'skills' | 'tools'>(() => {
+  // 页面级 tab：数字员工 / 技能管理 / 知识库 / 工具管理。
+  const [pageTab, setPageTab] = useState<'employees' | 'skills' | 'knowledge' | 'tools'>(() => {
+    if (window.location.hash.includes('knowledge')) return 'knowledge';
     if (window.location.hash.includes('skills')) return 'skills';
     if (window.location.hash.includes('tools')) return 'tools';
     return 'employees';
@@ -257,6 +259,7 @@ export default function AgentsPage({
         items={[
           { value: 'employees', label: '数字员工' },
           { value: 'skills', label: '技能管理' },
+          { value: 'knowledge', label: '知识库' },
           { value: 'tools', label: '工具管理' },
         ]}
       />
@@ -356,6 +359,11 @@ export default function AgentsPage({
           </div>
           {/* 我创建的技能：跨作用域汇总（广场技能 + 挂在员工下的技能）。 */}
           <MyCreatedSkillsPanel agents={agents} />
+        </div>
+      ) : pageTab === 'knowledge' ? (
+        <div className="mt-[24px]">
+          {/* 知识库不再跟绑数字员工：个人空间在页内直接复用完整知识库页（表、图谱、检索调试）。 */}
+          <KnowledgeManagePage embedded mode="personal" currentUser={currentUser} onLogout={onLogout} />
         </div>
       ) : (
         <div className="mt-[24px]">

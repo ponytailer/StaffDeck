@@ -4,7 +4,12 @@ from fastapi import Depends, HTTPException, Query
 from sqlmodel import Session
 
 from app.db import get_session
-from app.db.models import AgentProfile, User
+from app.agents.branching import (
+    is_open_gallery_resource,
+    is_personal_knowledge_base,
+    personal_knowledge_owner_id,
+)
+from app.db.models import AgentProfile, KnowledgeBase, User
 from app.security.auth import ensure_current_user_tenant, get_current_user
 
 ADMIN_ROLE = "admin"
@@ -99,3 +104,54 @@ def ensure_agent_scope_manager(
 def agent_owned_by_user(row: AgentProfile, user: User) -> bool:
     metadata = row.metadata_json or {}
     return metadata.get("owner_user_id") == user.id
+
+
+def ensure_personal_knowledge_owner(row: object, current_user: object) -> None:
+    """个人知识库只属于创建者。
+
+    个人库刻意不开放给管理员代管（否则「个人」名不副实）；非属主一律回
+    404 而不是 403，避免通过错误码探测别人的知识库是否存在。
+    """
+    tenant_id = getattr(row, "tenant_id", None)
+    if isinstance(tenant_id, str) and tenant_id:
+        ensure_current_user_tenant(tenant_id, current_user)
+    owner_id = personal_knowledge_owner_id(row)
+    user_id = str(getattr(current_user, "id", "") or "").strip()
+    if owner_id and owner_id == user_id:
+        return
+    raise HTTPException(status_code=404, detail="Knowledge base not found")
+
+
+def ensure_knowledge_base_writer(
+    db: Session,
+    tenant_id: str,
+    knowledge_base_id: str,
+    current_user: object,
+) -> None:
+    """知识库写权限判定（内部管理端 + 对外 API 共用）。
+
+    三路并行，与既有语义保持一致：
+    - 个人知识库：仅创建者本人；
+    - 员工私有知识库（``metadata.owner_agent_id``）：该员工的创建者 / 管理员；
+    - 开放广场知识库：租户管理员。
+    """
+    ensure_current_user_tenant(tenant_id, current_user)
+    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
+    if not knowledge_base or knowledge_base.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    if is_personal_knowledge_base(knowledge_base):
+        ensure_personal_knowledge_owner(knowledge_base, current_user)
+        return
+    metadata = (
+        knowledge_base.metadata_json
+        if isinstance(knowledge_base.metadata_json, dict)
+        else {}
+    )
+    owner_agent_id = metadata.get("owner_agent_id")
+    if isinstance(owner_agent_id, str) and owner_agent_id:
+        ensure_agent_scope_manager(db, tenant_id, owner_agent_id, current_user)
+        return
+    if is_open_gallery_resource(db, tenant_id, "knowledge_base", knowledge_base):
+        ensure_open_gallery_admin(tenant_id, current_user)
+        return
+    ensure_open_gallery_admin(tenant_id, current_user)

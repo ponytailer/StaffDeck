@@ -2,6 +2,7 @@ import {
   AuditOutlined,
   CheckOutlined,
   CloseOutlined,
+  CodeOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   DownloadOutlined,
@@ -30,6 +31,7 @@ import {
   normalizeCapabilityScope,
 } from '@/components/CapabilityScopeControl';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import KnowledgeApiDialog from '@/components/knowledge/KnowledgeApiDialog';
 import { DataTable, type DataTableColumn } from '@/components/DataTable';
 import KnowledgeGraphCanvas from '@/components/KnowledgeGraphCanvas';
 import { ModelConfigDropdown } from '@/components/ModelConfigDropdown';
@@ -102,6 +104,8 @@ import type {
 } from '../types';
 
 const KNOWLEDGE_PAGE_SIZE = 10;
+/** 「从我的知识库导入」在来源下拉里的伪 id（个人库没有来源员工）。 */
+const PERSONAL_IMPORT_SOURCE_ID = '__personal__';
 const KNOWLEDGE_SEARCH_MODEL_STORAGE_KEY = 'knowledge-search-model';
 const TERMINAL_KNOWLEDGE_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const KnowledgeGraphVisualization = lazy(() => import('@/components/knowledge/KnowledgeGraphVisualization').then(
@@ -153,6 +157,11 @@ type KnowledgePageProps = {
   currentUser?: EnterpriseAuthUser;
   onLogout?: () => void;
   embedded?: boolean;
+  /**
+   * employee（默认）= 跟随当前数字员工的员工/广场知识库；
+   * personal = 「我的知识库」：不绑定任何数字员工，不跟随员工作用域切换。
+   */
+  mode?: 'employee' | 'personal';
 };
 
 function resolveKnowledgeAgentScope(
@@ -173,7 +182,13 @@ function effectiveKnowledgeAgentId(rows: AgentProfileRead[], agentId: string): s
   return agent && !agent.is_overall ? agent.id : '';
 }
 
-export default function KnowledgeManagePage({ currentUser, onLogout, embedded = false }: KnowledgePageProps = {}) {
+export default function KnowledgeManagePage({
+  currentUser,
+  onLogout,
+  embedded = false,
+  mode = 'employee',
+}: KnowledgePageProps = {}) {
+  const isPersonalScope = mode === 'personal';
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [documents, setDocuments] = useState<KnowledgeDocumentRead[]>([]);
@@ -194,7 +209,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [importOpen, setImportOpen] = useState(false);
-  const [importMode, setImportMode] = useState<'plaza' | 'employee'>('plaza');
+  const [importMode, setImportMode] = useState<'plaza' | 'employee' | 'personal'>('plaza');
   const [importSourceAgentId, setImportSourceAgentId] = useState('');
   const [importSourceKnowledgeBases, setImportSourceKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [importSelectedKnowledgeBaseIds, setImportSelectedKnowledgeBaseIds] = useState<string[]>([]);
@@ -222,6 +237,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchResult, setSearchResult] = useState<KnowledgeSearchResponse | null>(null);
+  // 个人知识库的「API 接入」指引
+  const [apiGuideOpen, setApiGuideOpen] = useState(false);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedSearchModelId, setSelectedSearchModelId] = useState(
     () => window.localStorage.getItem(`${KNOWLEDGE_SEARCH_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
@@ -248,10 +265,35 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
 
   const currentAgent = useMemo(() => agents.find((item) => item.id === agentId), [agents, agentId]);
   const isOverallAgent = !currentAgent || currentAgent.is_overall;
-  const canManageCurrentScope = currentAgent
-    ? canManageEmployeeAgent(currentAgent, currentUser)
-    : isEnterpriseAdmin(currentUser);
+  const canManageCurrentScope = isPersonalScope
+    ? true
+    : currentAgent
+      ? canManageEmployeeAgent(currentAgent, currentUser)
+      : isEnterpriseAdmin(currentUser);
   const effectiveAgentId = currentAgent && !currentAgent.is_overall ? agentId : '';
+  // 读接口的作用域后缀：个人库 mine=1，员工库 agent_id（广场/管理员为空）
+  const listScopeQuery = (scopedAgentId: string = effectiveAgentId) => (
+    isPersonalScope
+      ? '&mine=1'
+      : scopedAgentId
+        ? `&agent_id=${encodeURIComponent(scopedAgentId)}`
+        : ''
+  );
+  // 详情/写接口：个人库由后端按属主判定，不需要带作用域
+  const detailScopeQuery = (scopedAgentId: string = effectiveAgentId) => (
+    isPersonalScope
+      ? ''
+      : scopedAgentId
+        ? `&agent_id=${encodeURIComponent(scopedAgentId)}`
+        : ''
+  );
+  const writeScopeQuery = (scopedAgentId: string = effectiveAgentId) => (
+    isPersonalScope
+      ? ''
+      : scopedAgentId
+        ? `?agent_id=${encodeURIComponent(scopedAgentId)}`
+        : ''
+  );
   const visibleKnowledgeBases = useMemo(
     () => knowledgeBases.filter((item) => !isEmptyDefaultKnowledgeBase(item)),
     [knowledgeBases],
@@ -287,9 +329,17 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     });
   }, [documentSearch, visibleKnowledgeBases]);
 
-  const pageTitle = isOverallAgent ? '知识库广场' : '知识库';
-  const listLabel = isOverallAgent ? '知识库广场列表' : '知识库列表';
-  const listEmptyText = isOverallAgent ? '暂无知识库，点击「新增」创建一个吧' : '当前员工暂无知识库';
+  const pageTitle = isPersonalScope ? '我的知识库' : isOverallAgent ? '知识库广场' : '知识库';
+  const listLabel = isPersonalScope
+    ? '我的知识库列表'
+    : isOverallAgent
+      ? '知识库广场列表'
+      : '知识库列表';
+  const listEmptyText = isPersonalScope
+    ? '暂无个人知识库，点击「新增」创建一个吧'
+    : isOverallAgent
+      ? '暂无知识库，点击「新增」创建一个吧'
+      : '当前员工暂无知识库';
 
   const stats = useMemo(() => ({
     total: kbTotal,
@@ -300,11 +350,21 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
 
 
   useEffect(() => {
+    if (isPersonalScope) {
+      // 个人知识库不跟随员工作用域
+      setAgentScopeLoaded(true);
+      return;
+    }
     void loadAgentScope();
-  }, [currentUser?.id]);
+  }, [currentUser?.id, isPersonalScope]);
 
   useEffect(() => {
     if (!agentScopeLoaded) return;
+    if (isPersonalScope) {
+      clearKnowledgeViewState();
+      void refresh('');
+      return;
+    }
     const resolvedAgentId = resolveKnowledgeAgentScope(agents, currentUser, agentId);
     if (resolvedAgentId !== agentId) {
       clearKnowledgeViewState();
@@ -385,13 +445,14 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   }, [visibleKnowledgeBases, knowledgeBaseFilter]);
 
   useEffect(() => {
+    if (isPersonalScope) return;
     const onScopeChange = (event: Event) => {
       const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
       setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
-  }, []);
+  }, [isPersonalScope]);
 
   function applyResolvedAgentScope(nextAgentId: string) {
     if (nextAgentId === agentId) return;
@@ -437,7 +498,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   }
 
   async function fetchKnowledgeBases(page: number, agentId: string = effectiveAgentId): Promise<KnowledgeBasePage> {
-    const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    const suffix = listScopeQuery(agentId);
     const pageData = await api.get<KnowledgeBasePage>(
       `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}&page=${page}&page_size=${KNOWLEDGE_PAGE_SIZE}`,
     );
@@ -465,13 +526,13 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     preferredDocument: KnowledgeDocumentRead | null = selectedDocument,
   ) {
     if (!agentScopeLoaded) return;
-    if (!isEnterpriseAdmin(currentUser) && !scopedAgentId) {
+    if (!isPersonalScope && !isEnterpriseAdmin(currentUser) && !scopedAgentId) {
       clearKnowledgeViewState();
       return;
     }
     setLoading(true);
     try {
-      const suffix = scopedAgentId ? `&agent_id=${encodeURIComponent(scopedAgentId)}` : '';
+      const suffix = listScopeQuery(scopedAgentId);
       // 选了具体知识库时按该库取数（page_size 拉满，保证自动选中最新文档不漏）；
       // 选「全部」则只取第一页，避免一次拉全量文档把响应拖慢。
       const scopedKbId = knowledgeBaseFilter !== '__all__' ? knowledgeBaseFilter : '';
@@ -521,7 +582,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     try {
       const [rows] = await Promise.all([
         api.get<KnowledgeBucketRead[]>(
-          `/api/enterprise/knowledge/documents/${document.id}/buckets?tenant_id=${TENANT_ID}${effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : ''}`,
+          `/api/enterprise/knowledge/documents/${document.id}/buckets?tenant_id=${TENANT_ID}${detailScopeQuery()}`,
         ),
         loadOkfConcepts(document.knowledge_base_id, false),
       ]);
@@ -539,7 +600,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       return;
     }
     if (showLoading) setOkfLoading(true);
-    const suffix = effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = detailScopeQuery();
     try {
       const rows = await api.get<KnowledgeConceptRead[]>(
         `/api/enterprise/knowledge-bases/${knowledgeBaseId}/okf/concepts?tenant_id=${TENANT_ID}${suffix}`,
@@ -565,7 +626,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
    * 失败静默吞掉：下一轮 tick 会自然重试，不该为一次网络抖动弹错误提示。
    */
   async function refreshDocumentProgress(document: KnowledgeDocumentRead) {
-    const suffix = effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = detailScopeQuery();
     try {
       const fresh = await api.get<KnowledgeDocumentRead>(
         `/api/enterprise/knowledge/documents/${document.id}?tenant_id=${TENANT_ID}${suffix}`,
@@ -607,7 +668,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     // 本地没有该库文档（例如之前在「全部」视图只取了第一页）：按需取该库最新一篇。
     try {
       const page = await api.get<KnowledgeDocumentPage>(
-        `/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : ''}&knowledge_base_id=${encodeURIComponent(knowledgeBaseId)}&page=1&page_size=1`,
+        `/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${listScopeQuery()}&knowledge_base_id=${encodeURIComponent(knowledgeBaseId)}&page=1&page_size=1`,
       );
       const doc = page.items[0] || null;
       setDocuments((prev) => (doc ? [doc, ...prev.filter((item) => item.id !== doc.id)] : prev));
@@ -634,7 +695,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     try {
       const response = await api.post<KnowledgeSearchResponse>('/api/enterprise/knowledge/search', {
         tenant_id: TENANT_ID,
-        agent_id: effectiveAgentId || undefined,
+        ...(isPersonalScope ? { mine: true } : { agent_id: effectiveAgentId || undefined }),
         knowledge_base_ids:
           knowledgeBaseFilter !== '__all__'
             ? [knowledgeBaseFilter]
@@ -655,17 +716,26 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     }
   }
 
-  async function openImportKnowledgeBases(mode: 'plaza' | 'employee' = 'plaza', selectedResourceId?: string) {
+  async function openImportKnowledgeBases(sourceMode: 'plaza' | 'employee' | 'personal' = 'plaza', selectedResourceId?: string) {
     try {
+      setImportMode(sourceMode);
+      setImportSelectedKnowledgeBaseIds([]);
+      setImportOpen(true);
+      if (sourceMode === 'personal') {
+        // 「我的知识库」是个人空间，不依赖任何员工
+        setImportSourceAgentId(PERSONAL_IMPORT_SOURCE_ID);
+        const sourceRows = await loadImportSourcePersonalKnowledgeBases();
+        if (selectedResourceId && sourceRows.some((item) => item.id === selectedResourceId)) {
+          setImportSelectedKnowledgeBaseIds([selectedResourceId]);
+        }
+        return;
+      }
       const agentRows = agents.length ? agents : await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
       setAgents(agentRows);
-      setImportMode(mode);
-      const firstSource = mode === 'plaza'
+      const firstSource = sourceMode === 'plaza'
         ? openGalleryAgentId(agentRows)
         : visibleEmployeeAgents(agentRows, currentUser, { activeOnly: true, excludeAgentId: agentId })[0]?.id || '';
       setImportSourceAgentId(firstSource);
-      setImportSelectedKnowledgeBaseIds([]);
-      setImportOpen(true);
       if (firstSource) {
         const sourceRows = await loadImportSourceKnowledgeBases(firstSource);
         if (selectedResourceId && sourceRows.some((item) => item.id === selectedResourceId)) {
@@ -676,6 +746,22 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       }
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载员工失败');
+    }
+  }
+
+  async function loadImportSourcePersonalKnowledgeBases(): Promise<KnowledgeBaseRead[]> {
+    setImportSourceKnowledgeBases([]);
+    setImportSelectedKnowledgeBaseIds([]);
+    try {
+      const page = await api.get<KnowledgeBasePage>(
+        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}&mine=1&page=1&page_size=200`,
+      );
+      const activeRows = page.items.filter((item) => item.status === 'active');
+      setImportSourceKnowledgeBases(activeRows);
+      return activeRows;
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '加载我的知识库失败');
+      return [];
     }
   }
 
@@ -701,7 +787,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       notify.warning('请先选择一个数字员工');
       return;
     }
-    if (!importSourceAgentId) {
+    const fromPersonal = importMode === 'personal';
+    if (!fromPersonal && !importSourceAgentId) {
       notify.warning(importMode === 'plaza' ? '请选择开放广场' : '请选择来源员工');
       return;
     }
@@ -715,7 +802,9 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
         `/api/enterprise/agents/${agentId}/resources/import`,
         {
           tenant_id: TENANT_ID,
-          source_agent_id: importSourceAgentId,
+          ...(fromPersonal
+            ? { source_personal: true }
+            : { source_agent_id: importSourceAgentId }),
           resource_type: 'knowledge_base',
           resource_ids: importSelectedKnowledgeBaseIds,
         },
@@ -734,11 +823,15 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
 
   function handleCreateAction(key: string) {
     if (key === 'blank') {
-      navigate('/enterprise/knowledge/new');
+      navigate(isPersonalScope ? '/enterprise/knowledge/new?scope=personal' : '/enterprise/knowledge/new');
       return;
     }
     if (key === 'okf') {
       setOkfImportOpen(true);
+      return;
+    }
+    if (key === 'personal') {
+      void openImportKnowledgeBases('personal');
       return;
     }
     if (key === 'plaza') {
@@ -756,7 +849,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       const contentBase64 = await fileToBase64(file);
       await api.post('/api/enterprise/knowledge/okf/import', {
         tenant_id: TENANT_ID,
-        agent_id: effectiveAgentId || undefined,
+        ...(isPersonalScope ? { mine: true } : { agent_id: effectiveAgentId || undefined }),
         knowledge_base_id: selectedKnowledgeBase?.id,
         filename: file.name,
         content_base64: contentBase64,
@@ -776,7 +869,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
       notify.warning('请先选择知识库');
       return;
     }
-    const suffix = effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = detailScopeQuery();
     try {
       const blob = await api.blob(
         `/api/enterprise/knowledge-bases/${targetKnowledgeBase.id}/okf/export?tenant_id=${TENANT_ID}${suffix}`,
@@ -803,7 +896,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     if (targetKnowledgeBase.id !== selectedKnowledgeBase?.id) {
       selectKnowledgeBase(targetKnowledgeBase.id);
     }
-    const suffix = effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = detailScopeQuery();
     setOkfLoading(true);
     try {
       const result = await api.post<{ status: string; issue_count: number; issues: OkfLintIssue[] }>(
@@ -838,7 +931,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
 
   async function saveConcept() {
     if (!editingConcept || !selectedKnowledgeBase) return;
-    const suffix = effectiveAgentId ? `?agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = writeScopeQuery();
     try {
       const next = await api.put<KnowledgeConceptRead>(
         `/api/enterprise/knowledge-bases/${selectedKnowledgeBase.id}/okf/concepts/${conceptPath(editingConcept.concept_id)}${suffix}`,
@@ -870,7 +963,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
 
   async function saveKnowledgeBase() {
     if (!editingKnowledgeBase) return;
-    const suffix = effectiveAgentId ? `?agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = writeScopeQuery();
     try {
       const next = await api.put<KnowledgeBaseRead>(`/api/enterprise/knowledge-bases/${editingKnowledgeBase.id}${suffix}`, {
         tenant_id: TENANT_ID,
@@ -889,7 +982,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   }
 
   async function setKnowledgeBaseStatus(row: KnowledgeBaseRead, active: boolean) {
-    const suffix = effectiveAgentId ? `?agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = writeScopeQuery();
     try {
       const next = await api.put<KnowledgeBaseRead>(`/api/enterprise/knowledge-bases/${row.id}${suffix}`, {
         tenant_id: TENANT_ID,
@@ -911,7 +1004,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     const row = deleteKbTarget;
     if (!row) return;
     const branchMode = !isOverallAgent;
-    const suffix = effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = detailScopeQuery();
     try {
       await api.delete(`/api/enterprise/knowledge-bases/${row.id}?tenant_id=${TENANT_ID}${suffix}`);
       notify.success(branchMode ? '已移除知识库' : '已删除知识库');
@@ -923,7 +1016,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
   }
 
   async function openKnowledgeBaseVersions(row: KnowledgeBaseRead) {
-    const suffix = effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+    const suffix = detailScopeQuery();
     try {
       const versions = await api.get<KnowledgeBaseVersionRead[]>(
         `/api/enterprise/knowledge-bases/${row.id}/versions?tenant_id=${TENANT_ID}${suffix}`,
@@ -1000,7 +1093,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     }
     setContentSaving(true);
     try {
-      const query = effectiveAgentId ? `?agent_id=${encodeURIComponent(effectiveAgentId)}` : '';
+      const query = writeScopeQuery();
       const next = await api.put<KnowledgeDocumentRead>(
         `/api/enterprise/knowledge/documents/${editingDocument.id}${query}`,
         {
@@ -1026,7 +1119,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
     setBucketDraft({ title: row.title, summary: row.summary });
     try {
       const chunks = await api.get<KnowledgeChunkRead[]>(
-        `/api/enterprise/knowledge/buckets/${row.id}/chunks?tenant_id=${TENANT_ID}${effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : ''}`,
+        `/api/enterprise/knowledge/buckets/${row.id}/chunks?tenant_id=${TENANT_ID}${detailScopeQuery()}`,
       );
       setBucketChunks(chunks);
       setChunkDrafts(
@@ -1116,10 +1209,12 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator className="my-[2px] bg-[#eef0f4]" />
-              <DropdownMenuItem variant="destructive" className={MENU_ITEM_DANGER_CLASS} onSelect={() => deleteKnowledgeBase(item)}>
-                <DeleteOutlined />
-                {isOverallAgent ? '删除' : '移除'}
-              </DropdownMenuItem>
+              {!isPersonalScope && (
+                <DropdownMenuItem variant="destructive" className={MENU_ITEM_DANGER_CLASS} onSelect={() => deleteKnowledgeBase(item)}>
+                  <DeleteOutlined />
+                  {isOverallAgent ? '删除' : '移除'}
+                </DropdownMenuItem>
+              )}
             </>
           )}
         </DropdownMenuContent>
@@ -1225,13 +1320,26 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
         onLogout={onLogout}
         userName={currentUser?.username}
         title={pageTitle}
-        description={isOverallAgent
-          ? '维护知识库广场中的知识库、知识图谱与检索调试。'
-          : '维护当前数字员工的知识库、知识图谱与检索调试。'}
+        description={isPersonalScope
+          ? '维护你的个人知识库、知识图谱与检索调试；可导入到数字员工，也可作为外部系统问答的依据。'
+          : isOverallAgent
+            ? '维护知识库广场中的知识库、知识图谱与检索调试。'
+            : '维护当前数字员工的知识库、知识图谱与检索调试。'}
       />
       )}
 
       <div className="mt-[20px] mb-[16px] flex flex-wrap items-center justify-end gap-[12px]">
+        {isPersonalScope && (
+          <UIButton
+            variant="outline"
+            onClick={() => setApiGuideOpen(true)}
+            className={OUTLINE_ACTION_BUTTON_CLASS}
+            data-guide-target="knowledge-api"
+          >
+            <CodeOutlined className="size-[14px]" />
+            API 接入
+          </UIButton>
+        )}
         <UIButton
           variant="outline"
           onClick={() => void refresh()}
@@ -1257,6 +1365,12 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
                 <FileMarkdownOutlined />
                 导入知识库备份包
               </DropdownMenuItem>
+              {!isOverallAgent && !isPersonalScope && (
+                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => handleCreateAction('personal')}>
+                  <DownloadOutlined />
+                  从我的知识库导入
+                </DropdownMenuItem>
+              )}
               {!isOverallAgent && (
                 <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => handleCreateAction('plaza')}>
                   <DownloadOutlined />
@@ -1409,12 +1523,18 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
         open={importOpen}
         loading={importLoading}
         icon={<DatabaseOutlined />}
-        title={importMode === 'plaza' ? '从广场复制知识库' : '从数字员工复制知识库'}
+        title={importMode === 'plaza'
+          ? '从广场复制知识库'
+          : importMode === 'personal'
+            ? '从我的知识库导入'
+            : '从数字员工复制知识库'}
         sourcePlaceholder={importMode === 'plaza' ? '选择开放广场' : '选择来源员工'}
         sources={importMode === 'plaza'
           ? openGalleryImportSourceOptions(agents, '开放广场')
-          : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId })
-            .map((item) => ({ value: item.id, label: item.name }))}
+          : importMode === 'personal'
+            ? [{ value: PERSONAL_IMPORT_SOURCE_ID, label: '我的知识库' }]
+            : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId })
+              .map((item) => ({ value: item.id, label: item.name }))}
         sourceId={importSourceAgentId}
         itemsLabel="选择知识库"
         items={importSourceKnowledgeBases.map((item) => ({
@@ -1430,10 +1550,16 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
         emptyText="没有可复制的知识库"
         note={importMode === 'plaza'
           ? '从开放广场复制可用知识库；不可复制内容不会出现在列表。'
-          : '从数字员工复制可用知识库；不可见内容不会出现在列表。'}
+          : importMode === 'personal'
+            ? '从「我的知识库」导入一份员工专属副本；后续改动互不影响，可重复导入覆盖。'
+            : '从数字员工复制可用知识库；不可见内容不会出现在列表。'}
         submitText="复制"
         onSourceChange={(value) => {
           setImportSourceAgentId(value);
+          if (importMode === 'personal') {
+            void loadImportSourcePersonalKnowledgeBases();
+            return;
+          }
           void loadImportSourceKnowledgeBases(value);
         }}
         onSelectedChange={setImportSelectedKnowledgeBaseIds}
@@ -1813,6 +1939,13 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
         </div>
       </KDialog>
 
+      <KnowledgeApiDialog
+        open={apiGuideOpen}
+        onClose={() => setApiGuideOpen(false)}
+        knowledgeBaseId={selectedKnowledgeBase?.id}
+        knowledgeBaseName={selectedKnowledgeBase?.name}
+      />
+
       <ConfirmDialog
         open={Boolean(deleteKbTarget)}
         onOpenChange={(open) => !open && setDeleteKbTarget(null)}
@@ -1829,11 +1962,14 @@ export default function KnowledgeManagePage({ currentUser, onLogout, embedded = 
 
 export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // ?scope=personal：在「我的知识库」（个人空间）里新建，不跟随数字员工
+  const isPersonalScope = searchParams.get('scope') === 'personal';
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('general');
   const [jobs, setJobs] = useState<Record<string, KnowledgeIngestJobRead>>({});
   const [agentId, setAgentId] = useState(readEmployeeScope);
-  const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
+  const [agentScopeLoaded, setAgentScopeLoaded] = useState(isPersonalScope);
   const [checkedDiscoveryJobIds, setCheckedDiscoveryJobIds] = useState<string[]>([]);
   const [pendingDiscoveries, setPendingDiscoveries] = useState<KnowledgeDiscoveryRead[]>([]);
   const [discoveryModalOpen, setDiscoveryModalOpen] = useState(false);
@@ -1853,8 +1989,23 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
     () => knowledgeBases.filter((item) => !isEmptyDefaultKnowledgeBase(item)),
     [knowledgeBases],
   );
+  const listScopeSuffix = isPersonalScope
+    ? '&mine=1'
+    : agentId
+      ? `&agent_id=${encodeURIComponent(agentId)}`
+      : '';
+  const writeScopeSuffix = isPersonalScope
+    ? '?mine=1'
+    : agentId
+      ? `?agent_id=${encodeURIComponent(agentId)}`
+      : '';
+  const backTarget = isPersonalScope ? '/enterprise/agents#knowledge' : '/enterprise/knowledge';
 
   useEffect(() => {
+    if (isPersonalScope) {
+      setAgentScopeLoaded(true);
+      return;
+    }
     let active = true;
     api
       .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
@@ -1878,22 +2029,23 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
     return () => {
       active = false;
     };
-  }, [currentUser?.id]);
+  }, [currentUser?.id, isPersonalScope]);
 
   useEffect(() => {
     if (!agentScopeLoaded) return;
     void refreshKnowledgeBases();
     void loadRecentJobs();
-  }, [agentId, agentScopeLoaded]);
+  }, [agentId, agentScopeLoaded, isPersonalScope]);
 
   useEffect(() => {
+    if (isPersonalScope) return;
     const onScopeChange = (event: Event) => {
       const next = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
       setAgentId(next && !isTeamScope(next) ? next : readEmployeeScope());
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
-  }, []);
+  }, [isPersonalScope]);
 
   useEffect(() => {
     if (activeJobs.length === 0) return;
@@ -1901,7 +2053,7 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
       activeJobs.forEach((job) => {
         void api
           .get<KnowledgeIngestJobRead>(
-            `/api/enterprise/knowledge/jobs/${job.id}?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`,
+            `/api/enterprise/knowledge/jobs/${job.id}?tenant_id=${TENANT_ID}${listScopeSuffix}`,
           )
           .then((next) => {
             setJobs((prev) => ({ ...prev, [next.id]: next }));
@@ -1926,14 +2078,13 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   }, [sortedJobs, checkedDiscoveryJobIds, agentId]);
 
   async function refreshKnowledgeBases() {
-    if (!isEnterpriseAdmin(currentUser) && !agentId) {
+    if (!isPersonalScope && !isEnterpriseAdmin(currentUser) && !agentId) {
       setKnowledgeBases([]);
       return;
     }
     try {
-      const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
       const page = await api.get<KnowledgeBasePage>(
-        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}&page=1&page_size=200`,
+        `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${listScopeSuffix}&page=1&page_size=200`,
       );
       setKnowledgeBases(page.items);
     } catch (error) {
@@ -1942,14 +2093,13 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   }
 
   async function loadRecentJobs() {
-    if (!isEnterpriseAdmin(currentUser) && !agentId) {
+    if (!isPersonalScope && !isEnterpriseAdmin(currentUser) && !agentId) {
       setJobs({});
       return;
     }
     try {
-      const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
       const rows = await api.get<KnowledgeIngestJobRead[]>(
-        `/api/enterprise/knowledge/jobs?tenant_id=${TENANT_ID}${suffix}&limit=8`,
+        `/api/enterprise/knowledge/jobs?tenant_id=${TENANT_ID}${listScopeSuffix}&limit=8`,
       );
       setJobs(Object.fromEntries(rows.map((job) => [job.id, job])));
     } catch {
@@ -1958,14 +2108,13 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   }
 
   async function uploadFile(file: File) {
-    if (!isEnterpriseAdmin(currentUser) && !agentId) {
+    if (!isPersonalScope && !isEnterpriseAdmin(currentUser) && !agentId) {
       notify.warning('请先选择一个数字员工');
       return;
     }
     try {
       const contentBase64 = await fileToBase64(file);
-      const suffix = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
-      const job = await api.post<KnowledgeIngestJobRead>(`/api/enterprise/knowledge/documents${suffix}`, {
+      const job = await api.post<KnowledgeIngestJobRead>(`/api/enterprise/knowledge/documents${writeScopeSuffix}`, {
         tenant_id: TENANT_ID,
         filename: file.name,
         title: file.name.replace(/\.[^.]+$/, ''),
@@ -1999,8 +2148,7 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
   async function loadDiscoveriesForJob(job: KnowledgeIngestJobRead) {
     setCheckedDiscoveryJobIds((prev) => (prev.includes(job.id) ? prev : [...prev, job.id]));
     try {
-      const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
-      const rows = await api.get<KnowledgeDiscoveryRead[]>(`/api/enterprise/knowledge/discoveries?tenant_id=${TENANT_ID}${suffix}`);
+      const rows = await api.get<KnowledgeDiscoveryRead[]>(`/api/enterprise/knowledge/discoveries?tenant_id=${TENANT_ID}${listScopeSuffix}`);
       const next = rows.filter(
         (item) =>
           item.status === 'pending' &&
@@ -2045,11 +2193,13 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
       <div className="knowledge-floating-shell">
         <div className="knowledge-floating-head">
           <div>
-            <span className="section-kicker">知识库 / 新建</span>
+            <span className="section-kicker">
+              {isPersonalScope ? '我的知识库 / 新建' : '知识库 / 新建'}
+            </span>
             <h3 className="my-[4px] text-[20px] font-semibold text-foreground">新建知识库</h3>
             <span className="text-[13px] text-[#858b9c]">上传业务文档后，系统会先生成知识图谱，再刷新目录索引、引用来源与自发现建议。</span>
           </div>
-            <UIButton variant="outline" onClick={() => navigate('/enterprise/knowledge')}>
+            <UIButton variant="outline" onClick={() => navigate(backTarget)}>
               <RightOutlined />
               返回
             </UIButton>
@@ -2061,7 +2211,7 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
               <strong className="block text-[14px] font-semibold text-foreground">上传文档即创建知识库</strong>
               <span className="text-[13px] text-[#858b9c]">一个文件对应一份独立知识库；回到知识库后可查看文档卡片、知识索引和知识图谱。</span>
             </div>
-            <UIButton variant="outline" onClick={() => navigate('/enterprise/knowledge')}>管理已有知识库</UIButton>
+            <UIButton variant="outline" onClick={() => navigate(backTarget)}>管理已有知识库</UIButton>
           </div>
         {visibleKnowledgeBases.length > 0 && (
           <div className="knowledge-base-target-strip">
@@ -2079,11 +2229,13 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
             ))}
           </div>
         )}
-        <CapabilityScopeControl
-          value={capabilityScope}
-          onChange={setCapabilityScope}
-          resourceType="knowledge_base"
-        />
+        {!isPersonalScope && (
+          <CapabilityScopeControl
+            value={capabilityScope}
+            onChange={setCapabilityScope}
+            resourceType="knowledge_base"
+          />
+        )}
         <FileDropzone
           multiple
           accept=".doc,.docx,.txt,.md,.markdown,.html,.htm,.pdf"

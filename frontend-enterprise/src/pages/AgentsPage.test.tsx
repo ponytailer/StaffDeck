@@ -188,6 +188,47 @@ describe('AgentsPage 页面级 tab', () => {
     expect(await screen.findByText('小艾')).toBeTruthy();
   });
 
+  it('tab 顺序为 数字员工 / 技能管理 / 知识库 / 工具管理', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      return jsonResponse([]);
+    }));
+    renderAgentsPage();
+
+    await screen.findByText('小艾');
+    const labels = screen.getAllByRole('tab').map((tab) => tab.textContent?.trim());
+    // 页面级 tab 在前，员工筛选 tab 紧随其后
+    expect(labels.slice(0, 4)).toEqual(['数字员工', '技能管理', '知识库', '工具管理']);
+    const importTabIndex = labels.indexOf('知识库');
+    expect(importTabIndex).toBeLessThan(labels.indexOf('工具管理'));
+  });
+
+  it('hash 带 #knowledge 时默认落在个人知识库 tab', async () => {
+    window.location.hash = '#knowledge';
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/knowledge-bases')) {
+        return jsonResponse({
+          items: [],
+          total: 0,
+          page: 1,
+          page_size: 10,
+          total_pages: 0,
+          summary: { active: 0, archived: 0, documents: 0 },
+        });
+      }
+      return jsonResponse([]);
+    }));
+    renderAgentsPage();
+
+    expect(await screen.findByText('我的知识库列表')).toBeTruthy();
+    // 个人知识库不跟随员工，花名册区域不渲染
+    expect(screen.queryByText('小艾')).toBeNull();
+    expect(screen.queryByText('员工总数')).toBeNull();
+    window.location.hash = '';
+  });
+
   it('hash 带 #skills 时默认落在技能管理 tab', async () => {
     window.location.hash = '#skills';
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => jsonResponse([])));

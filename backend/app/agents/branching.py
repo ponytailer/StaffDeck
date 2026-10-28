@@ -5,6 +5,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import type_coerce
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import load_only
 from sqlmodel import Session, select
 
@@ -38,6 +40,9 @@ from app.llm.model_config_resolver import (
 DEFAULT_AGENT_ROLES = ("default", "router", "step", "response", "general_skill")
 OPEN_GALLERY_SCOPE = "open_gallery"
 AGENT_PRIVATE_SCOPE = "agent_private"
+# 个人知识库：不绑定任何数字员工，也不进开放广场。属主独占读写，
+# 员工侧只能通过显式「导入」拿到一份分支副本。
+PERSONAL_SCOPE = "personal"
 STANDARD_CREATOR_METADATA_KEYS = (
     "creator_name",
     "created_by",
@@ -174,6 +179,90 @@ def agent_private_metadata(agent_id: str, extra: dict[str, Any] | None = None) -
     metadata["owner_agent_id"] = agent_id
     metadata["created_from_agent"] = True
     return metadata
+
+
+def personal_knowledge_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """个人知识库的归属标记。
+
+    与 ``open_gallery_metadata`` / ``agent_private_metadata`` 互斥：个人库既没有
+    整体智能体绑定（所以广场列表、员工检索都不会看到它），也没有 ``owner_agent_id``
+    （所以不会被当成某个员工的分支）。属主通过 ``owner_user_id`` 判定。
+    """
+    metadata = dict(extra or {})
+    metadata["scope"] = PERSONAL_SCOPE
+    metadata["visibility"] = PERSONAL_SCOPE
+    metadata["personal"] = True
+    metadata.pop("owner_agent_id", None)
+    metadata.pop("created_from_agent", None)
+    metadata.pop("created_from_upload", None)
+    return metadata
+
+
+def knowledge_metadata_is_personal(metadata: object) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    return (
+        metadata.get("scope") == PERSONAL_SCOPE
+        or metadata.get("visibility") == PERSONAL_SCOPE
+        or metadata.get("personal") is True
+    )
+
+
+def is_personal_knowledge_base(row: object) -> bool:
+    return knowledge_metadata_is_personal(getattr(row, "metadata_json", None))
+
+
+def personal_knowledge_owner_id(row: object) -> str:
+    metadata = getattr(row, "metadata_json", None)
+    if not isinstance(metadata, dict):
+        return ""
+    for key in ("owner_user_id", "created_by_user_id"):
+        value = metadata.get(key)
+        if _valid_creator_value(value):
+            return str(value).strip()
+    return ""
+
+
+def personal_knowledge_base_rows(
+    db: Session,
+    tenant_id: str,
+    owner_user_id: str,
+    include_inactive: bool = False,
+) -> list[KnowledgeBase]:
+    """当前用户的个人知识库行（不绑定员工、不进广场）。
+
+    创建者过滤下沉到 SQL：``metadata_json`` 声明为 JSON 列，这里用 ``type_coerce``
+    临时 coerce 成 JSONB 再取 ``[key].astext``，编译为 ``metadata_json ->> 'key'``
+    （PG 原生；SQLite >= 3.38 也支持），与 ``general_skills._list_my_general_skills``
+    同一写法。``visibility`` 标记仍在 Python 侧二次判定，避免历史脏数据误入。
+    """
+    owner_user_id = str(owner_user_id or "").strip()
+    if not owner_user_id:
+        return []
+    metadata_column = type_coerce(KnowledgeBase.metadata_json, JSONB)
+    owner_keys = metadata_column["owner_user_id"].astext
+    statement = select(KnowledgeBase).where(
+        KnowledgeBase.tenant_id == tenant_id,
+        KnowledgeBase.status != "deleted",
+        owner_keys == owner_user_id,
+    )
+    if not include_inactive:
+        statement = statement.where(KnowledgeBase.status == "active")
+    rows = db.exec(statement.order_by(KnowledgeBase.updated_at.desc())).all()
+    return [row for row in rows if is_personal_knowledge_base(row)]
+
+
+def personal_knowledge_base_versions(
+    db: Session,
+    tenant_id: str,
+    owner_user_id: str,
+    include_inactive: bool = False,
+) -> dict[str, KnowledgeBaseVersion]:
+    """个人知识库「当前版本」映射，形状与 ``visible_knowledge_base_versions`` 一致。"""
+    return {
+        row.id: ensure_knowledge_base_version(db, row)
+        for row in personal_knowledge_base_rows(db, tenant_id, owner_user_id, include_inactive)
+    }
 
 
 def mark_resource_open_gallery(
@@ -955,6 +1044,9 @@ def _apply_knowledge_version_metadata(
     merged = {**(version.metadata_json or {}), **metadata_json}
     if agent and not agent.is_overall:
         version.metadata_json = _agent_private_metadata_for(db, tenant_id, agent.id, merged)
+    elif is_personal_knowledge_base(version):
+        # 个人知识库的 trunk 版本：不能被打上 open_gallery 标记（它没有广场绑定）
+        version.metadata_json = personal_knowledge_metadata(merged)
     else:
         version.metadata_json = open_gallery_metadata(merged)
     version.updated_at = utc_now()

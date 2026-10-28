@@ -40,6 +40,7 @@ from app.agents.branching import (
     get_overall_agent,
     is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
+    personal_knowledge_base_rows,
     promote_branch_to_overall,
     promote_knowledge_branch_to_overall,
     rollback_branch,
@@ -82,7 +83,12 @@ from app.public_api.credential_profiles import (
     agent_access_for_scopes,
     scopes_for_agent_access,
 )
-from app.security.auth import ShareScope, get_current_user, get_share_scope
+from app.security.auth import (
+    ShareScope,
+    ensure_current_user_tenant,
+    get_current_user,
+    get_share_scope,
+)
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
@@ -641,15 +647,19 @@ def _import_agent_resources_once(
     current_user: User | object,
 ) -> dict[str, object]:
     target_agent = _get_agent(db, request.tenant_id, agent_id)
-    source_agent = _get_agent(db, request.tenant_id, request.source_agent_id)
     user = current_user
     _ensure_can_import_to_agent(target_agent, user)
-    _ensure_can_copy_from_agent(source_agent, user)
-    if source_agent.id == target_agent.id:
-        raise HTTPException(status_code=400, detail="Source and target agent cannot be the same")
     resource_ids = _dedupe_ids(request.resource_ids)
     if not resource_ids:
         raise HTTPException(status_code=400, detail="No resources selected")
+    if request.source_personal:
+        return _import_personal_knowledge_once(
+            db, request, resource_ids, target_agent, user
+        )
+    source_agent = _get_agent(db, request.tenant_id, request.source_agent_id)
+    _ensure_can_copy_from_agent(source_agent, user)
+    if source_agent.id == target_agent.id:
+        raise HTTPException(status_code=400, detail="Source and target agent cannot be the same")
     imported: list[dict[str, object]] = []
     missing: list[dict[str, str]] = []
     for identifier in resource_ids:
@@ -1575,10 +1585,73 @@ def _import_resource_to_overall(
         promote_knowledge_branch_to_overall(db, tenant_id, source_agent.id, resolved.id)
 
 
+def _import_personal_knowledge_once(
+    db: Session,
+    request: AgentResourceImportRequest,
+    resource_ids: list[str],
+    target_agent: AgentProfile,
+    user: User | object,
+) -> dict[str, object]:
+    """把「我的个人知识库」导入到指定员工。
+
+    个人库不属于任何员工（也没有绑定行），所以没有 source agent 可参考：
+    这里直接复用 ``_upsert_imported_resource_binding`` 建立员工私有绑定 + 分支，
+    分支 base/head 会 pin 到个人库当前 trunk 版本（与从广场复制一致）。
+    """
+    if request.resource_type != "knowledge_base":
+        raise HTTPException(
+            status_code=400, detail="Personal scope only supports knowledge_base import"
+        )
+    if not isinstance(user, User):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    ensure_current_user_tenant(request.tenant_id, user)
+    personal_rows = {
+        row.id: row
+        for row in personal_knowledge_base_rows(
+            db, request.tenant_id, user.id, include_inactive=True
+        )
+    }
+    imported: list[dict[str, object]] = []
+    missing: list[dict[str, str]] = []
+    for identifier in resource_ids:
+        knowledge_base = personal_rows.get(identifier)
+        if not knowledge_base:
+            missing.append({"resource_id": identifier, "reason": "resource_not_found"})
+            continue
+        if knowledge_base.status != "active":
+            missing.append({"resource_id": identifier, "reason": "archived_in_personal_scope"})
+            continue
+        resolved = _upsert_imported_resource_binding(
+            db,
+            request.tenant_id,
+            "",  # 个人库没有 source 分支
+            target_agent,
+            request.resource_type,
+            knowledge_base,
+            None,
+        )
+        imported.append(
+            {
+                "resource_type": request.resource_type,
+                "resource_id": resolved.id,
+                "display_id": _resource_display_id(request.resource_type, resolved),
+                "name": getattr(resolved, "name", resolved.id),
+            }
+        )
+    db.commit()
+    return {
+        "status": "imported",
+        "target_agent_id": target_agent.id,
+        "source_personal": True,
+        "imported": imported,
+        "missing": missing,
+    }
+
+
 def _upsert_imported_resource_binding(
     db: Session,
     tenant_id: str,
-    source_agent: AgentProfile,
+    source_agent: AgentProfile | str,
     target_agent: AgentProfile,
     resource_type: str,
     resolved: AgentResource,
@@ -1620,9 +1693,22 @@ def _upsert_imported_resource_binding(
             )
         )
     if resource_type == "skill" and isinstance(resolved, Skill):
-        _copy_or_update_skill_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
+        _copy_or_update_skill_branch(
+            db,
+            tenant_id,
+            source_agent.id if isinstance(source_agent, AgentProfile) else "",
+            target_agent.id,
+            resolved,
+        )
     elif resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
-        _copy_or_update_knowledge_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
+        # 个人知识库导入时 source_agent 传空串：没有 source 分支 → 分支 pin 到 trunk 当前版本
+        _copy_or_update_knowledge_branch(
+            db,
+            tenant_id,
+            source_agent.id if isinstance(source_agent, AgentProfile) else "",
+            target_agent.id,
+            resolved,
+        )
     return resolved
 
 
