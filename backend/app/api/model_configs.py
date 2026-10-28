@@ -54,6 +54,8 @@ router = APIRouter(
 )
 
 MAX_OUTPUT_TOKENS_LIMIT = 131072
+AUTO_BALANCED_MODEL = "auto/balanced"
+AUTO_BALANCED_MAX_OUTPUT_TOKENS = 131072
 
 MODEL_VERIFICATION_DEADLINE_SECONDS = 90.0
 MODEL_VERIFICATION_PROBES = (
@@ -191,7 +193,8 @@ def create_model_config(
     if not request.api_key:
         raise HTTPException(status_code=422, detail="MODEL_API_KEY_REQUIRED")
     validate_model_base_url(request.base_url)
-    _validate_sampling(protocol, request.temperature, request.max_output_tokens)
+    max_output_tokens = _effective_max_output_tokens(request.model, request.max_output_tokens)
+    _validate_sampling(protocol, request.temperature, max_output_tokens)
     options = _request_protocol_options(request.protocol_options, protocol)
     extra_body = _request_extra_body(request.extra_body, protocol)
     row = ModelConfig(
@@ -204,7 +207,7 @@ def create_model_config(
         api_key_encrypted=encrypt_secret(request.api_key),
         model=request.model,
         temperature=request.temperature,
-        max_output_tokens=request.max_output_tokens,
+        max_output_tokens=max_output_tokens,
         extra_body_json=extra_body,
         custom_headers_json=_request_custom_headers(request.custom_headers),
         protocol_options_json={protocol.value: options},
@@ -256,11 +259,13 @@ def update_model_config(
         else ModelApiProtocol(row.api_protocol)
     )
     target_temperature = request.temperature if request.temperature is not None else row.temperature
+    target_model = request.model if request.model is not None else row.model
     target_tokens = (
         request.max_output_tokens
         if request.max_output_tokens is not None
         else row.max_output_tokens
     )
+    target_tokens = _effective_max_output_tokens(target_model, target_tokens)
     _validate_sampling(protocol, target_temperature, target_tokens)
     if request.base_url is not None:
         validate_model_base_url(request.base_url)
@@ -288,10 +293,11 @@ def update_model_config(
             # 自定义请求头会改变出站请求，与 base_url 同等安全等级
             security_changed = True
 
-    for field in ("name", "base_url", "model", "temperature", "max_output_tokens"):
+    for field in ("name", "base_url", "model", "temperature"):
         value = getattr(request, field)
         if value is not None:
             setattr(row, field, value)
+    row.max_output_tokens = target_tokens
     row.api_protocol = protocol.value
     row.provider = LEGACY_OPENAI_PROVIDER
     if request.api_key not in {None, ""}:
@@ -750,6 +756,14 @@ def _request_custom_headers(custom_headers: dict | None) -> dict:
         if not isinstance(value, (str, int, float)) or isinstance(value, bool):
             raise HTTPException(status_code=422, detail="MODEL_CUSTOM_HEADERS_INVALID")
     return {str(key).strip(): str(value) for key, value in custom_headers.items()}
+
+
+def _effective_max_output_tokens(model: str | None, max_output_tokens: int) -> int:
+    # auto/balanced 是网关聚合模型，上游硬上限为 131072。历史客户端可能仍提交
+    # 500000 等大值，这里做兼容收敛，避免明明能创建却被 422 挡住。
+    if str(model or "").strip() == AUTO_BALANCED_MODEL:
+        return min(max_output_tokens, AUTO_BALANCED_MAX_OUTPUT_TOKENS)
+    return max_output_tokens
 
 
 def _validate_sampling(

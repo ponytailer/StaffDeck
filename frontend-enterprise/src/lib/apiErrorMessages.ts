@@ -8,7 +8,7 @@ const API_ERROR_MESSAGES: Record<string, string> = {
   MODEL_CONFIG_VERIFICATION_REQUIRED: '请先完成模型测试，再启用或设为默认',
   MODEL_DEFAULT_CONFLICT: '默认模型状态已变化，请刷新后重试',
   MODEL_EXTRA_BODY_UNSUPPORTED: '当前 API 协议不支持额外请求参数',
-  MODEL_MAX_OUTPUT_TOKENS_INVALID: 'Max Tokens 必须大于 0',
+  MODEL_MAX_OUTPUT_TOKENS_INVALID: 'Max Tokens 必须在 1 ~ 131072 之间',
   MODEL_PROTOCOL_OPTIONS_CONFLICT: '模型协议参数与额外请求参数冲突，请分别配置',
   MODEL_PROTOCOL_OPTIONS_INVALID: '模型协议选项无效，请检查 API 协议与协议参数',
   MODEL_PROTOCOL_UNSUPPORTED: '当前 API 协议不受支持',
