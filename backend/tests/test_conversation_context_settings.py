@@ -8,6 +8,7 @@
 from app.core.base.conversation_context import (
     COMPACTION_TRIGGER_RATIO,
     DEFAULT_CONTEXT_TOKEN_BUDGET,
+    MAX_CONTEXT_TOKEN_BUDGET,
     ConversationContextSettings,
 )
 
@@ -65,3 +66,15 @@ def test_zero_budget_does_not_trigger_compaction_on_small_talk() -> None:
 
     assert result["metadata"]["compacted_now"] is False
     assert result["metadata"]["token_budget"] == DEFAULT_CONTEXT_TOKEN_BUDGET
+
+
+def test_one_million_budget_is_not_clamped() -> None:
+    """1M 上下文模型：预算要到得了 1,048,576，不能被运行时的旧上限静默截断。"""
+
+    settings = ConversationContextSettings(token_budget=MAX_CONTEXT_TOKEN_BUDGET).normalized()
+
+    assert MAX_CONTEXT_TOKEN_BUDGET == 1_048_576
+    assert settings.token_budget == MAX_CONTEXT_TOKEN_BUDGET
+
+    oversized = ConversationContextSettings(token_budget=MAX_CONTEXT_TOKEN_BUDGET + 1).normalized()
+    assert oversized.token_budget == MAX_CONTEXT_TOKEN_BUDGET

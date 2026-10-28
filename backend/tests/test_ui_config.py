@@ -27,6 +27,18 @@ def test_runtime_settings_action_limit_matches_backend_contract() -> None:
         UIConfigUpdateRequest(tenant_id="tenant_demo", agent_loop_max_actions=101)
 
 
+def test_context_token_budget_accepts_one_million_window() -> None:
+    """1M 上下文模型：上限放宽到 1,048,576，超过才拒绝。"""
+
+    request = UIConfigUpdateRequest(tenant_id="tenant_demo", context_token_budget=1_048_576)
+    assert request.context_token_budget == 1_048_576
+
+    with pytest.raises(ValidationError):
+        UIConfigUpdateRequest(tenant_id="tenant_demo", context_token_budget=1_048_577)
+    with pytest.raises(ValidationError):
+        UIConfigUpdateRequest(tenant_id="tenant_demo", context_token_budget=511)
+
+
 def test_context_runtime_settings_validate_related_limits() -> None:
     with pytest.raises(ValidationError, match="不能超过上下文预算"):
         UIConfigUpdateRequest(

@@ -12,6 +12,9 @@ import ScheduledTaskMonitorTab from './runtime-settings/ScheduledTaskMonitorTab'
 
 type AdminTab = 'settings' | 'monitor';
 
+/** 上下文预算上限：与后端 MAX_CONTEXT_TOKEN_BUDGET 对齐（1M 上下文模型留满额）。 */
+const MAX_CONTEXT_TOKEN_BUDGET = 1_048_576;
+
 const ADMIN_TABS: { value: AdminTab; label: string }[] = [
   { value: 'settings', label: '运行设置' },
   { value: 'monitor', label: '任务监控' },
@@ -254,8 +257,8 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
                 当估算上下文达到预算 × 触发比例时，系统会把较早对话压缩为长期与近期摘要，并保留指定的最近轮次。数值越大，历史保留越完整，但模型输入成本也越高。
               </div>
               <div className="grid gap-[14px] md:grid-cols-2">
-                <LabeledField label="上下文 Token 预算" hint="完整会话上下文的目标上限，范围 512–262144。">
-                  <Input type="number" min={512} max={262144} step={512} value={form.context_token_budget} onChange={(event) => update({ context_token_budget: event.target.value })} />
+                <LabeledField label="上下文 Token 预算" hint={`完整会话上下文的目标上限，范围 512–${MAX_CONTEXT_TOKEN_BUDGET}。`}>
+                  <Input type="number" min={512} max={MAX_CONTEXT_TOKEN_BUDGET} step={512} value={form.context_token_budget} onChange={(event) => update({ context_token_budget: event.target.value })} />
                 </LabeledField>
                 <LabeledField label="压缩触发比例" hint="达到预算的这个比例后开始压缩，范围 0.10–0.95。">
                   <Input type="number" min={0.1} max={0.95} step={0.05} value={form.context_compaction_trigger_ratio} onChange={(event) => update({ context_compaction_trigger_ratio: event.target.value })} />
@@ -342,8 +345,8 @@ export function validateContextSettings(form: UiConfigForm): string | null {
   if (!integerValues.every(Number.isInteger)) {
     return 'Token 预算和保留轮数必须是整数';
   }
-  if (tokenBudget < 512 || tokenBudget > 262_144) {
-    return '上下文 Token 预算必须在 512–262144 之间';
+  if (tokenBudget < 512 || tokenBudget > MAX_CONTEXT_TOKEN_BUDGET) {
+    return `上下文 Token 预算必须在 512–${MAX_CONTEXT_TOKEN_BUDGET} 之间`;
   }
   if (triggerRatio < 0.1 || triggerRatio > 0.95) {
     return '压缩触发比例必须在 0.10–0.95 之间';

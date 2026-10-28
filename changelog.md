@@ -4,6 +4,7 @@
 
 ## 202610 w4
 
+- **Improve**: 上下文 Token 预算上限 262,144 → **1,048,576**（对齐 1M 上下文模型）；前端提示/校验与后端字段校验、运行时归一化共用同一个常量，不再出现「API 放宽、运行时仍截断」
 - **Fix**: 搜索框聚焦时出现「左右两条竖线」——岛焦点环（未分层 CSS）压过了输入框自带的 `outline-none`，又被复合搜索框的 `overflow-hidden` 裁掉了上下两边；现在显式写了 `outline-none` 的输入框不再在岛内画环，焦点提示回到容器的深色边框
 - **New**: 个人知识库（不再强绑数字员工）——「我的数字员工」新增「知识库」tab，可独立维护 / 下线（只允许下线，保证外部引用稳定），并支持「从我的知识库导入」到任一数字员工
 - **New**: 个人知识库页「API 接入」指引（对齐 OCR 助手样式）：账号级密钥 + `POST /v1/knowledge-bases/{kb_id}:search` 端点 + cURL/Python/Node 示例，接入信息由 `GET /api/enterprise/knowledge-bases/api-access` 下发

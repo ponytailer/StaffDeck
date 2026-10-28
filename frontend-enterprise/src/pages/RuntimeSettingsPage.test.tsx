@@ -30,6 +30,17 @@ describe('runtime context settings validation', () => {
     expect(validateContextSettings(validForm)).toBeNull();
   });
 
+  it('accepts a 1M context budget and rejects anything above it', () => {
+    expect(validateContextSettings({
+      ...validForm,
+      context_token_budget: String(1_048_576),
+    })).toBeNull();
+    expect(validateContextSettings({
+      ...validForm,
+      context_token_budget: String(1_048_577),
+    })).toBe('上下文 Token 预算必须在 512–1048576 之间');
+  });
+
   it('rejects summary budgets larger than the context budget', () => {
     expect(validateContextSettings({
       ...validForm,

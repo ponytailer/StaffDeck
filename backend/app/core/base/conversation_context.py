@@ -7,6 +7,10 @@ from typing import Any
 
 
 DEFAULT_CONTEXT_TOKEN_BUDGET = 32_000
+# 上下文预算的硬上限：主流 1M 上下文模型（1,048,576 tokens）留满额。
+# 与 app/api/ui_config.py 的字段校验共用，避免两处漂移（曾出现 API 放宽、
+# 运行时仍 clamp 回 256K 的静默截断）。
+MAX_CONTEXT_TOKEN_BUDGET = 1_048_576
 COMPACTION_TRIGGER_RATIO = 0.70
 RECENT_ROUND_LIMIT = 6
 LONG_SUMMARY_TOKEN_BUDGET = 4_000
@@ -37,7 +41,7 @@ class ConversationContextSettings:
         token_budget = (
             DEFAULT_CONTEXT_TOKEN_BUDGET
             if raw_budget <= 0
-            else min(raw_budget, 262_144)
+            else min(raw_budget, MAX_CONTEXT_TOKEN_BUDGET)
         )
         raw_long_budget = int(self.long_summary_token_budget)
         long_budget = (

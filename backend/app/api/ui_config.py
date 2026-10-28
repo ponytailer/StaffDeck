@@ -13,6 +13,7 @@ from sqlmodel import Session
 
 from app import paths
 from app.db import get_session
+from app.core.base.conversation_context import MAX_CONTEXT_TOKEN_BUDGET
 from app.db.models import UIConfig, User, utc_now
 from app.harness.sandbox import diagnostics, windows_install_command
 from app.security.auth import get_current_user, require_current_tenant
@@ -70,7 +71,9 @@ class UIConfigUpdateRequest(BaseModel):
     show_knowledge_citations: bool = True
     reflection_max_rounds: int = Field(default=1, ge=0, le=5)
     agent_loop_max_actions: int = Field(default=32, ge=1, le=100)
-    context_token_budget: int = Field(default=32_000, ge=512, le=262_144)
+    context_token_budget: int = Field(
+        default=32_000, ge=512, le=MAX_CONTEXT_TOKEN_BUDGET
+    )
     context_compaction_trigger_ratio: float = Field(default=0.70, ge=0.10, le=0.95)
     context_recent_round_limit: int = Field(default=6, ge=1, le=50)
     context_long_summary_token_budget: int = Field(default=4_000, ge=128, le=32_768)
