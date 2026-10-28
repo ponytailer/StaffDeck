@@ -435,6 +435,24 @@ def test_personal_knowledge_search_rejects_archived_and_foreign_library() -> Non
             )
         assert denied.value.status_code == 409
 
+        # 集合检索（不传 ids）只覆盖未下线的库：已下线的库直接不出现在范围里
+        empty = search_knowledge(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                mine=True,
+                query="差旅住宿标准",
+                mode="debug",
+            ),
+            db,
+            owner,
+        )
+        assert empty.chunks == []
+        assert any(
+            (item or {}).get("phase") == "no_visible_knowledge"
+            for item in (empty.trace or [])
+            if isinstance(item, dict)
+        )
+
 def test_personal_knowledge_http_surface(monkeypatch) -> None:
     """HTTP 层参数绑定：mine=1 必须真的走 FastAPI 的 query 解析。"""
 

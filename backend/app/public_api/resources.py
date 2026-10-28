@@ -400,6 +400,104 @@ def list_personal_knowledge_documents(
     }
 
 
+# 检索请求体允许的字段（白名单）。``tenant_id`` / ``agent_id`` / ``mine`` /
+# ``knowledge_base_version_ids`` 这类内部字段一律拒绝：既避免被升级成 500，
+# 也避免调用方绕过服务端的范围与版本控制。
+KNOWLEDGE_SEARCH_FIELDS = frozenset(
+    {
+        "query",
+        "knowledge_base_ids",
+        "query_type",
+        "desired_evidence",
+        "model_config_id",
+        "mode",
+        "max_bucket_rounds",
+        "max_buckets",
+        "max_chunks",
+        "budget_tokens",
+        "max_depth",
+        "need_evidence_pack",
+        "cache_query",
+    }
+)
+
+
+def _knowledge_search_body(body: dict[str, Any]) -> dict[str, Any]:
+    unknown = sorted(set(body) - KNOWLEDGE_SEARCH_FIELDS)
+    if unknown:
+        raise PublicAPIError(
+            422, "INVALID_ARGUMENT", f"Unsupported field(s): {', '.join(unknown)}"
+        )
+    payload = {key: value for key, value in body.items() if value is not None}
+    knowledge_base_ids = payload.get("knowledge_base_ids")
+    if knowledge_base_ids is not None and (
+        not isinstance(knowledge_base_ids, list)
+        or any(not isinstance(item, str) for item in knowledge_base_ids)
+    ):
+        raise PublicAPIError(
+            422, "INVALID_ARGUMENT", "knowledge_base_ids must be an array of strings."
+        )
+    return payload
+
+
+def _knowledge_search_response(
+    request: KnowledgeSearchRequest,
+    db: Session,
+    principal: PublicPrincipal,
+) -> dict:
+    """跑一次知识检索并把结果包成对外契约（含「库 → 版本」快照）。"""
+    try:
+        response, scoped_versions = internal_knowledge.run_knowledge_search(
+            request, db, principal.actor_user
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise PublicAPIError(
+                404, "KNOWLEDGE_BASE_NOT_FOUND", "Knowledge base not found."
+            ) from exc
+        if exc.status_code == 409:
+            raise PublicAPIError(
+                409,
+                "KNOWLEDGE_BASE_ARCHIVED",
+                "This knowledge base is archived; re-activate it in StaffDeck to search again.",
+            ) from exc
+        raise PublicAPIError(
+            exc.status_code, "KNOWLEDGE_SEARCH_FAILED", str(exc.detail)
+        ) from exc
+    payload = _dump(response)
+    payload["query"] = request.query
+    payload["knowledge_bases"] = internal_knowledge.knowledge_scope_snapshot(
+        scoped_versions
+    )
+    payload["citations"] = payload.get("okf_citations") or payload.get("evidence_pack") or []
+    return payload
+
+
+@router.post("/knowledge:search", response_model=dict)
+def search_personal_knowledge(
+    body: dict[str, Any],
+    principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
+    db: Session = Depends(get_session),
+) -> dict:
+    """跨「我的全部个人知识库」检索。
+
+    不传 ``knowledge_base_ids`` 即检索当前账号名下所有未下线的个人库 —— 与
+    「仅知识库问答」里 ``knowledge_search`` 工具走的同一条检索链路（同版本
+    pin、同路由缓存），所以命中与数字员工作答时用的证据一致。
+    """
+    _require_account_key(principal)
+    payload = _knowledge_search_body(body)
+    knowledge_base_ids = payload.pop("knowledge_base_ids", []) or []
+    request = KnowledgeSearchRequest(
+        tenant_id=principal.tenant_id,
+        agent_id=None,
+        mine=True,
+        knowledge_base_ids=list(dict.fromkeys(knowledge_base_ids)),
+        **payload,
+    )
+    return _knowledge_search_response(request, db, principal)
+
+
 @router.post("/knowledge-bases/{knowledge_base_id}:search", response_model=dict)
 def search_personal_knowledge_base(
     knowledge_base_id: str,
@@ -407,27 +505,29 @@ def search_personal_knowledge_base(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    """单库检索：等价于 ``/knowledge:search`` 且 ``knowledge_base_ids=[id]``。"""
     _require_account_key(principal)
-    row = _personal_knowledge_base_or_error(db, principal, knowledge_base_id)
-    if row.status != "active":
-        raise PublicAPIError(
-            409,
-            "KNOWLEDGE_BASE_ARCHIVED",
-            "This knowledge base is archived; re-activate it in StaffDeck to search again.",
-        )
+    payload = _knowledge_search_body(body)
+    payload.pop("knowledge_base_ids", None)
     request = KnowledgeSearchRequest(
         tenant_id=principal.tenant_id,
         agent_id=None,
         mine=True,
         knowledge_base_ids=[knowledge_base_id],
-        **body,
+        **payload,
     )
-    result = internal_knowledge.search_knowledge(request, db, principal.actor_user)
-    payload = _dump(result)
-    payload["citations"] = payload.get("okf_citations") or payload.get("evidence_pack") or []
-    payload["knowledge_base_id"] = knowledge_base_id
-    payload["knowledge_base_version"] = row.version
-    return payload
+    result = _knowledge_search_response(request, db, principal)
+    # 单库调用方的既有字段（保持向后兼容）
+    result["knowledge_base_id"] = knowledge_base_id
+    result["knowledge_base_version"] = next(
+        (
+            item["version"]
+            for item in result["knowledge_bases"]
+            if item["id"] == knowledge_base_id
+        ),
+        None,
+    )
+    return result
 
 
 @router.get("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/concepts", response_model=dict)

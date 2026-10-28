@@ -268,31 +268,59 @@ GET      /agents/{agent_id}/knowledge-bases/{knowledge_base_id}/concepts
 个人知识库不绑定任何数字员工，也不进开放广场，只有属主本人可读写。它适合作为外部系统（例如 CMLG Office）**问答 / 改文档的依据**：外部只保存 `knowledge_base_id`，即可长期引用。
 
 ```text
-GET  /knowledge-bases                              列出「我的知识库」
-GET  /knowledge-bases/{knowledge_base_id}          单库状态（status / version / 计数）
+GET  /knowledge-bases                               列出「我的知识库」
+GET  /knowledge-bases/{knowledge_base_id}           单库状态（status / version / 计数）
 GET  /knowledge-bases/{knowledge_base_id}/documents 文档清单（分页）
-POST /knowledge-bases/{knowledge_base_id}:search   检索（返回 citations / evidence）
+POST /knowledge:search                              集合检索（不传 ids = 全部个人库）★推荐
+POST /knowledge-bases/{knowledge_base_id}:search    单库检索（等价于集合检索 + ids=[id]）
 ```
 
-```bash
-# 1) 拿到自己的知识库 id
-curl "$BASE/knowledge-bases" -H "Authorization: Bearer $STAFFDECK_API_KEY"
+> **推荐直接调 `POST /knowledge:search`**：一次请求覆盖当前账号名下**全部未下线的个人知识库**（库内所有文档都在候选范围内，跨库相对排序由服务端完成），不用自己按库循环、也不用自己合并排序。单库端点保留给只关心一个库的调用方，两者返回结构一致。
 
-# 2) 检索：把命中的 citations 作为问答 / 改文档的依据
+```bash
+# 1) 集合检索：不传 knowledge_base_ids 就是「我的全部知识库」
+curl -X POST "$BASE/knowledge:search" \
+  -H "Authorization: Bearer $STAFFDECK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"差旅住宿标准","max_chunks":8,"mode":"debug","cache_query":"差旅住宿标准多少"}'
+
+# 2) 只想查其中几个库：传 knowledge_base_ids 限定范围
+curl -X POST "$BASE/knowledge:search" \
+  -H "Authorization: Bearer $STAFFDECK_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"query\":\"差旅住宿标准\",\"knowledge_base_ids\":[\"$KB_ID\"]}"
+
+# 3) 单库端点（语法糖，返回值同构）
 curl -X POST "$BASE/knowledge-bases/$KB_ID:search" \
   -H "Authorization: Bearer $STAFFDECK_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"query":"差旅住宿标准","mode":"debug","max_depth":2}'
 ```
 
-`knowledge_base_id` 从哪里拿：打开 `我的数字员工 → 知识库`，列表行右侧「⋯ → 复制知识库 ID」；或点右上角「API 接入」，弹窗里的「复制 ID」以及三段示例代码都已带上当前库的 id。
+检索使用的就是 StaffDeck 数字员工「仅知识库问答」的同一条链路（同版本 pin、同路由缓存），所以命中结果与数字员工作答时用的证据一致。
+
+请求体（其余字段一律 422，避免被当成内部参数）：
+
+| 字段 | 说明 |
+|---|---|
+| `query` | 必填，检索问题 |
+| `knowledge_base_ids` | 可选；不传 = 全部未下线个人库，传了只查这些库（不属于你 → 404，已下线 → 409） |
+| `max_chunks` / `max_buckets` / `budget_tokens` / `max_depth` | 检索规模与预算，默认即可（`max_chunks` 上限 12） |
+| `mode` | `chat`（默认）/ `debug`（额外回 trace，排查用） |
+| `need_evidence_pack` | 默认 `true`，回包带原文依据 |
+| `cache_query` | 建议传用户原话，提升检索路由缓存命中（省一次模型调用） |
+| `model_config_id` | 可选；不传用租户默认模型，没有可用模型时自动退化为词法检索 |
+
+回包关键字段：`citations`（依据片段）、`chunks`、`selected_buckets`、`evidence_pack`、`knowledge_bases[]`（每个被检索库的 `id` / `name` / `version` —— **版本变化即内容有更新，可按它清缓存**）。
+
+`knowledge_base_id` 从哪里拿：用集合接口时**不需要** id（不传就是全部个人库）；确实要限定时，打开 `我的数字员工 → 知识库`，列表行右侧「⋯ → 复制知识库 ID」，或点右上角「API 接入」在弹窗里「复制 ID」。
 
 约束与语义：
 
 - **仅限账号级密钥**（`/me/api-credentials` 创建的密钥）。员工级密钥绑定单个员工，访问这些接口返回 `403 ACCOUNT_KEY_REQUIRED`。
 - 非属主访问统一返回 `404 KNOWLEDGE_BASE_NOT_FOUND`，不会暴露知识库是否存在。
 - 知识库只能**下线**（`status=archived`）不能删除，所以 `knowledge_base_id` 永远有效：列表仍返回该行，`search` 返回 `409 KNOWLEDGE_BASE_ARCHIVED`，外部可据此提示「知识库已下线」。
-- `search` 响应额外带 `knowledge_base_id` 与 `knowledge_base_version`，用于外部缓存失效（版本变化即需重新取数）。
+- 缓存失效：集合接口回 `knowledge_bases[]`（每个库的 `id`/`name`/`version`），单库接口另外保留 `knowledge_base_id`/`knowledge_base_version`；版本变化即说明内容有更新。
 - 需要写入（上传文档 / 批量写条目）时走员工级接口，或把个人库导入到某个数字员工后再写入（个人库本身保持只读引用）。
 
 ### 通用技能、工具和 MCP

@@ -8,6 +8,7 @@
 - **New**: 个人知识库（不再强绑数字员工）——「我的数字员工」新增「知识库」tab，可独立维护 / 下线（只允许下线，保证外部引用稳定），并支持「从我的知识库导入」到任一数字员工
 - **New**: 个人知识库页「API 接入」指引（对齐 OCR 助手样式）：账号级密钥 + `POST /v1/knowledge-bases/{kb_id}:search` 端点 + cURL/Python/Node 示例，接入信息由 `GET /api/enterprise/knowledge-bases/api-access` 下发
 - **Improve**: 个人知识库的 `knowledge_base_id` 可在「列表行 → 复制知识库 ID」或「API 接入」弹窗里一键复制（外部系统只需保存这一个 id）
+- **New**: 开放 API 新增**集合检索** `POST /v1/knowledge:search`：一次调用检索「我的全部个人知识库」（库内所有文档都在范围内、跨库统一排序），不传 `knowledge_base_ids` 即全量、传了只查指定库；与「仅知识库问答」同一条检索链路（同版本 pin / 同路由缓存），回包带 `knowledge_bases[]` 版本快照；单库端点保留为语法糖
 - **New**: 开放 API 新增账号级个人知识库接口（列表 / 详情 / 文档 / `:search`），供 CMLG Office 等外部系统作问答与改文档的依据；非属主 404、下线库 409 `KNOWLEDGE_BASE_ARCHIVED`
 
 ## 202610 w2-w3

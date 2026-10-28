@@ -775,12 +775,36 @@ def update_chunk(
     return chunk_read(row)
 
 
-@router.post("/search", response_model=KnowledgeSearchResponse)
-def search_knowledge(
+def knowledge_scope_snapshot(
+    scoped_versions: dict[str, KnowledgeBaseVersion],
+) -> list[dict[str, Any]]:
+    """检索范围的「库 → 当前版本」快照。
+
+    对外 API 用它让调用方做缓存失效：``version`` 变化即说明该库内容有更新。
+    与内部「仅知识库问答」的 ``knowledge_version_by_base_id`` 同一口径。
+    """
+    return [
+        {
+            "id": knowledge_base_id,
+            "name": version.name,
+            "version": version.version,
+            "status": version.status,
+        }
+        for knowledge_base_id, version in scoped_versions.items()
+    ]
+
+
+def run_knowledge_search(
     request: KnowledgeSearchRequest,
-    db: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
-) -> KnowledgeSearchResponse:
+    db: Session,
+    current_user: User,
+) -> tuple[KnowledgeSearchResponse, dict[str, KnowledgeBaseVersion]]:
+    """按请求作用域跑一次知识检索，并回传本次实际检索的「库 → 版本」映射。
+
+    这是「仅知识库问答」链路里 ``knowledge_search`` 工具的同一条检索实现：
+    同样的 ``KnowledgeService.search``、同样的版本 pin、同样的路由缓存。
+    对外集合检索接口用第二项返回值拼缓存失效快照。
+    """
     require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
     ensure_tenant(db, request.tenant_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
@@ -790,13 +814,14 @@ def search_knowledge(
         request.agent_id,
         current_user,
         mine=request.mine,
-        include_inactive=request.mine,
+        # 只检索未下线的库；显式传入已下线的 id 由 _scoped_knowledge_versions 回 409
+        include_inactive=False,
         knowledge_base_ids=request.knowledge_base_ids or None,
     )
     visible_version_ids = [version.id for version in scoped_versions.values()]
     if not visible_version_ids:
         trace = [{"phase": "no_visible_knowledge", "message": "当前范围没有可见知识"}]
-        return KnowledgeSearchResponse(trace=trace, route_trace=trace)
+        return KnowledgeSearchResponse(trace=trace, route_trace=trace), {}
     if request.knowledge_base_version_ids:
         allowed_ids = set(visible_version_ids)
         request.knowledge_base_version_ids = [
@@ -806,7 +831,17 @@ def search_knowledge(
         ]
     else:
         request.knowledge_base_version_ids = visible_version_ids
-    return KnowledgeService(db).search(request, model_config)
+    return KnowledgeService(db).search(request, model_config), scoped_versions
+
+
+@router.post("/search", response_model=KnowledgeSearchResponse)
+def search_knowledge(
+    request: KnowledgeSearchRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> KnowledgeSearchResponse:
+    response, _scoped = run_knowledge_search(request, db, current_user)
+    return response
 
 
 def _get_default_model(db: Session, tenant_id: str) -> ModelConfig | None:

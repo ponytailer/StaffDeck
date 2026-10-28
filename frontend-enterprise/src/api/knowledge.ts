@@ -8,7 +8,10 @@ import { api } from './client';
  */
 export type KnowledgeApiAccess = {
   required_scope: string;
+  /** 单库检索：/api/v1/knowledge-bases/{knowledge_base_id}:search */
   endpoint_path: string;
+  /** 集合检索：不传 knowledge_base_ids 即检索全部个人知识库 */
+  collection_endpoint_path: string;
   docs_path: string;
   public_base_url: string;
 };

@@ -13,12 +13,17 @@ import {
 } from '@/components/ui';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { copyTextToClipboard } from '@/lib/clipboard';
+import { cn } from '@/lib/utils';
 
 import { buildKnowledgeApiSamples } from './knowledgeApiSamples';
 
 // 接口未就绪时的兜底值；后端 /api/enterprise/knowledge-bases/api-access 给的是权威值
 const OPEN_API_SCOPE = 'knowledge:read';
 const OPEN_API_PATH = '/api/v1/knowledge-bases/{knowledge_base_id}:search';
+const OPEN_API_COLLECTION_PATH = '/api/v1/knowledge:search';
+
+/** 检索范围：单个库（路径带 id） / 我的全部个人库（集合端点，不传 ids）。 */
+type SearchScope = 'single' | 'all';
 
 type SampleLanguage = 'curl' | 'python' | 'node';
 
@@ -31,9 +36,12 @@ const LANGUAGES: { id: SampleLanguage; label: string }[] = [
 /**
  * 个人知识库的「API 接入」弹窗：说明 + 三种语言的检索示例。
  *
- * 与 OCR 助手 / 决策助手的接入弹窗同一套结构，差别在于这里是
- * `POST /v1/knowledge-bases/{knowledge_base_id}:search`：外部系统拿自己的知识库
- * 当问答 / 改文档的依据，回包里的 `citations` 就是依据片段。
+ * 与 OCR 助手 / 决策助手的接入弹窗同一套结构，差别在于这里是知识检索：
+ * - 集合检索 `POST /v1/knowledge:search`：不传 `knowledge_base_ids` 即检索
+ *   当前账号名下**全部**未下线的个人库（一次调用覆盖库内所有文档）；
+ * - 单库检索 `POST /v1/knowledge-bases/{kb_id}:search`：等价于集合接口 +
+ *   `knowledge_base_ids=[kb_id]`，保留给只关心一个库的调用方。
+ * 回包里的 `citations` 就是问答 / 改文档的依据片段。
  */
 export default function KnowledgeApiDialog({
   open,
@@ -50,6 +58,7 @@ export default function KnowledgeApiDialog({
   const [access, setAccess] = useState<KnowledgeApiAccess | null>(null);
   const [accessFailed, setAccessFailed] = useState(false);
   const [language, setLanguage] = useState<SampleLanguage>('curl');
+  const [scope, setScope] = useState<SearchScope>('all');
   const [copied, setCopied] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState(false);
 
@@ -72,21 +81,32 @@ export default function KnowledgeApiDialog({
     if (open) {
       setCopied(null);
       setCopiedId(false);
+      setScope('all');
     }
-  }, [open]);
+  }, [open, knowledgeBaseId]);
 
   const baseUrl = (
     access?.public_base_url?.trim()
     || (typeof window === 'undefined' ? '' : window.location.origin)
   ).replace(/\/+$/, '');
   const requiredScope = access?.required_scope || OPEN_API_SCOPE;
-  const endpointPath = (access?.endpoint_path || OPEN_API_PATH).replace(
-    '{knowledge_base_id}',
-    knowledgeBaseId || '{knowledge_base_id}',
-  );
+  const isCollection = scope === 'all';
+  const endpointPath = isCollection
+    ? access?.collection_endpoint_path || OPEN_API_COLLECTION_PATH
+    : (access?.endpoint_path || OPEN_API_PATH).replace(
+      '{knowledge_base_id}',
+      knowledgeBaseId || '{knowledge_base_id}',
+    );
   const endpointUrl = `${baseUrl}${endpointPath}`;
 
-  const samples = useMemo(() => buildKnowledgeApiSamples(endpointUrl), [endpointUrl]);
+  const samples = useMemo(
+    () => buildKnowledgeApiSamples(endpointUrl, {
+      collection: isCollection,
+      // 集合示例默认不传 ids（= 全部个人库）；这里带上当前库是示意「如何限定范围」
+      knowledgeBaseIds: knowledgeBaseId ? [knowledgeBaseId] : [],
+    }),
+    [endpointUrl, isCollection, knowledgeBaseId],
+  );
   const code = samples[language];
 
   async function copySample() {
@@ -127,7 +147,7 @@ export default function KnowledgeApiDialog({
             <div>
               <DialogTitle className="text-[16px] font-semibold text-[#18181a]">API 接入 · 我的知识库</DialogTitle>
               <DialogDescription id="knowledge-api-description" className="mt-[5px] text-[12px] text-[#757f9c]">
-                用账号 API 密钥直接检索这个知识库，把回包里的引用片段当作问答 / 改文档的依据。
+                用账号 API 密钥直接检索知识库，把回包里的引用片段当作问答 / 改文档的依据。
               </DialogDescription>
             </div>
           </div>
@@ -155,43 +175,84 @@ export default function KnowledgeApiDialog({
           </section>
 
           <section className="rounded-[16px] border-[0.5px] border-[#e3e7f1] bg-white p-[18px]">
-            <div className="text-[13px] font-semibold text-[#18181a]">第二步 · 调用端点</div>
+            <div className="flex flex-wrap items-center justify-between gap-[10px]">
+              <span className="text-[13px] font-semibold text-[#18181a]">第二步 · 调用端点</span>
+              <div
+                role="group"
+                aria-label="检索范围"
+                className="flex items-center gap-[2px] rounded-[8px] bg-[#f4f5f8] p-[2px]"
+              >
+                {([
+                  { id: 'all' as SearchScope, label: '全部我的知识库' },
+                  { id: 'single' as SearchScope, label: '当前知识库' },
+                ]).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-pressed={scope === item.id}
+                    onClick={() => setScope(item.id)}
+                    className={cn(
+                      'h-[24px] rounded-[6px] px-[10px] text-[11px] transition-colors',
+                      scope === item.id
+                        ? 'bg-white text-[#18181a] shadow-[0_1px_2px_rgba(24,31,46,0.10)]'
+                        : 'text-[#757f9c] hover:text-[#18181a]',
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="mt-[10px] flex flex-wrap items-center gap-[8px]">
               <span className="rounded-[6px] bg-[#18181a] px-[8px] py-[3px] font-mono text-[10px] font-semibold text-white">
                 POST
               </span>
-              <code className="min-w-0 flex-1 truncate rounded-[8px] bg-[#f4f5f8] px-[10px] py-[6px] font-mono text-[11.5px] text-[#18181a]">
+              <code
+                data-testid="knowledge-api-endpoint"
+                className="min-w-0 flex-1 truncate rounded-[8px] bg-[#f4f5f8] px-[10px] py-[6px] font-mono text-[11.5px] text-[#18181a]"
+              >
                 {endpointUrl}
               </code>
             </div>
             <dl className="mt-[12px] grid gap-[8px] text-[12px] sm:grid-cols-[84px_minmax(0,1fr)]">
-              <dt className="text-[#757f9c]">知识库</dt>
+              <dt className="text-[#757f9c]">检索范围</dt>
               <dd className="text-[#464c5e]">
-                {knowledgeBaseId ? (
-                  <div className="flex flex-wrap items-center gap-[6px]">
-                    <span>{knowledgeBaseName || '未命名'}</span>
-                    <code
-                      data-testid="knowledge-api-kb-id"
-                      className="rounded-[4px] bg-[#f4f5f8] px-[6px] py-[2px] font-mono text-[11px] text-[#464c5e]"
-                    >
-                      {knowledgeBaseId}
-                    </code>
-                    <Button
-                      type="button"
-                      onClick={() => void copyKnowledgeBaseId()}
-                      className="h-[22px] gap-[4px] rounded-[6px] bg-[#f4f5f8] px-[8px] text-[11px] text-[#464c5e] hover:bg-[#eceef3]"
-                    >
-                      {copiedId ? <Check className="size-[11px]" /> : <Copy className="size-[11px]" />}
-                      {copiedId ? '已复制' : '复制 ID'}
-                    </Button>
-                  </div>
+                {isCollection ? (
+                  <>
+                    当前账号名下<b>全部未下线</b>的个人知识库（不传{' '}
+                    <code className="font-mono text-[11.5px]">knowledge_base_ids</code>）
+                    <p className="mt-[6px] text-[11px] leading-[17px] text-[#858b9c]">
+                      想只查其中几个库时，在请求体里加 <code className="font-mono text-[11px]">knowledge_base_ids: [...]</code>。
+                      这是推荐的接入方式：一次调用覆盖库内所有文档，跨库相对排序也由服务端完成。
+                    </p>
+                  </>
+                ) : knowledgeBaseId ? (
+                  <>
+                    <div className="flex flex-wrap items-center gap-[6px]">
+                      <span>{knowledgeBaseName || '未命名'}</span>
+                      <code
+                        data-testid="knowledge-api-kb-id"
+                        className="rounded-[4px] bg-[#f4f5f8] px-[6px] py-[2px] font-mono text-[11px] text-[#464c5e]"
+                      >
+                        {knowledgeBaseId}
+                      </code>
+                      <Button
+                        type="button"
+                        onClick={() => void copyKnowledgeBaseId()}
+                        className="h-[22px] gap-[4px] rounded-[6px] bg-[#f4f5f8] px-[8px] text-[11px] text-[#464c5e] hover:bg-[#eceef3]"
+                      >
+                        {copiedId ? <Check className="size-[11px]" /> : <Copy className="size-[11px]" />}
+                        {copiedId ? '已复制' : '复制 ID'}
+                      </Button>
+                    </div>
+                    <p className="mt-[6px] text-[11px] leading-[17px] text-[#858b9c]">
+                      单库地址里就是这个 ID（等价于集合接口 + <code className="font-mono text-[11px]">knowledge_base_ids=[{'{'}id{'}'}]</code>）。
+                      它在「我的知识库」列表行上也能直接复制；知识库只能下线、不能删除，所以 ID 不会失效。
+                    </p>
+                  </>
                 ) : (
                   <span className="text-[#b4690e]">还没有个人知识库，先新建一个再复制示例</span>
                 )}
-                <p className="mt-[6px] text-[11px] leading-[17px] text-[#858b9c]">
-                  这个 ID 就是外部系统要长期保存的引用；它在「我的知识库」列表行上也能直接复制。
-                  知识库只能下线、不能删除，所以 ID 不会失效。
-                </p>
               </dd>
               <dt className="text-[#757f9c]">请求头</dt>
               <dd>
@@ -207,7 +268,8 @@ export default function KnowledgeApiDialog({
               </dd>
               <dt className="text-[#757f9c]">请求体</dt>
               <dd className="text-[#464c5e]">
-                <code className="font-mono text-[11.5px]">query</code> 必填，其余字段见下方「接口说明」。
+                <code className="font-mono text-[11.5px]">query</code> 必填
+                {isCollection ? '；knowledge_base_ids 可选（不传 = 全部库）' : ''}，其余字段见下方「接口说明」。
               </dd>
             </dl>
           </section>
@@ -257,6 +319,14 @@ export default function KnowledgeApiDialog({
             <div className="text-[13px] font-semibold text-[#18181a]">接口说明</div>
             <div className="mt-[10px] grid gap-[8px] text-[12px] leading-[18px] text-[#464c5e]">
               <p>
+                <b>检索范围</b>：不传
+                <code className="font-mono text-[11.5px]">knowledge_base_ids</code>
+                即检索全部未下线的个人库；传了只查这些库（不属于你 → 404，已下线 → 409
+                <code className="font-mono text-[11px]">KNOWLEDGE_BASE_ARCHIVED</code>）。
+                单库接口 <code className="font-mono text-[11px]">/v1/knowledge-bases/{'{'}id{'}'}:search</code>
+                是它的语法糖，两者返回结构一致。
+              </p>
+              <p>
                 <code className="font-mono text-[11.5px] text-[#18181a]">query</code>
                 ：要检索的问题（必填）。
                 <code className="font-mono text-[11.5px]">mode</code>
@@ -275,10 +345,11 @@ export default function KnowledgeApiDialog({
               </p>
               <p>
                 回包：<code className="font-mono text-[11.5px]">citations</code>（依据片段，按相关度排序）、
-                <code className="font-mono text-[11.5px]">selected_buckets</code>、
-                <code className="font-mono text-[11.5px]">knowledge_base_id</code> /
-                <code className="font-mono text-[11.5px]">knowledge_base_version</code>
-                （版本变化说明知识库有更新，可按它做缓存失效）。
+                <code className="font-mono text-[11.5px]">chunks</code> /
+                <code className="font-mono text-[11.5px]">selected_buckets</code>（命中目录）、
+                <code className="font-mono text-[11.5px]">evidence_pack</code>（原文依据），以及
+                <code className="font-mono text-[11.5px]">knowledge_bases[]</code>
+                （每个被检索库的 id / name / version）。版本一变就说明内容有更新，可按它做缓存失效。
               </p>
               <p className="text-[11.5px] text-[#757f9c]">
                 个人知识库只属于你：非属主访问返回 404。知识库只能下线不能删除，下线后检索返回

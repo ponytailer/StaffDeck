@@ -86,6 +86,8 @@ router = APIRouter(
 # 占位符：前端会把它替换成用户当前选中的库，展示成可直接复制的示例。
 KNOWLEDGE_OPEN_API_SCOPE = "knowledge:read"
 KNOWLEDGE_OPEN_API_ENDPOINT_PATH = "/api/v1/knowledge-bases/{knowledge_base_id}:search"
+# 集合检索：不传 knowledge_base_ids 即检索「我的全部个人知识库」
+KNOWLEDGE_OPEN_API_COLLECTION_PATH = "/api/v1/knowledge:search"
 KNOWLEDGE_OPEN_API_DOCS_PATH = "/api/v1/docs"
 
 
@@ -94,6 +96,7 @@ class KnowledgeApiAccessResponse(BaseModel):
 
     required_scope: str
     endpoint_path: str
+    collection_endpoint_path: str
     docs_path: str
     # 来自 PUBLIC_BASE_URL；为空表示未配置，前端回退到当前 origin
     public_base_url: str
@@ -521,6 +524,7 @@ def knowledge_api_access(
     return KnowledgeApiAccessResponse(
         required_scope=KNOWLEDGE_OPEN_API_SCOPE,
         endpoint_path=KNOWLEDGE_OPEN_API_ENDPOINT_PATH,
+        collection_endpoint_path=KNOWLEDGE_OPEN_API_COLLECTION_PATH,
         docs_path=KNOWLEDGE_OPEN_API_DOCS_PATH,
         public_base_url=(settings.public_base_url or "").rstrip("/"),
     )

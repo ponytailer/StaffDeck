@@ -189,11 +189,22 @@ describe('KnowledgeManagePage 个人知识库的「API 接入」指引', () => {
     await userEvent.click(screen.getByRole('button', { name: /API 接入/ }));
 
     expect(await screen.findByText('API 接入 · 我的知识库')).toBeTruthy();
-    // 示例里已把 {knowledge_base_id} 换成当前库，且基址取自后端 api-access
-    const sample = await screen.findByTestId('knowledge-api-sample-curl');
-    expect(sample.textContent).toContain('https://staffdeck.example/api/v1/knowledge-bases/kb_mine:search');
-    expect(sample.textContent).toContain('Authorization: Bearer');
-    // kb_id 单独可见、可复制（外部系统只需要存它）
+    // 默认「全部我的知识库」：走集合检索端点（一次覆盖所有个人库）
+    expect(screen.getByTestId('knowledge-api-endpoint').textContent).toContain(
+      'https://staffdeck.example/api/v1/knowledge:search',
+    );
+    const collectionSample = await screen.findByTestId('knowledge-api-sample-curl');
+    expect(collectionSample.textContent).toContain('/api/v1/knowledge:search');
+    expect(collectionSample.textContent).toContain('knowledge_base_ids');
+    expect(collectionSample.textContent).toContain('Authorization: Bearer');
+
+    // 切到「当前知识库」：端点换成单库地址，并出现可复制的 kb_id
+    await userEvent.click(screen.getByRole('button', { name: '当前知识库' }));
+    expect(screen.getByTestId('knowledge-api-endpoint').textContent).toContain(
+      '/api/v1/knowledge-bases/kb_mine:search',
+    );
+    const singleSample = await screen.findByTestId('knowledge-api-sample-curl');
+    expect(singleSample.textContent).toContain('/api/v1/knowledge-bases/kb_mine:search');
     expect(screen.getByTestId('knowledge-api-kb-id').textContent).toBe('kb_mine');
     expect(screen.getByRole('button', { name: /复制 ID/ })).toBeTruthy();
   });

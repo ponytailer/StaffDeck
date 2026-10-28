@@ -110,6 +110,52 @@ def _app(monkeypatch):
                 content="差旅住宿标准每晚不超过 600 元，超标需分管领导审批。",
             )
         )
+
+        # 第二个个人库：用来验证「一次调用覆盖全部个人库」
+        handbook = create_knowledge_base(
+            KnowledgeBaseCreateRequest(
+                tenant_id="tenant_api", name="产品手册", description="产品说明"
+            ),
+            None,
+            db,
+            owner,
+            mine=True,
+        )
+        handbook_version = ensure_knowledge_base_version(db, db.get(KnowledgeBase, handbook.id))
+        handbook_document = KnowledgeDocument(
+            tenant_id="tenant_api",
+            knowledge_base_id=handbook.id,
+            knowledge_base_version_id=handbook_version.id,
+            filename="差旅产品.md",
+            file_type="md",
+            title="差旅产品",
+            status="ready",
+            bucket_count=1,
+            chunk_count=1,
+        )
+        handbook_bucket = KnowledgeBucket(
+            tenant_id="tenant_api",
+            knowledge_base_id=handbook.id,
+            knowledge_base_version_id=handbook_version.id,
+            document_id=handbook_document.id,
+            bucket_key="product",
+            title="差旅住宿产品",
+            summary="差旅住宿产品说明",
+        )
+        db.add(handbook_document)
+        db.add(handbook_bucket)
+        db.flush()
+        db.add(
+            KnowledgeChunk(
+                tenant_id="tenant_api",
+                knowledge_base_id=handbook.id,
+                knowledge_base_version_id=handbook_version.id,
+                document_id=handbook_document.id,
+                bucket_id=handbook_bucket.id,
+                chunk_index=0,
+                content="差旅住宿产品支持按城市配置住宿标准，默认 600 元。",
+            )
+        )
         db.commit()
 
         owner_key = create_account_api_credential(
@@ -159,6 +205,7 @@ def _app(monkeypatch):
         "other_key": other_key,
         "agent_key": agent_key,
         "knowledge_base_id": knowledge_base.id,
+        "knowledge_base_ids": [knowledge_base.id, handbook.id],
     }
 
 
@@ -173,7 +220,7 @@ def test_personal_knowledge_is_exposed_to_account_keys_only(monkeypatch) -> None
     listed = client.get("/knowledge-bases", headers=headers)
     assert listed.status_code == 200, listed.text
     rows = listed.json()["data"]
-    assert [row["id"] for row in rows] == [ctx["knowledge_base_id"]]
+    assert sorted(row["id"] for row in rows) == sorted(ctx["knowledge_base_ids"])
     assert "tenant_id" not in rows[0]
 
     detail = client.get(f"/knowledge-bases/{ctx['knowledge_base_id']}", headers=headers)
@@ -209,6 +256,9 @@ def test_personal_knowledge_search_returns_grounding_payload(monkeypatch) -> Non
     payload = response.json()
     assert payload["knowledge_base_id"] == ctx["knowledge_base_id"]
     assert payload["knowledge_base_version"] == "1.0.0"
+    # 单库接口也回「库 → 版本」快照（做缓存失效）
+    assert [item["id"] for item in payload["knowledge_bases"]] == [ctx["knowledge_base_id"]]
+    assert payload["knowledge_bases"][0]["version"] == "1.0.0"
     serialized = str(payload)
     assert "差旅住宿标准" in serialized
 
@@ -246,6 +296,113 @@ def test_personal_knowledge_archived_and_foreign_scope_errors(monkeypatch) -> No
     assert listed.json()["data"][0]["status"] == "archived"
 
 
+def test_collection_search_covers_all_personal_knowledge_bases(monkeypatch) -> None:
+    client, _engine, ctx = _app(monkeypatch)
+    headers = _auth(ctx["owner_key"])
+
+    response = client.post(
+        "/knowledge:search",
+        headers=headers,
+        json={"query": "差旅住宿标准", "mode": "debug", "max_depth": 2},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["query"] == "差旅住宿标准"
+    # 不传 knowledge_base_ids = 名下全部个人库
+    assert sorted(item["id"] for item in payload["knowledge_bases"]) == sorted(
+        ctx["knowledge_base_ids"]
+    )
+    assert all(item["version"] == "1.0.0" for item in payload["knowledge_bases"])
+    assert payload["chunks"]
+    assert payload["citations"]
+
+
+def test_collection_search_can_be_narrowed_to_one_library(monkeypatch) -> None:
+    client, _engine, ctx = _app(monkeypatch)
+    headers = _auth(ctx["owner_key"])
+
+    response = client.post(
+        "/knowledge:search",
+        headers=headers,
+        json={
+            "query": "差旅住宿标准",
+            "knowledge_base_ids": [ctx["knowledge_base_id"]],
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert [item["id"] for item in payload["knowledge_bases"]] == [ctx["knowledge_base_id"]]
+
+
+def test_collection_search_scope_errors(monkeypatch) -> None:
+    client, engine, ctx = _app(monkeypatch)
+    headers = _auth(ctx["owner_key"])
+
+    # 别人的库 / 不存在的库 → 404
+    unknown = client.post(
+        "/knowledge:search",
+        headers=headers,
+        json={"query": "差旅", "knowledge_base_ids": ["kb_does_not_exist"]},
+    )
+    assert unknown.status_code == 404
+    assert unknown.json()["code"] == "KNOWLEDGE_BASE_NOT_FOUND"
+
+    # 显式指定已下线的库 → 409
+    with Session(engine) as db:
+        owner = db.get(User, "user_owner")
+        assert owner is not None
+        update_knowledge_base(
+            ctx["knowledge_base_id"],
+            KnowledgeBaseUpdateRequest(tenant_id="tenant_api", status="archived"),
+            None,
+            db,
+            owner,
+        )
+    archived = client.post(
+        "/knowledge:search",
+        headers=headers,
+        json={"query": "差旅", "knowledge_base_ids": [ctx["knowledge_base_id"]]},
+    )
+    assert archived.status_code == 409
+    assert archived.json()["code"] == "KNOWLEDGE_BASE_ARCHIVED"
+
+    # 不指定 ids 时，已下线的库不会被检索（只剩另一个库）
+    remaining = client.post("/knowledge:search", headers=headers, json={"query": "差旅"})
+    assert remaining.status_code == 200, remaining.text
+    remaining_ids = [item["id"] for item in remaining.json()["knowledge_bases"]]
+    assert ctx["knowledge_base_id"] not in remaining_ids
+    assert remaining_ids == [ctx["knowledge_base_ids"][1]]
+
+
+def test_collection_search_validates_body_fields(monkeypatch) -> None:
+    client, _engine, ctx = _app(monkeypatch)
+    headers = _auth(ctx["owner_key"])
+
+    # 内部字段不允许由调用方覆盖（否则会绕过范围/版本控制）
+    rejected = client.post(
+        "/knowledge:search",
+        headers=headers,
+        json={"query": "差旅", "tenant_id": "tenant_api", "mine": False},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["code"] == "INVALID_ARGUMENT"
+
+    # 单库接口同样拒绝内部字段（此前会因重复关键字直接 500）
+    rejected_single = client.post(
+        f"/knowledge-bases/{ctx['knowledge_base_id']}:search",
+        headers=headers,
+        json={"query": "差旅", "agent_id": "agent_x"},
+    )
+    assert rejected_single.status_code == 422
+
+    bad_ids = client.post(
+        "/knowledge:search",
+        headers=headers,
+        json={"query": "差旅", "knowledge_base_ids": "kb_1"},
+    )
+    assert bad_ids.status_code == 422
+
+
 def test_personal_knowledge_openapi_paths_registered(monkeypatch) -> None:
     client, _engine, _ctx = _app(monkeypatch)
     schema = client.get("/openapi.json").json()
@@ -254,5 +411,6 @@ def test_personal_knowledge_openapi_paths_registered(monkeypatch) -> None:
         "/knowledge-bases/{knowledge_base_id}",
         "/knowledge-bases/{knowledge_base_id}/documents",
         "/knowledge-bases/{knowledge_base_id}:search",
+        "/knowledge:search",
     }
     assert expected.issubset(set(schema["paths"]))
