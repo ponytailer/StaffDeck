@@ -53,7 +53,7 @@ vi.mock('../api/client', () => ({
 
 import { I18nProvider } from '@/i18n';
 
-import { ApiKeyApplicationsPanel } from './ApiKeyApplicationsPanel';
+import { ApiKeyApplicationsPanel, modelBaseUrlFromGateway } from './ApiKeyApplicationsPanel';
 
 const originalClipboard = navigator.clipboard;
 const originalExecCommand = document.execCommand;
@@ -156,5 +156,20 @@ describe('ApiKeyApplicationsPanel copy buttons', () => {
 
     await waitFor(() => expect(notifyError).toHaveBeenCalledWith('复制失败，请手动选择复制'));
     expect(notifySuccess).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('modelBaseUrlFromGateway', () => {
+  it('truncates a complete gateway URL to /v1', () => {
+    expect(
+      modelBaseUrlFromGateway('https://ai-gateway.folidaymall.com/ailab/v1/chat/completions'),
+    ).toBe('https://ai-gateway.folidaymall.com/ailab/v1');
+  });
+
+  it('falls back to stripping chat completions when /v1 is absent', () => {
+    expect(
+      modelBaseUrlFromGateway('https://example.test/openai/chat/completions/'),
+    ).toBe('https://example.test/openai');
   });
 });

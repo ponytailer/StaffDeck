@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Copy, Eye, EyeOff, KeyRound, LoaderCircle, ShieldAlert, Trash2 } from 'lucide-react';
+import { Copy, Eye, EyeOff, KeyRound, LoaderCircle, ShieldAlert, Sparkles, Trash2 } from 'lucide-react';
 
 import { Textarea } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
@@ -18,6 +18,7 @@ import { copyTextToClipboard } from '../lib/clipboard';
 import { formatClientDateTime } from '../lib/timezone';
 import { cn } from '@/lib/utils';
 import { type EnterpriseAuthUser } from '../auth';
+import type { ModelConfigRead } from '../types';
 
 const MAX_APPLICATIONS = 2;
 
@@ -76,6 +77,19 @@ function formatTime(value: string | null): string {
   return formatClientDateTime(value || undefined, value || '-');
 }
 
+export function modelBaseUrlFromGateway(apiUrl: string | null | undefined): string {
+  const raw = (apiUrl || '').trim();
+  if (!raw) return '';
+  const lower = raw.toLowerCase();
+  const v1Index = lower.indexOf('/v1');
+  if (v1Index >= 0) {
+    return raw.slice(0, v1Index + 3);
+  }
+  return raw
+    .replace(/\/chat\/completions\/?$/i, '')
+    .replace(/\/+$/, '');
+}
+
 export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: EnterpriseAuthUser }) {
   const [items, setItems] = useState<ApiKeyApplication[]>([]);
   const [usageItems, setUsageItems] = useState<MyUsageItem[]>([]);
@@ -83,6 +97,9 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
   const [purpose, setPurpose] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
+  const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
+  const [modelAddingId, setModelAddingId] = useState('');
+  const [modelAddedIds, setModelAddedIds] = useState<Set<string>>(new Set());
 
   const toggleRevealed = (id: string) => {
     setRevealedIds((prev) => {
@@ -147,9 +164,17 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
       .catch(() => setUsageItems([]));
   };
 
+  const loadModels = () => {
+    return api
+      .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`)
+      .then((rows) => setModelConfigs(rows))
+      .catch(() => setModelConfigs([]));
+  };
+
   useEffect(() => {
     void load();
     void loadUsage();
+    void loadModels();
   }, []);
 
   async function submit() {
@@ -188,6 +213,52 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
       notify.success(`${label}已复制`);
     } catch {
       notify.error('复制失败，请手动选择复制');
+    }
+  }
+
+  function applicationHasModel(item: ApiKeyApplication): boolean {
+    if (modelAddedIds.has(item.id)) return true;
+    const baseUrl = modelBaseUrlFromGateway(item.api_url);
+    if (!baseUrl) return false;
+    return modelConfigs.some((model) => (
+      model.model === 'auto/balanced'
+      && model.base_url === baseUrl
+      && (!item.api_key_masked || model.api_key_masked === item.api_key_masked)
+    ));
+  }
+
+  async function addModelFromApplication(item: ApiKeyApplication) {
+    const baseUrl = modelBaseUrlFromGateway(item.api_url);
+    if (!item.api_key || !baseUrl) {
+      notify.error('该申请缺少可用的 API Key 或网关地址');
+      return;
+    }
+    setModelAddingId(item.id);
+    try {
+      const created = await api.post<ModelConfigRead>(
+        `/api/enterprise/model-configs?verify_before_save=true`,
+        {
+          tenant_id: TENANT_ID,
+          name: 'auto/balanced',
+          api_protocol: 'openai_chat_completions',
+          base_url: baseUrl,
+          api_key: item.api_key,
+          model: 'auto/balanced',
+          temperature: 0.2,
+          max_output_tokens: 8192,
+          is_default: false,
+          is_intent_recognition: false,
+          enabled: true,
+        },
+      );
+      setModelConfigs((current) => [...current, created]);
+      setModelAddedIds((current) => new Set(current).add(item.id));
+      notify.success('已添加 auto/balanced 模型');
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '添加模型失败';
+      notify.error(message);
+    } finally {
+      setModelAddingId('');
     }
   }
 
@@ -315,6 +386,32 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                             </div>
                           </label>
                         )}
+
+                        <div className="flex flex-wrap items-center justify-between gap-[8px] rounded-[10px] border border-[#eceef1] bg-[#fbfcfe] px-[12px] py-[10px]">
+                          <div className="min-w-0">
+                            <span className="block text-[12px] font-medium text-[#464c5e]">
+                              使用该 API Key 创建模型
+                            </span>
+                            <span className="mt-[2px] block text-[11px] leading-[16px] text-[#858b9c]">
+                              自动使用网关地址（截断到 /v1）和 API Key，模型标识为 auto/balanced。
+                            </span>
+                          </div>
+                          <UIButton
+                            disabled={
+                              modelAddingId === item.id
+                              || consumerDisabled
+                              || consumerDeleted
+                              || applicationHasModel(item)
+                            }
+                            onClick={() => void addModelFromApplication(item)}
+                            className="h-[30px] shrink-0 gap-[5px] rounded-[9px] bg-[#18181a] px-[12px] text-[12px] font-normal text-white hover:bg-[#303030] disabled:opacity-50"
+                          >
+                            {modelAddingId === item.id
+                              ? <LoaderCircle className="size-[13px] animate-spin" />
+                              : <Sparkles className="size-[13px]" />}
+                            {applicationHasModel(item) ? '已添加模型' : '一键添加模型'}
+                          </UIButton>
+                        </div>
 
                         {(() => {
                           const usage = usageItems.find((u) => u.id === item.id);
