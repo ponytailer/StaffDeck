@@ -216,15 +216,20 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
     }
   }
 
-  function applicationHasModel(item: ApiKeyApplication): boolean {
-    if (modelAddedIds.has(item.id)) return true;
+  function findApplicationModel(item: ApiKeyApplication): ModelConfigRead | undefined {
     const baseUrl = modelBaseUrlFromGateway(item.api_url);
-    if (!baseUrl) return false;
-    return modelConfigs.some((model) => (
+    if (!baseUrl) return undefined;
+    return modelConfigs.find((model) => (
       model.model === 'auto/balanced'
       && model.base_url === baseUrl
       && (!item.api_key_masked || model.api_key_masked === item.api_key_masked)
     ));
+  }
+
+  function applicationHasModel(item: ApiKeyApplication): boolean {
+    if (modelAddedIds.has(item.id)) return true;
+    const existing = findApplicationModel(item);
+    return Boolean(existing && existing.max_output_tokens <= 131072);
   }
 
   async function addModelFromApplication(item: ApiKeyApplication) {
@@ -235,23 +240,38 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
     }
     setModelAddingId(item.id);
     try {
-      const created = await api.post<ModelConfigRead>(
-        `/api/enterprise/model-configs?verify_before_save=true`,
-        {
-          tenant_id: TENANT_ID,
-          name: 'auto/balanced',
-          api_protocol: 'openai_chat_completions',
-          base_url: baseUrl,
-          api_key: item.api_key,
-          model: 'auto/balanced',
-          temperature: 0.2,
-          max_output_tokens: 500000,
-          is_default: false,
-          is_intent_recognition: false,
-          enabled: true,
-        },
-      );
-      setModelConfigs((current) => [...current, created]);
+      const existing = findApplicationModel(item);
+      // auto/balanced 的上游硬上限是 131072，超过会被网关以 400 拒绝。
+      // 若历史一键创建记录了更大的值，这里顺手修正而不是重复创建。
+      const payload = {
+        tenant_id: TENANT_ID,
+        name: existing?.name || 'auto/balanced',
+        api_protocol: existing?.api_protocol || 'openai_chat_completions',
+        base_url: baseUrl,
+        api_key: item.api_key,
+        model: 'auto/balanced',
+        temperature: existing?.temperature ?? 0.2,
+        max_output_tokens: 131072,
+        extra_body: existing?.extra_body || {},
+        custom_headers: existing?.custom_headers || {},
+        is_default: Boolean(existing?.is_default),
+        is_intent_recognition: Boolean(existing?.is_intent_recognition),
+        enabled: true,
+      };
+      const saved = existing
+        ? await api.put<ModelConfigRead>(
+          `/api/enterprise/model-configs/${existing.id}?verify_before_save=true`,
+          payload,
+        )
+        : await api.post<ModelConfigRead>(
+          `/api/enterprise/model-configs?verify_before_save=true`,
+          payload,
+        );
+      setModelConfigs((current) => (
+        existing
+          ? current.map((model) => (model.id === saved.id ? saved : model))
+          : [...current, saved]
+      ));
       setModelAddedIds((current) => new Set(current).add(item.id));
       notify.success('已添加 auto/balanced 模型');
     } catch (error) {

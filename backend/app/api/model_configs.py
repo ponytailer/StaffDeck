@@ -53,6 +53,8 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
+MAX_OUTPUT_TOKENS_LIMIT = 131072
+
 MODEL_VERIFICATION_DEADLINE_SECONDS = 90.0
 MODEL_VERIFICATION_PROBES = (
     ("text", 25.0),
@@ -756,7 +758,7 @@ def _validate_sampling(
     max_temperature = 1 if protocol is ModelApiProtocol.ANTHROPIC_MESSAGES else 2
     if not 0 <= temperature <= max_temperature:
         raise HTTPException(status_code=422, detail="MODEL_TEMPERATURE_INVALID")
-    if max_output_tokens <= 0:
+    if max_output_tokens <= 0 or max_output_tokens > MAX_OUTPUT_TOKENS_LIMIT:
         raise HTTPException(status_code=422, detail="MODEL_MAX_OUTPUT_TOKENS_INVALID")
 
 

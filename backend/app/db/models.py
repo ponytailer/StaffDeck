@@ -689,7 +689,7 @@ class ModelConfig(SQLModel, table=True):
     api_key_encrypted: str
     model: str
     temperature: float = 0.2
-    max_output_tokens: int = 500000
+    max_output_tokens: int = 131072
     extra_body_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     # 自定义请求头：{"Header-Name": "value"}，逐请求 merge 进最终出站请求头
     custom_headers_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))

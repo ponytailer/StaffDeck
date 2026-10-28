@@ -91,7 +91,7 @@ const BLANK_MODEL_FORM: ModelForm = {
   model: '',
   api_key: '',
   temperature: '0.2',
-  max_output_tokens: '500000',
+  max_output_tokens: '131072',
   extra_body: '{}',
   custom_headers: '{}',
   is_default: false,
@@ -857,7 +857,7 @@ export default function ModelsPage({
                   <Input
                     type="number"
                     min={128}
-                    max={1000000}
+                    max={131072}
                     value={form.max_output_tokens}
                     onChange={(event) => updateForm('max_output_tokens', event.target.value)}
                   />

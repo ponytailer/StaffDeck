@@ -1047,7 +1047,7 @@ def seed_demo_data(session: Session) -> None:
                 api_key_encrypted=encrypt_secret(settings.demo_model_api_key),
                 model=settings.demo_model_name,
                 temperature=0.2,
-                max_output_tokens=500000,
+                max_output_tokens=131072,
                 trust_status="legacy_trusted",
                 is_default=True,
                 enabled=True,

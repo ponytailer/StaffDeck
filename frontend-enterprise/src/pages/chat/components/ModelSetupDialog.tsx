@@ -51,7 +51,7 @@ const INITIAL_FORM: ModelSetupForm = {
   model: '',
   apiKey: '',
   temperature: '0.2',
-  maxOutputTokens: '500000',
+  maxOutputTokens: '131072',
 };
 
 export default function ModelSetupDialog({
@@ -214,7 +214,7 @@ export default function ModelSetupDialog({
                 <Input
                   type="number"
                   min={128}
-                  max={1000000}
+                  max={131072}
                   value={form.maxOutputTokens}
                   onChange={(event) => updateForm('maxOutputTokens', event.target.value)}
                 />
