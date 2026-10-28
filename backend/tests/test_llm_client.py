@@ -192,14 +192,14 @@ def test_llm_client_without_custom_headers_keeps_legacy_behavior(monkeypatch) ->
     assert client.custom_headers == {}
 
 
-def test_model_config_create_defaults_to_8192_output_tokens():
+def test_model_config_create_defaults_to_500000_output_tokens():
     request = ModelConfigCreateRequest(
         tenant_id="tenant_demo",
         name="demo",
         model="demo-model",
     )
 
-    assert request.max_output_tokens == 8192
+    assert request.max_output_tokens == 500000
     assert request.extra_body == {}
 
 

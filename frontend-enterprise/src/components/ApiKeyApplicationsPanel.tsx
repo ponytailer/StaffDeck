@@ -245,7 +245,7 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
           api_key: item.api_key,
           model: 'auto/balanced',
           temperature: 0.2,
-          max_output_tokens: 8192,
+          max_output_tokens: 500000,
           is_default: false,
           is_intent_recognition: false,
           enabled: true,
@@ -311,6 +311,23 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                         </span>
                       </div>
                       <div className="flex shrink-0 items-center gap-[6px]">
+                        {item.status === 'approved' && item.api_key && item.api_url && (
+                          <UIButton
+                            disabled={
+                              modelAddingId === item.id
+                              || consumerDisabled
+                              || consumerDeleted
+                              || applicationHasModel(item)
+                            }
+                            onClick={() => void addModelFromApplication(item)}
+                            className="h-[26px] shrink-0 gap-[4px] rounded-[8px] bg-[#18181a] px-[10px] text-[11px] font-normal text-white hover:bg-[#303030] disabled:opacity-50"
+                          >
+                            {modelAddingId === item.id
+                              ? <LoaderCircle className="size-[12px] animate-spin" />
+                              : <Sparkles className="size-[12px]" />}
+                            {applicationHasModel(item) ? '已添加模型' : '一键添加模型'}
+                          </UIButton>
+                        )}
                         <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
                         {isDeletable(item) && (
                           <button
@@ -386,32 +403,6 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
                             </div>
                           </label>
                         )}
-
-                        <div className="flex flex-wrap items-center justify-between gap-[8px] rounded-[10px] border border-[#eceef1] bg-[#fbfcfe] px-[12px] py-[10px]">
-                          <div className="min-w-0">
-                            <span className="block text-[12px] font-medium text-[#464c5e]">
-                              使用该 API Key 创建模型
-                            </span>
-                            <span className="mt-[2px] block text-[11px] leading-[16px] text-[#858b9c]">
-                              自动使用网关地址（截断到 /v1）和 API Key，模型标识为 auto/balanced。
-                            </span>
-                          </div>
-                          <UIButton
-                            disabled={
-                              modelAddingId === item.id
-                              || consumerDisabled
-                              || consumerDeleted
-                              || applicationHasModel(item)
-                            }
-                            onClick={() => void addModelFromApplication(item)}
-                            className="h-[30px] shrink-0 gap-[5px] rounded-[9px] bg-[#18181a] px-[12px] text-[12px] font-normal text-white hover:bg-[#303030] disabled:opacity-50"
-                          >
-                            {modelAddingId === item.id
-                              ? <LoaderCircle className="size-[13px] animate-spin" />
-                              : <Sparkles className="size-[13px]" />}
-                            {applicationHasModel(item) ? '已添加模型' : '一键添加模型'}
-                          </UIButton>
-                        </div>
 
                         {(() => {
                           const usage = usageItems.find((u) => u.id === item.id);

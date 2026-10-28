@@ -14,7 +14,7 @@ class ModelConfigCreateRequest(BaseModel):
     api_key: str = Field(default="", repr=False)
     model: str
     temperature: float = 0.2
-    max_output_tokens: int = 8192
+    max_output_tokens: int = 500000
     extra_body: dict[str, Any] = Field(default_factory=dict)
     # 自定义请求头：{"Header-Name": "value"}，append 到最终出站请求
     custom_headers: Optional[dict[str, Any]] = None
