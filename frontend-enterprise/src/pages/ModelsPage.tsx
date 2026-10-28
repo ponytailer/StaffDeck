@@ -770,7 +770,10 @@ export default function ModelsPage({
       </div>
 
       <div className="mt-[16px]">
-        <ApiKeyApplicationsPanel currentUser={currentUser} />
+        <ApiKeyApplicationsPanel
+          currentUser={currentUser}
+          onModelsChanged={() => { void load(false); }}
+        />
       </div>
 
       <Dialog open={editorOpen} onOpenChange={(next) => !next && closeEditor()}>

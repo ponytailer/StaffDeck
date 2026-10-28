@@ -90,7 +90,13 @@ export function modelBaseUrlFromGateway(apiUrl: string | null | undefined): stri
     .replace(/\/+$/, '');
 }
 
-export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: EnterpriseAuthUser }) {
+export function ApiKeyApplicationsPanel({
+  currentUser,
+  onModelsChanged,
+}: {
+  currentUser?: EnterpriseAuthUser;
+  onModelsChanged?: () => void | Promise<void>;
+}) {
   const [items, setItems] = useState<ApiKeyApplication[]>([]);
   const [usageItems, setUsageItems] = useState<MyUsageItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -273,6 +279,9 @@ export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: Enterpr
           : [...current, saved]
       ));
       setModelAddedIds((current) => new Set(current).add(item.id));
+      // 同步刷新页面上的模型列表，避免用户还要手动点一次「刷新」。
+      await loadModels();
+      await onModelsChanged?.();
       notify.success('已添加 auto/balanced 模型');
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '添加模型失败';
