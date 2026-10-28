@@ -7272,6 +7272,19 @@ body,
 }
 
 /* ==========================================================================
+   复合输入框（搜索框这种「label 抱住 input」的组合）：
+   里面的 input 自带 `outline-none`，焦点提示交给容器的 `focus-within` 边框。
+   但上面那条岛焦点环是**未分层**的，会压过分层里的 Tailwind 工具类；而容器是
+   `overflow-hidden` 的圆角框，环的上下两边被裁掉，只剩左右两条竖线 —— 很难看。
+   所以：凡显式写了 `outline-none` 的 input / textarea，就不在岛内画环。
+   未写 `outline-none` 的输入框（含 ui/input 那种自带 ring 的原生控件）不受影响。
+   ========================================================================== */
+.sd1-island-sidebar :is(input, textarea)[class~="outline-none"]:focus-visible,
+.sd1-content-island :is(input, textarea)[class~="outline-none"]:focus-visible {
+  outline: none;
+}
+
+/* ==========================================================================
    T04 —— 降低动效：岛相关 >150ms 过渡 → 0.01ms，并移除 hover 位移动画
    （位移仍在，但瞬时完成、无动画）。未分层，故无需 important 即可压过 utilities。
    ========================================================================== */
