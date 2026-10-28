@@ -193,6 +193,19 @@ describe('KnowledgeManagePage 个人知识库的「API 接入」指引', () => {
     const sample = await screen.findByTestId('knowledge-api-sample-curl');
     expect(sample.textContent).toContain('https://staffdeck.example/api/v1/knowledge-bases/kb_mine:search');
     expect(sample.textContent).toContain('Authorization: Bearer');
+    // kb_id 单独可见、可复制（外部系统只需要存它）
+    expect(screen.getByTestId('knowledge-api-kb-id').textContent).toBe('kb_mine');
+    expect(screen.getByRole('button', { name: /复制 ID/ })).toBeTruthy();
+  });
+
+  it('列表行操作里可以复制知识库 ID', async () => {
+    mockFetch([row]);
+    renderPage('personal');
+
+    await screen.findByText('我的知识库列表');
+    await screen.findAllByText('我的报销依据');
+    await userEvent.click(screen.getAllByRole('button', { name: '知识库操作' })[0]);
+    expect(await screen.findByText('复制知识库 ID')).toBeTruthy();
   });
 
   it('员工模式不显示该入口', async () => {

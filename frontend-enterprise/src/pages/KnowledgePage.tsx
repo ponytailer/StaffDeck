@@ -62,7 +62,9 @@ import {
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
+import { Copy } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import { DIALOG_CANCEL_BUTTON_CLASS, DIALOG_FOOTER_CLASS, DIALOG_PRIMARY_BUTTON_CLASS, MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_ITEM_DANGER_CLASS, MOBILE_CARD_CLASS, OUTLINE_ACTION_BUTTON_CLASS, OUTLINE_ACTION_BUTTON_SM_CLASS, SEARCH_COMBO_BUTTON_CLASS, SEARCH_COMBO_CLASS, SEARCH_COMBO_INPUT_CLASS, SELECT_TRIGGER_CLASS, formatDate } from '@/lib/enterprise-ui';
 import {
   clearSharedAgentScope,
@@ -1015,6 +1017,19 @@ export default function KnowledgeManagePage({
     }
   }
 
+  /**
+   * 复制 knowledge_base_id：外部系统（CMLG Office 等）只需要保存这个 id，
+   * 不用去读接入示例里的 URL。
+   */
+  async function copyKnowledgeBaseId(id: string) {
+    try {
+      await copyTextToClipboard(id);
+      notify.success('已复制知识库 ID');
+    } catch {
+      notify.error('复制失败，请手动选中复制');
+    }
+  }
+
   async function openKnowledgeBaseVersions(row: KnowledgeBaseRead) {
     const suffix = detailScopeQuery();
     try {
@@ -1171,6 +1186,15 @@ export default function KnowledgeManagePage({
             <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => openEditKnowledgeBase(item)}>
               <EditOutlined />
               详情
+            </DropdownMenuItem>
+          )}
+          {isPersonalScope && (
+            <DropdownMenuItem
+              className={MENU_ITEM_CLASS}
+              onSelect={() => void copyKnowledgeBaseId(item.id)}
+            >
+              <Copy className="size-[13px]" />
+              复制知识库 ID
             </DropdownMenuItem>
           )}
           <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void openKnowledgeBaseVersions(item)}>
@@ -1742,6 +1766,23 @@ export default function KnowledgeManagePage({
         )}
       >
         <div className="flex w-full flex-col gap-[12px]">
+          {isPersonalScope && editingKnowledgeBase && (
+            <div className="flex flex-wrap items-center gap-[6px] rounded-[10px] bg-[#f6f7f9] px-[10px] py-[8px] text-[12px] text-[#757f9c]">
+              <span>知识库 ID</span>
+              <code className="font-mono text-[11.5px] text-[#464c5e]">{editingKnowledgeBase.id}</code>
+              <button
+                type="button"
+                onClick={() => void copyKnowledgeBaseId(editingKnowledgeBase.id)}
+                className="inline-flex items-center gap-[4px] rounded-[6px] bg-white px-[8px] py-[3px] text-[11px] text-[#464c5e] outline-none transition-colors hover:bg-[#eceef3]"
+              >
+                <Copy className="size-[11px]" />
+                复制
+              </button>
+              <span className="w-full text-[11px] leading-[16px] text-[#858b9c]">
+                外部系统引用这个 ID 即可检索本知识库（见页面右上角「API 接入」）。
+              </span>
+            </div>
+          )}
           <Input
             value={knowledgeBaseDraft.name}
             onChange={(event) => setKnowledgeBaseDraft((prev) => ({ ...prev, name: event.target.value }))}

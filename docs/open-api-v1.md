@@ -285,6 +285,8 @@ curl -X POST "$BASE/knowledge-bases/$KB_ID:search" \
   -d '{"query":"差旅住宿标准","mode":"debug","max_depth":2}'
 ```
 
+`knowledge_base_id` 从哪里拿：打开 `我的数字员工 → 知识库`，列表行右侧「⋯ → 复制知识库 ID」；或点右上角「API 接入」，弹窗里的「复制 ID」以及三段示例代码都已带上当前库的 id。
+
 约束与语义：
 
 - **仅限账号级密钥**（`/me/api-credentials` 创建的密钥）。员工级密钥绑定单个员工，访问这些接口返回 `403 ACCOUNT_KEY_REQUIRED`。

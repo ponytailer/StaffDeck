@@ -51,6 +51,7 @@ export default function KnowledgeApiDialog({
   const [accessFailed, setAccessFailed] = useState(false);
   const [language, setLanguage] = useState<SampleLanguage>('curl');
   const [copied, setCopied] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState(false);
 
   useEffect(() => {
     if (!open || access || accessFailed) return;
@@ -68,7 +69,10 @@ export default function KnowledgeApiDialog({
   }, [open, access, accessFailed]);
 
   useEffect(() => {
-    if (open) setCopied(null);
+    if (open) {
+      setCopied(null);
+      setCopiedId(false);
+    }
   }, [open]);
 
   const baseUrl = (
@@ -93,6 +97,19 @@ export default function KnowledgeApiDialog({
     } catch {
       setCopied(null);
       notify.error('复制失败，请手动选中代码复制');
+    }
+  }
+
+  /** 单独复制 knowledge_base_id：外部系统只需要存这个，不必去读示例代码。 */
+  async function copyKnowledgeBaseId() {
+    if (!knowledgeBaseId) return;
+    try {
+      await copyTextToClipboard(knowledgeBaseId);
+      setCopiedId(true);
+      notify.success('已复制知识库 ID');
+    } catch {
+      setCopiedId(false);
+      notify.error('复制失败，请手动选中复制');
     }
   }
 
@@ -151,15 +168,30 @@ export default function KnowledgeApiDialog({
               <dt className="text-[#757f9c]">知识库</dt>
               <dd className="text-[#464c5e]">
                 {knowledgeBaseId ? (
-                  <>
-                    {knowledgeBaseName || '未命名'}
-                    <code className="ml-[6px] rounded-[4px] bg-[#f4f5f8] px-[4px] font-mono text-[11px] text-[#464c5e]">
+                  <div className="flex flex-wrap items-center gap-[6px]">
+                    <span>{knowledgeBaseName || '未命名'}</span>
+                    <code
+                      data-testid="knowledge-api-kb-id"
+                      className="rounded-[4px] bg-[#f4f5f8] px-[6px] py-[2px] font-mono text-[11px] text-[#464c5e]"
+                    >
                       {knowledgeBaseId}
                     </code>
-                  </>
+                    <Button
+                      type="button"
+                      onClick={() => void copyKnowledgeBaseId()}
+                      className="h-[22px] gap-[4px] rounded-[6px] bg-[#f4f5f8] px-[8px] text-[11px] text-[#464c5e] hover:bg-[#eceef3]"
+                    >
+                      {copiedId ? <Check className="size-[11px]" /> : <Copy className="size-[11px]" />}
+                      {copiedId ? '已复制' : '复制 ID'}
+                    </Button>
+                  </div>
                 ) : (
                   <span className="text-[#b4690e]">还没有个人知识库，先新建一个再复制示例</span>
                 )}
+                <p className="mt-[6px] text-[11px] leading-[17px] text-[#858b9c]">
+                  这个 ID 就是外部系统要长期保存的引用；它在「我的知识库」列表行上也能直接复制。
+                  知识库只能下线、不能删除，所以 ID 不会失效。
+                </p>
               </dd>
               <dt className="text-[#757f9c]">请求头</dt>
               <dd>
