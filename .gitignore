@@ -70,3 +70,4 @@ logs/
 
 # playwright-cli 会话快照（本地自测产物）
 .playwright-cli/
+.idea
