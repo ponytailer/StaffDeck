@@ -485,14 +485,22 @@ class _ToolPackageMixin:
         *,
         call_id: str,
         inline_max_chars: int = _INLINE_JSON_TOOL_RESULT_MAX_CHARS,
+        skip: bool = False,
     ) -> dict[str, Any]:
         """Keep large knowledge/tool JSON out of the isolated model transcript.
 
         ``inline_max_chars`` 默认沿用 HTTP/MCP Tool 的 2000 字符口径；知识检索传入
         更高的预算（见 app/knowledge/search_payload.py），让精简后的载荷能直接内联，
         不必先落文件再让模型盲读。
+
+        ``skip=True``：调用方已声明「这份结果不进模型 transcript」（代码直调的确定性
+        知识工作流），此时无论多大都原样返回。外置只是为了保护 transcript；对不进
+        transcript 的调用方，外置纯属自伤 —— 它会拿到 ``kind=sandbox_json_file``
+        指针而判定「结果不可用」，从确定性路径降级回决策循环。
         """
 
+        if skip:
+            return payload
         data = payload.get("data")
         if not isinstance(data, (dict, list)):
             return payload

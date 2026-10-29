@@ -726,12 +726,23 @@ def visible_tool_rows(
 
 
 def _tool_runtime_enabled(db: Session, row: Tool) -> bool:
-    """Tool definitions have no global on/off switch.
+    """工具在**运行时**是否真的可调用。
 
-    Only the MCP server's own availability is a runtime gate; employee-level
-    enable/disable is represented by the binding status checked above.
+    两条独立的闸门，任一关闭即视为不可用：
+
+    1. ``Tool.enabled``（全局定义开关，管理员在工具页停用整个工具）；
+    2. MCP server 自身可用性（仅 MCP 工具需要）。
+
+    员工级的启用/停用由调用方检查 ``binding.status``，不在这里判。
     """
 
+    # 曾经漏掉这一条：函数只查 MCP server，导致全局停用的工具照样出现在
+    # manifest 里。纯 HTTP 工具没有 MCP server，于是 ``enabled=False`` 完全
+    # 不起作用 —— 已停用的工具仍被当成「可用能力」，进而让
+    # _is_knowledge_workflow_frame 误判「这个员工有工具」，把纯知识问答
+    # 挡在确定性工作流之外。
+    if not row.enabled:
+        return False
     if not row.mcp_server_id:
         return True
     server = db.get(MCPServer, row.mcp_server_id)

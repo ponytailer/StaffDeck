@@ -216,9 +216,15 @@ class _KnowledgeWorkflowMixin:
                 )
 
             # 2) 代码直调检索（不走 LLM 决策轮）
+            # ``inline_result=True``：这条路径的 data 只在进程内用（拼回答上下文与
+            # 引用卡片），不进模型 transcript。不传的话，命中条数多到精简载荷超出
+            # 内联预算时，data 会被换成 ``kind=sandbox_json_file`` 指针，下面的
+            # 「data 是不是 dict」判定立刻失败 → return None → 降级回 Harness 决策
+            # 循环。实测「打印机怎么用」7 条命中即触发：25170 > 24000 预算。
             search_result = invoker.invoke(
                 "knowledge_search",
                 {"query": message[:200], "max_chunks": 8},
+                inline_result=True,
             )
             if not isinstance(search_result, dict) or search_result.get("success") is not True:
                 trace(

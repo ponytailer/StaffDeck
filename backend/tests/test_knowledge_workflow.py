@@ -147,9 +147,13 @@ class _FakeInvoker:
     def __init__(self, result: dict[str, Any]) -> None:
         self.result = result
         self.invocations: list[tuple[str, dict[str, Any]]] = []
+        self.kwargs: list[dict[str, Any]] = []
 
-    def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def invoke(
+        self, name: str, arguments: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
         self.invocations.append((name, arguments))
+        self.kwargs.append(kwargs)
         return self.result
 
 
@@ -203,6 +207,11 @@ def test_workflow_retrieves_in_code_then_answers_once() -> None:
     assert invoker.invocations == [
         ("knowledge_search", {"query": "身高体重有要求吗", "max_chunks": 8})
     ]
+    # 代码直调必须声明「结果不外置」：data 只在进程内用（拼回答上下文与引用卡
+    # 片），不进模型 transcript。否则命中条数多到超出内联预算时，data 会被换成
+    # sandbox_json_file 指针，下面的可用性判断失败 → 白白降级回 Harness 循环
+    # （「打印机怎么用」7 条命中即触发：25170 > 24000）。
+    assert invoker.kwargs == [{"inline_result": True}]
     # 只发生一次作答 LLM
     assert len(rg.calls) == 1
     # 作答必须打上专用 operation（output_policy 据此只关这条路径的思考链）

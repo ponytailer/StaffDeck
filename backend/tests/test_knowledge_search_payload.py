@@ -312,3 +312,70 @@ def test_large_hit_sets_fit_the_scaled_budget() -> None:
     assert budget > KNOWLEDGE_PAYLOAD_MAX_CHARS
     assert serialized_chars(compacted) <= budget
     assert len(compacted["evidence_pack"]) == 19
+
+
+# ---------------------------------------------------------------------------
+# 代码直调调用方（知识工作流）：结果不进 transcript，因此不受内联预算约束
+# ---------------------------------------------------------------------------
+
+
+def test_inline_result_persist_skips_externalisation() -> None:
+    """``skip=True`` 时无论多大都原样返回，不产生沙箱文件指针。
+
+    外置只为保护**模型 transcript**；代码直调的调用方根本不进 transcript，
+    它要的是进程内 dict。被换成 ``kind=sandbox_json_file`` 指针后，调用方只能
+    判定「检索结果不可用」并降级回决策循环。
+    """
+
+    from app.core.engine.invoke_tools import _ToolPackageMixin
+
+    payload = {
+        "success": True,
+        "data": {
+            "chunks": [{"id": f"c{i}", "content": "正文" * 900} for i in range(20)]
+        },
+    }
+    assert serialized_chars(payload["data"]) > KNOWLEDGE_PAYLOAD_MAX_CHARS
+
+    class _Stub:
+        # 只需要 _persist_large_json_result 这一条方法体，绝不触发文件执行器
+        _persist_large_json_result = _ToolPackageMixin._persist_large_json_result
+
+    kept = _Stub()._persist_large_json_result(
+        payload, call_id="hcall_x", inline_max_chars=2_000, skip=True
+    )
+
+    assert kept is payload
+    assert isinstance(kept["data"], dict)
+    assert "chunks" in kept["data"]
+
+
+def test_inline_result_budget_keeps_evidence_text_complete() -> None:
+    """代码直调路径用硬上限做压缩预算：证据正文不再被砍到 floor。
+
+    命中条数多时自适应预算是 24K，压到下限后正文只剩 200 字 —— 这份证据还要
+    交给作答模型，砍短了就答不全，模型被迫再 ``read_knowledge_chunk`` 补读。
+    """
+
+    payload = _payload(chunk_count=12)
+    payload["evidence_pack"] = [
+        _evidence(index, content="很长的正文" * 3_000) for index in range(1, 13)
+    ]
+
+    transcript_budget = knowledge_payload_budget(payload)
+    assert transcript_budget < KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS
+
+    with_transcript_budget = compact_knowledge_search_payload(
+        payload, max_chars=transcript_budget
+    )
+    with_inline_budget = compact_knowledge_search_payload(
+        payload, max_chars=KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS
+    )
+
+    def _evidence_chars(compacted: dict) -> int:
+        return sum(len(item.get("content") or "") for item in compacted["evidence_pack"])
+
+    # 硬上限下证据正文显著更完整，且仍在硬上限内
+    assert _evidence_chars(with_inline_budget) > _evidence_chars(with_transcript_budget)
+    assert serialized_chars(with_inline_budget) <= KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS
+    assert len(with_inline_budget["evidence_pack"]) == 12

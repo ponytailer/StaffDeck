@@ -68,6 +68,7 @@ from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.search_payload import (
+    KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS,
     compact_knowledge_search_payload,
     knowledge_payload_budget,
     serialized_chars,
@@ -257,7 +258,23 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
             pass
         return self.model_config
 
-    def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def invoke(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        inline_result: bool = False,
+    ) -> dict[str, Any]:
+        """执行一次能力调用。
+
+        ``inline_result``：把自己的 ``data`` 无条件保留在返回值里，不做大载荷外置
+        （``_persist_large_json_result``）。外置的目的只有一个 —— 别把超大的 JSON
+        塞进**模型的 transcript**（模型读不全就只能 ``read_file`` 盲读、换词重搜）。
+        但代码直调的调用方（确定性知识工作流）根本不进 transcript，它要的就是进程
+        内的 dict，外置只会让它拿到一个 ``kind=sandbox_json_file`` 指针而判定「检索
+        结果不可用」，白白降级回 Harness 决策循环（实测多出 3 次 LLM 调用）。
+        因此这类调用方显式传 ``True`` 跳过外置，与预算是否够用彻底解耦。
+        """
         self._raise_if_cancelled()
         if callable(self.ensure_execution_lease):
             self.ensure_execution_lease()
@@ -330,6 +347,7 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
                     ),
                     arguments,
                     call_id=call_id,
+                    inline_result=inline_result,
                 )
             elif descriptor.kind == "tool":
                 result = self._invoke_external_tool(
@@ -512,6 +530,7 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
         arguments: dict[str, Any],
         *,
         call_id: str,
+        inline_result: bool = False,
     ) -> dict[str, Any]:
         query = str(arguments.get("query") or "").strip()
         if not query:
@@ -566,7 +585,15 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
         # 内联预算按命中条数自适应：命中 15~20 条时固定 24K 塞不下，会被
         # _persist_large_json_result 换成沙箱文件指针（模型只能 read_file 盲读）。
         # 压缩与落盘判定必须共用同一个预算。
-        payload_budget = knowledge_payload_budget(payload)
+        # 反过来，``inline_result=True`` 的调用方（代码直调的知识工作流）不吃
+        # transcript 预算，压到 24K 只会把证据正文砍到 200 字下限：它拿到的是一手
+        # 证据，之后还要交给作答模型，正文被砍短就答不全、被迫 read_knowledge_chunk
+        # 补读。这类调用方直接给硬上限，让证据保持完整。
+        payload_budget = (
+            KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS
+            if inline_result
+            else knowledge_payload_budget(payload)
+        )
         compacted = compact_knowledge_search_payload(payload, max_chars=payload_budget)
         result = {
             "success": True,
@@ -604,6 +631,7 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
             result,
             call_id=call_id,
             inline_max_chars=payload_budget,
+            skip=inline_result,
         )
 
     def _invoke_external_tool(
