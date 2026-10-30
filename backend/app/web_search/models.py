@@ -111,6 +111,12 @@ class WebSearchResult:
 
     query: str
     hits: list[WebSearchHit] = field(default_factory=list)
+    #: 实际送给检索引擎的词。与 ``query`` 不同即说明做过问句改写
+    #: （见 ``app/web_search/query.py``）：口语问句直接送引擎只会匹配到
+    #: 时间词本身，返回黄历/日历页。
+    search_query: str = ""
+    #: 改写类型：``generic_news`` / ``trimmed`` / ``""``（原样）。
+    query_rewrite: str = ""
     engine: str = ""
     #: 尝试过的引擎及其结果（成功/失败原因），用于诊断与 trace。
     attempts: list[dict[str, Any]] = field(default_factory=list)
@@ -143,6 +149,8 @@ class WebSearchResult:
                 for item in chunks
             ],
             "query": self.query,
+            "search_query": self.search_query or self.query,
+            "query_rewrite": self.query_rewrite,
             "engine": self.engine,
             "result_count": len(chunks),
             "sufficient": self.sufficient,

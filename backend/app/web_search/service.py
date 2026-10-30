@@ -43,6 +43,7 @@ from app.web_search.models import (
     WebSearchQuery,
     WebSearchResult,
 )
+from app.web_search.query import build_search_query
 
 #: 单次检索认为「够用」的最小有效条数。低于它继续降级到下一个引擎，
 #: 全部引擎都试完仍不足则把 ``sufficient`` 置 False（结果照样返回）。
@@ -188,6 +189,11 @@ def search_web(query: WebSearchQuery | str, **overrides: Any) -> WebSearchResult
     if not text:
         raise WebSearchError(WEB_SEARCH_EMPTY_QUERY, "检索词不能为空。")
 
+    # 口语问句改写成关键词。放在入口而不是各调用点：Harness 的模型自主调用
+    # 与知识快路径的代码直调共用这里，改一处两条路径都生效。
+    # 改写只影响送给引擎的检索词，``WebSearchResult.query`` 保留原始 query。
+    text, query_note = build_search_query(text)
+
     max_results = max(1, min(int(request.max_results or 8), 20))
     specs = get_engines(request.engines)
     started = time.monotonic()
@@ -328,7 +334,9 @@ def search_web(query: WebSearchQuery | str, **overrides: Any) -> WebSearchResult
         )
 
     return WebSearchResult(
-        query=text,
+        query=request.query,
+        search_query=text,
+        query_rewrite=query_note,
         hits=hits,
         engine=hits[0].engine if hits else "",
         attempts=attempts,

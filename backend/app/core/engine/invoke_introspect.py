@@ -430,6 +430,10 @@ class _CapabilityInfoMixin:
             "web_search_completed",
             {
                 "query": query,
+                # 实际送引擎的词 + 改写类型：线上排查「检索到了黄历站」这类
+                # 问题时，光看 result_count=8 会误判成检索成功。
+                "search_query": result.search_query,
+                "query_rewrite": result.query_rewrite,
                 "engine": result.engine,
                 "result_count": result.count,
                 "sufficient": result.sufficient,

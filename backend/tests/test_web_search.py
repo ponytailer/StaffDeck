@@ -373,6 +373,48 @@ def test_engine_registry_order_and_lookup() -> None:
     assert [spec.name for spec in get_engines(["nope"])][0] == "bing"
 
 
+def test_rewritten_query_reaches_engine_url(patch_client) -> None:
+    """改写必须作用在**真正发出去的请求**上，而不只是返回值里的字段。
+
+    线上故障：``knowledge_workflow_web_search`` 记着 ``result_count: 8`` 看似成功，
+    实际送进引擎的是「今天的新闻有哪些」，8 条全是黄历站。这条断言把
+    「改写真的改了 URL」钉死，避免以后有人只改 ``WebSearchResult`` 的展示字段。
+    """
+
+    client = patch_client(
+        {"cn.bing.com/search": _FakeResponse(_bing_html([("标题内容", "https://e.com/a", "摘要内容够长", "")]))}
+    )
+    result = search_web("今天的新闻有哪些", engines=["bing"], max_results=1, inter_engine_delay_seconds=0)
+
+    search_urls = [url for url in client.requests if "cn.bing.com/search" in url]
+    assert search_urls, "未发出检索请求"
+    # 引擎 URL 里的中文是百分号编码的，断言前先解码
+    from urllib.parse import unquote_plus
+
+    decoded = unquote_plus(search_urls[0])
+    # 日期随当天变化，只断言归一后的固定前缀
+    assert "今日要闻" in decoded
+    assert result.search_query.startswith("今日要闻 ")
+    assert result.query_rewrite == "generic_news"
+    # 原始 query 要保留下来给前端/引用卡片展示，不能把改写词透出去
+    assert result.query == "今天的新闻有哪些"
+
+
+def test_topic_query_sent_verbatim(patch_client) -> None:
+    """带主题词的 query 原样发出：补日期会把 query 切碎成单字条目。"""
+
+    client = patch_client(
+        {"cn.bing.com/search": _FakeResponse(_bing_html([("标题内容", "https://e.com/a", "摘要内容够长", "")]))}
+    )
+    result = search_web("新能源汽车补贴政策", engines=["bing"], max_results=1, inter_engine_delay_seconds=0)
+
+    search_urls = [url for url in client.requests if "cn.bing.com/search" in url]
+    assert search_urls
+    assert result.search_query == "新能源汽车补贴政策"
+    assert result.query_rewrite == ""
+    assert "2026%E5%B9%B4" not in search_urls[0]
+
+
 def test_search_web_accepts_query_object(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeClient(
         {"cn.bing.com/search": _FakeResponse(_bing_html([("标题内容", "https://e.com/a", "摘要", "")]))}
