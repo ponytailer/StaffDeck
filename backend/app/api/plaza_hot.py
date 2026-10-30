@@ -68,6 +68,26 @@ METRIC_LABELS = {
     "knowledge": "被引用",
 }
 
+# 本地清单类 Agent 进榜配置：key 必须与 agent-catalog.json 的 `id` 一致，
+# 前端 `openHotItem` 靠 `findAgentCatalogEntry(ref_id)` 反查并跳到工作台路由。
+#
+# 这类 Agent 是前端静态清单、不落库，没有 agent_profiles.usage_count，
+# 计数只能放在 app_usage_counters。新加一条 = 这里补一行 + 各渠道上报计数。
+CATALOG_APP_META: dict[str, tuple[str, str]] = {
+    OA_ASSISTANT_APP_KEY: (
+        "OA 单据助手",
+        "浏览器书签面板：在 OA 报销单上一键代填（发票识别 + 自动生成明细）",
+    ),
+    "ocr-assistant": (
+        "OCR 助手",
+        "扫描件 / 截图 / 图片 PDF 转成可复制的 Markdown 或纯文本，带逐行坐标与版面块",
+    ),
+    "decision-assistant": (
+        "决策助手",
+        "表单式批量决策：是非 / 分类 / 评分三类问题一次判定，给出结论与置信度",
+    ),
+}
+
 
 class HotItem(BaseModel):
     kind: str  # agents | general-skills | skills | knowledge
@@ -138,18 +158,27 @@ def _scored_items(db: Session, tenant_id: str, user: Any) -> list[HotItem]:
             _push("agents", row.id, row.name, row.description or "",
                   max(0, int(row.usage_count or 0)), row.updated_at)
 
-    # OA 单据助手（agent-catalog.json 里的本地清单条目，走面板埋点计数）：
-    # 它不在 agent_profiles 里，所以单独补一条，让首页排行能统计到
-    usage_row = db.exec(
-        select(AppUsageCounter).where(AppUsageCounter.app_key == OA_ASSISTANT_APP_KEY)
-    ).first()
-    usage_count = max(0, int((usage_row.usage_count if usage_row else 0) or 0))
-    if usage_count > 0:  # 用过才进榜（新租户页面不该凭空多一条 0 次记录）
+    # 本地清单类 Agent（agent-catalog.json 里的条目，走 app_usage_counters 计数）：
+    # 它们不在 agent_profiles 里，所以单独补，让首页排行能统计到。
+    # 只补「用过才有数」的（usage_count > 0），新租户页面不该凭空多出一条 0 次记录。
+    counter_rows = {
+        row.app_key: row
+        for row in db.exec(
+            select(AppUsageCounter).where(
+                AppUsageCounter.app_key.in_(list(CATALOG_APP_META))  # type: ignore[attr-defined]
+            )
+        ).all()
+    }
+    for app_key, (title, description) in CATALOG_APP_META.items():
+        usage_row = counter_rows.get(app_key)
+        usage_count = max(0, int((usage_row.usage_count if usage_row else 0) or 0))
+        if usage_count <= 0:
+            continue
         _push(
             "agents",
-            OA_ASSISTANT_APP_KEY,
-            "OA 单据助手",
-            "浏览器书签面板：在 OA 报销单上一键代填（发票识别 + 自动生成明细）",
+            app_key,
+            title,
+            description,
             usage_count,
             usage_row.updated_at if usage_row else None,
         )

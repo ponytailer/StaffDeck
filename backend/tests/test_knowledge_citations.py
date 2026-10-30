@@ -570,3 +570,90 @@ def test_globalize_citations_renumbers_across_frames_and_drops_duplicates() -> N
     # 第二帧里重复的那条被折叠，两帧共用同一条编号。
     assert [item["label"] for item in first.citations] == ["[1]"]
     assert [item["label"] for item in second.citations] == ["[1]", "[2]"]
+
+
+def _web_payload(rows: list[tuple[str, str, str]]) -> dict:
+    """构造 ``WebSearchResult.to_payload()`` 的同形状数据。"""
+
+    chunks = [
+        {
+            "chunk_id": f"web_{index}",
+            "title": title,
+            "url": url,
+            "source_ref": url,
+            "content": snippet,
+            "score": 1.0 / index,
+            "source_type": "web",
+            "engine": "bing",
+            "site": url.split("/")[2],
+            "rank": index,
+        }
+        for index, (title, url, snippet) in enumerate(rows, start=1)
+    ]
+    return {"chunks": chunks, "evidence_pack": list(chunks), "result_count": len(chunks)}
+
+
+def test_web_citations_keep_url_and_source_type() -> None:
+    """网页引用必须带 url 与 source_type=web，否则前端只能拿到一串文本。
+
+    线上故障：投影 ``_normalize_source_items`` 只挑固定字段，``url`` /
+    ``source_type`` 被丢掉，网页证据在卡片上和普通分块长得一样，点开也
+    到不了原文。
+    """
+
+    citations = knowledge_citations_from_results(
+        [_web_payload([("光明日报要闻", "https://epaper.gmw.cn/x", "今日要闻正文")])]
+    )
+
+    assert len(citations) == 1
+    citation = citations[0]
+    assert citation["url"] == "https://epaper.gmw.cn/x"
+    assert citation["source_type"] == "web"
+    assert citation["site"] == "epaper.gmw.cn"
+
+
+def test_local_citations_have_no_web_fields() -> None:
+    """企业知识库来源不能被误标成网页：前端据此决定点开是外链还是详情弹窗。"""
+
+    citations = knowledge_citations_from_results(
+        [
+            {
+                "evidence_pack": [
+                    {
+                        "chunk_id": "kchunk_1",
+                        "source_ref": "手册.pdf#行李寄存",
+                        "content": "住客可在 L 层免费寄存行李。",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert len(citations) == 1
+    assert "url" not in citations[0]
+    assert "source_type" not in citations[0]
+
+
+def test_web_and_local_payloads_share_one_numbering() -> None:
+    """知识库 + 网页并存时，编号必须覆盖两条来源。
+
+    ``max_results=1`` 的默认值只取最后一条 payload，会让模型看到的 ``[1]``
+    是网页、而落库卡片的 ``[1]`` 是知识库概念 —— 正文编号与来源错位。
+    """
+
+    local = {
+        "evidence_pack": [
+            {"chunk_id": "kchunk_1", "source_ref": "手册.pdf", "content": "本地正文"}
+        ]
+    }
+    web = _web_payload([("光明日报要闻", "https://epaper.gmw.cn/x", "网页正文")])
+
+    default_citations = knowledge_citations_from_results([local, web])
+    all_citations = knowledge_citations_from_results([local, web], max_results=None)
+
+    # 默认行为只取最后一条（既有契约，别处依赖）
+    assert len(default_citations) == 1
+    assert default_citations[0]["source_type"] == "web"
+    # 回答上下文必须看全部：两条来源都在编号表里
+    assert len(all_citations) == 2
+    assert {item["source_type"] for item in all_citations if item.get("source_type")} == {"web"}

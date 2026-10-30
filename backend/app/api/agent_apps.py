@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
+from app.api.app_usage import bump_app_usage
 from app.core.artifacts.doc_review import (
     CHAT_SYSTEM_PROMPT,
     DOCX_MEDIA_TYPE,
@@ -459,6 +460,10 @@ OCR_OPEN_API_SCOPE = "ocr:run"
 OCR_OPEN_API_ENDPOINT_PATH = "/api/v1/ocr"
 OCR_OPEN_API_DOCS_PATH = "/api/v1/docs"
 
+#: OCR 助手在 `app_usage_counters` 里的 key，必须与 `agent-catalog.json` 的 `id` 一致
+#: （前端 `openHotItem` 靠 `findAgentCatalogEntry(ref_id)` 反查工作台路由）。
+OCR_ASSISTANT_APP_KEY = "ocr-assistant"
+
 
 class OcrApiAccessResponse(BaseModel):
     """「API 接入」弹窗要展示的接入信息（路径与对外基址都由后端给，前端不再自己拼）。"""
@@ -579,9 +584,13 @@ def execute_ocr_upload(
     )
 
     try:
-        return run_ocr(payload, options)
+        result = run_ocr(payload, options)
     except OcrError as exc:
+        # 上游失败不计入「被使用」：用户没拿到结果，不该在排行榜上多一次
         raise _ocr_http_error(exc) from exc
+    # 成功跑完一次请求 +1（本次传了几个文件仍算一次），供首页热门排行榜统计
+    bump_app_usage(OCR_ASSISTANT_APP_KEY)
+    return result
 
 
 @router.post("/ocr:run")

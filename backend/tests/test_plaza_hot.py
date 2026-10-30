@@ -203,18 +203,38 @@ def test_hot_ranks_by_real_counters_and_skips_unpublished():
         assert len(payload.items) <= 10
 
 
-def test_oa_assistant_usage_counter_is_listed():
-    """OA 单据助手（前端本地清单、走面板埋点）用过之后要进首页排行。"""
+def test_catalog_app_usage_counters_are_listed():
+    """前端本地清单类 Agent（OA 单据助手 / OCR 助手 / 决策助手）用过之后要进首页排行。
+
+    这类 Agent 是 `agent-catalog.json` 里的静态条目、不落库，热度只能来自
+    `app_usage_counters`；`ref_id` 必须等于清单的 `id`，前端靠它反查工作台路由。
+    """
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        # 没用过 → 不进榜（新租户页面不该凭空多一条 0 次记录）
-        assert [i for i in _call(db).items if i.ref_id == "oa-assistant"] == []
+        # 没用过 → 不进榜（新租户页面不该凭空多出 0 次记录）
+        assert [i for i in _call(db).items if i.kind == "agents"] == []
 
         db.add(AppUsageCounter(app_key="oa-assistant", usage_count=5))
+        db.add(AppUsageCounter(app_key="ocr-assistant", usage_count=25))
+        db.add(AppUsageCounter(app_key="decision-assistant", usage_count=18))
         db.commit()
-        rows = [i for i in _call(db).items if i.ref_id == "oa-assistant"]
-        assert len(rows) == 1
-        assert rows[0].kind == "agents"
-        assert rows[0].title == "OA 单据助手"
-        assert rows[0].metric_value == 5
-        assert rows[0].metric_label == "被使用"
+
+        by_ref = {i.ref_id: i for i in _call(db).items}
+        for ref_id, expected in (
+            ("oa-assistant", 5),
+            ("ocr-assistant", 25),
+            ("decision-assistant", 18),
+        ):
+            row = by_ref[ref_id]
+            assert row.kind == "agents"
+            assert row.metric_value == expected
+            assert row.metric_label == "被使用"
+
+        assert by_ref["ocr-assistant"].title == "OCR 助手"
+        assert by_ref["decision-assistant"].title == "决策助手"
+        # 排序仍按真实计数降序
+        assert [i.ref_id for i in _call(db).items][:3] == [
+            "ocr-assistant",
+            "decision-assistant",
+            "oa-assistant",
+        ]

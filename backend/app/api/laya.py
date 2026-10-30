@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.config import get_settings
 from app.core.knowledge_flow.laya_client import LayaError, health_url, predict_raw
+from app.api.app_usage import bump_app_usage
 from app.security.auth import get_current_user
 
 router = APIRouter(
@@ -49,6 +50,10 @@ MAX_CRITERIA = 30
 OPEN_API_ENDPOINT_PATH = "/api/v1/decisions/predict"
 OPEN_API_DOCS_PATH = "/api/v1/docs"
 OPEN_API_SCOPE = "decisions:run"
+
+#: 决策助手在 `app_usage_counters` 里的 key，必须与 `agent-catalog.json` 的 `id` 一致
+#: （前端 `openHotItem` 靠 `findAgentCatalogEntry(ref_id)` 反查工作台路由）。
+DECISION_ASSISTANT_APP_KEY = "decision-assistant"
 
 
 class LayaQuestion(BaseModel):
@@ -173,6 +178,8 @@ def execute_predict(request: LayaPredictRequest) -> LayaPredictResponse:
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+    # 成功拿到判定结果才算一次「被使用」（本次问几个问题仍算一次），供首页热门排行榜统计
+    bump_app_usage(DECISION_ASSISTANT_APP_KEY)
     routing = body.get("routing")
     return LayaPredictResponse(
         answers=body["answers"],
