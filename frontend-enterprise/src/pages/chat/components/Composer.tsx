@@ -1,8 +1,7 @@
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Gift } from 'lucide-react';
+import { Gift, Globe } from 'lucide-react';
 
-import EmployeeAvatar from '@/components/EmployeeAvatar';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import {
   DropdownMenu,
@@ -10,8 +9,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
-import { employeeDisplayName } from '@/employee';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import type { ChatSlashCommand } from '@/types';
@@ -26,7 +23,6 @@ import {
   CHAT_COMPOSER_ATTACHMENT_REMOVE_CLASS,
   CHAT_COMPOSER_ATTACHMENT_STATUS_CLASS,
   CHAT_COMPOSER_ATTACHMENTS_CLASS,
-  CHAT_COMPOSER_AVATAR_CLASS,
   CHAT_COMPOSER_CONTEXT_ROW_CLASS,
   CHAT_COMPOSER_DROP_HINT_CLASS,
   CHAT_COMPOSER_FORM_CLASS,
@@ -41,6 +37,7 @@ import {
   CHAT_COMPOSER_STOP_BTN_CLASS,
   CHAT_COMPOSER_TEXTAREA_CLASS,
   CHAT_COMPOSER_TEXTAREA_WITH_COMMAND_CLASS,
+  CHAT_COMPOSER_WEB_SEARCH_CLASS,
   CHAT_INPUT_SHELL_CLASS,
   CHAT_MENU_CONTENT_CLASS,
   CHAT_MENU_ITEM_CLASS,
@@ -88,12 +85,8 @@ export default function Composer({
     uploadingComposerAttachment,
     currentSessionRunning,
     composerActive,
-    showComposerAvatar,
-    displayedProfile,
-    displayedAgent,
-    emptyRoleSummary,
-    emptyProfileTags,
-    emptyStats,
+    webSearchEnabled,
+    setWebSearchEnabled,
     enabledModelConfigs,
     selectedModelConfig,
     changeModelConfig,
@@ -226,86 +219,42 @@ export default function Composer({
             <span className="min-w-0 text-[12px] leading-[18px]">{freeModelNoticeText}</span>
           </div>
         )}
-        {showComposerAvatar && displayedProfile && (
-          <HoverCard openDelay={80} closeDelay={80}>
-            <HoverCardTrigger asChild>
-              <button
-                type="button"
-                aria-label="员工信息"
-                className={cn(CHAT_COMPOSER_AVATAR_CLASS, 'block cursor-pointer outline-none')}
-              >
-                <EmployeeAvatar profile={displayedProfile} size={44} className="size-full" />
-              </button>
-            </HoverCardTrigger>
-            <HoverCardContent
-              side="left"
-              align="end"
-              sideOffset={10}
-              className="flex w-[220px] flex-col items-start gap-[8px] rounded-[20px] border-0 bg-white p-0 py-[4px] shadow-[0px_16px_15px_rgba(0,0,0,0.1)] ring-0"
-            >
-              <div className="flex w-full flex-col px-[6px]">
-                <div className="flex h-[46px] w-full flex-col items-center justify-end rounded-[14px] bg-[#f6f6f6] pb-[4px] pl-[8px] pr-[16px] pt-[8px]">
-                  <div className="flex w-full items-end">
-                    <div className="flex items-end gap-[4px]">
-                      <EmployeeAvatar
-                        profile={displayedProfile}
-                        agent={displayedAgent ?? undefined}
-                        width={60}
-                        height={60}
-                        radius={30}
-                        objectPosition="bottom"
-                      />
-                      <div className="flex h-[36px] flex-col justify-center gap-[2px] whitespace-nowrap pb-[2px] text-[10px] capitalize leading-normal">
-                        <p className="font-medium text-[#464c5e]">
-                          {displayedAgent ? employeeDisplayName(displayedAgent) : displayedProfile.roleName}
-                        </p>
-                        <p className="text-[#757f9c]">{displayedProfile.roleName}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex w-full flex-col gap-[8px] px-[8px]">
-                <p className="w-full text-[10px] capitalize leading-[14px] text-[#757f9c]">
-                  {emptyRoleSummary}
-                </p>
-                {emptyProfileTags.length > 0 && (
-                  <div className="flex w-full flex-wrap content-center items-center gap-[4px]">
-                    {emptyProfileTags.map((tag, index) => (
-                      <div
-                        key={`${tag}-${index}`}
-                        className="flex h-[16px] items-center justify-center rounded-[10px] border-[0.5px] border-[#e3e7f1] px-[8px] py-[2px]"
-                      >
-                        <span className="whitespace-nowrap text-[8px] capitalize leading-normal text-[#757f9c]">
-                          {tag}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="flex w-full flex-col px-[8px] pb-[8px]">
-                <div className="flex w-full items-start whitespace-nowrap capitalize leading-normal">
-                  {emptyStats.map((item, index) => (
-                    <div
-                      key={item.label}
-                      className={cn(
-                        'flex flex-1 flex-col justify-center gap-[4px] border-[0.5px] border-[#e3e7f1] px-[12px] py-[6px]',
-                        index === 0 && 'rounded-l-[14px]',
-                        index === emptyStats.length - 1 && 'rounded-r-[14px]',
-                      )}
-                    >
-                      <p className="text-[16px] font-medium text-[#18181a]">{item.value}</p>
-                      <p className="text-[10px] text-[#464c5e]">{item.label}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </HoverCardContent>
-          </HoverCard>
-        )}
+        {/* 「互联网检索」开关（原员工头像位）：每轮对话的选择，关闭时
+            请求体不带 web_search，后端能力根本不进冻结清单。 */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={webSearchEnabled}
+          aria-label={t('互联网检索')}
+          title={webSearchEnabled
+            ? t('已开启：员工会先查企业知识库，证据不足或涉及时效性问题时自动联网检索')
+            : t('已关闭：仅使用企业知识库回答。开启后知识库证据不足时会联网检索')}
+          onClick={() => setWebSearchEnabled((current) => !current)}
+          className={cn(
+            CHAT_COMPOSER_WEB_SEARCH_CLASS,
+            webSearchEnabled
+              ? 'border-[#0f766e] bg-[#0f766e] text-white shadow-[0_2px_10px_rgba(15,118,110,0.28)]'
+              : 'border-[#e3e7f1] bg-white text-[#5f687b] shadow-[0_2px_10px_rgba(24,24,26,0.06)] hover:border-[#cdd3de]',
+          )}
+        >
+          <Globe className="size-[14px] shrink-0" strokeWidth={1.8} />
+          <span className="shrink-0">{t('互联网检索')}</span>
+          <span
+            className={cn(
+              'relative inline-block h-[14px] w-[24px] shrink-0 rounded-full transition-colors',
+              webSearchEnabled ? 'bg-white/30' : 'bg-[#e3e7f1]',
+            )}
+          >
+            <span
+              className={cn(
+                'absolute top-[2px] size-[10px] rounded-full transition-all',
+                webSearchEnabled
+                  ? 'left-[12px] bg-white'
+                  : 'left-[2px] bg-white shadow-[0_0_0_0.5px_rgba(24,24,26,0.12)]',
+              )}
+            />
+          </span>
+        </button>
         <form
           className={cn(CHAT_COMPOSER_FORM_CLASS, composerDragActive && CHAT_COMPOSER_FORM_DRAG_CLASS)}
           onDragEnter={handleComposerDragEnter}

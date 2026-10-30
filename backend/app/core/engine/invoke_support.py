@@ -92,6 +92,9 @@ _KNOWLEDGE_SOURCE_READ_TOOL_NAME = "read_knowledge_chunk"
 _KNOWLEDGE_SOURCE_READ_MAX_IDS = 6
 _KNOWLEDGE_SOURCE_READ_DEFAULT_CHARS = 4_000
 _KNOWLEDGE_SOURCE_READ_MAX_CHARS = 12_000
+# 互联网检索：Harness 内部能力，实现见 app/web_search。只在员工级开关打开时
+# 才会出现在 CapabilityManifest 里（见 capability/manifest._web_search_enabled）。
+_WEB_SEARCH_TOOL_NAME = "web_search"
 
 
 def _workspace_root(

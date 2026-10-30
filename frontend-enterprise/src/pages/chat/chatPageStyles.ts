@@ -235,8 +235,10 @@ export const CHAT_EMPTY_STAT_CELL_CLASS =
 // ---------------------------------------------------------------------------
 export const CHAT_INPUT_SHELL_CLASS = 'shrink-0 px-[24px] pb-[20px] pt-[6px]';
 export const CHAT_COMPOSER_STAGE_CLASS = 'relative mx-auto w-full max-w-[820px]';
-export const CHAT_COMPOSER_AVATAR_CLASS =
-  'absolute bottom-full left-[16px] z-10 mb-[2px] size-[44px] shrink-0 overflow-hidden';
+// 「互联网检索」开关胶囊（原员工头像位，输入框左上角悬浮）。开/关两态的
+// 配色在 Composer 内拼：关 = 白底灰字，开 = 品牌青绿底白字（高对比）。
+export const CHAT_COMPOSER_WEB_SEARCH_CLASS =
+  'absolute bottom-full left-[16px] z-10 mb-[8px] inline-flex h-[30px] shrink-0 cursor-pointer items-center gap-[7px] rounded-full border px-[12px] text-[12px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#0f766e]/30';
 export const CHAT_COMPOSER_FORM_CLASS =
   'relative flex min-w-0 flex-1 flex-col gap-[10px] rounded-[14px] border-[0.5px] border-[#18181a] bg-white p-[12px] shadow-[0_6px_24px_rgba(24,24,26,0.08)] transition-colors';
 export const CHAT_COMPOSER_FORM_DRAG_CLASS = 'border-dashed border-[#0b6cf5] bg-[#f5f9ff]';

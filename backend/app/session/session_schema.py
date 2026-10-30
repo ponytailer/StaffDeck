@@ -249,6 +249,10 @@ class ChatTurnRequest(BaseModel):
     # 用它、跳过那一轮槽位抽取 LLM。非表单渠道（企微/微信）不带这个字段，
     # 行为与改造前完全一致。
     slot_submission: Optional[dict[str, Any]] = None
+    # 本轮是否启用「互联网检索」（聊天输入框开关 / 公开 API web_search 参数）。
+    # 默认 False：web_search 能力不进入冻结清单，模型无从调用。
+    # 打开后也不是无脑联网 —— 知识工作流先查本地知识库，证据不够才补联网。
+    web_search: bool = False
     debug: bool = False
 
 

@@ -143,6 +143,68 @@ from app.core.engine.turn_context import (
 
 logger = logging.getLogger(__name__)
 
+# ---- 互联网检索判定（「何时该检索 / 何时本地知识库够用」）----
+# 用户明确要求：开关打开后不能无脑联网，也不能无脑用本地库。
+# 这里的判定是**确定性规则**而不是再调一次 LLM —— 本会话刚修完
+# 「知识库问答多烧 3 次 LLM」的问题，绝不能为省一次检索又加一次调用。
+
+#: 本地证据「够用」的最小命中条数。1 条孤证撑不起回答（可能是恰好沾边）。
+_KNOWLEDGE_SUFFICIENT_MIN_CHUNKS = 2
+#: 本地证据「够用」的正文总量下限。低于它说明命中的是标题/目录片段，
+#: 正文不完整，需要联网补充。
+_KNOWLEDGE_SUFFICIENT_MIN_CONTENT_CHARS = 300
+#: 时效性信号词：命中即认为本地知识库**必然**过期（库是静态快照），
+#: 即使有命中也要联网核对。宁可多搜一次，不可拿旧数据冒充现状。
+_FRESHNESS_MARKERS = (
+    "最新",
+    "今天",
+    "昨天",
+    "本周",
+    "上周",
+    "这个月",
+    "最近",
+    "现在",
+    "目前",
+    "今年",
+    "去年",
+    "实时",
+    "当前版本",
+    "新版",
+    "价格",
+    "报价",
+    "汇率",
+    "股价",
+    "天气",
+    "新闻",
+    "发布了",
+)
+
+
+def _knowledge_evidence_sufficient(search_result: dict[str, Any]) -> bool:
+    """本地知识库召回是否足以支撑回答（不调 LLM 的确定性判定）。"""
+
+    data = search_result.get("data")
+    if not isinstance(data, dict):
+        return False
+    chunks = data.get("chunks")
+    if not isinstance(chunks, list):
+        chunks = data.get("evidence_pack")
+    if not isinstance(chunks, list):
+        return False
+    if len(chunks) < _KNOWLEDGE_SUFFICIENT_MIN_CHUNKS:
+        return False
+    content_chars = sum(
+        len(str(item.get("content") or "")) for item in chunks if isinstance(item, dict)
+    )
+    return content_chars >= _KNOWLEDGE_SUFFICIENT_MIN_CONTENT_CHARS
+
+
+def _query_needs_fresh_data(message: str) -> bool:
+    """query 是否带时效性信号 —— 本地知识库对这类问题天然过期。"""
+
+    text = message or ""
+    return any(marker in text for marker in _FRESHNESS_MARKERS)
+
 
 class _KnowledgeWorkflowMixin:
     def _answer_direct_reply(
@@ -261,9 +323,73 @@ class _KnowledgeWorkflowMixin:
                 },
             )
 
-            # 3) 一次 LLM：证据 + prompt 直接出正文（复用 ResponseGenerator
+            # 3) 互联网检索判定：本地够用就不联网，不够用才补一次。
+            #    前提是 web_search 在冻结清单里（员工开关打开时 manifest 才有）。
+            #    判定顺序刻意是「先本地后联网」：
+            #    - 本地证据够 → 0 次联网请求，回答全部有企业内引用（现状不变）；
+            #    - 本地不足 → 补一次 web_search，与知识库证据合并后一次作答
+            #      （仍然只有 1 次 LLM 调用）；
+            #    - query 带时效性信号（最新/价格/天气…）→ 本地库是静态快照
+            #      必然过期，即使有命中也联网核对。
+            web_payload: dict[str, Any] | None = None
+            web_capable = "web_search" in getattr(
+                invoker, "available_capability_names", set()
+            )
+            if web_capable:
+                local_ok = _knowledge_evidence_sufficient(search_result)
+                stale_query = _query_needs_fresh_data(message)
+                if not local_ok or stale_query:
+                    try:
+                        web_result = invoker.invoke(
+                            "web_search",
+                            {"query": message[:200]},
+                            inline_result=True,
+                        )
+                        if (
+                            isinstance(web_result, dict)
+                            and web_result.get("success") is True
+                        ):
+                            web_payload = web_result.get("data")
+                            trace(
+                                "knowledge_workflow_web_search",
+                                {
+                                    "query": message,
+                                    "trigger": (
+                                        "freshness_query" if stale_query else "local_insufficient"
+                                    ),
+                                    "result_count": web_result.get("result_count"),
+                                    "sufficient": (web_payload or {}).get("sufficient"),
+                                },
+                            )
+                        else:
+                            # 联网失败不阻塞回答：本地证据照常用，作答里自然少一个来源。
+                            trace(
+                                "knowledge_workflow_web_search_skipped",
+                                {
+                                    "query": message,
+                                    "reason": "web_search_failed",
+                                    "error": (web_result or {}).get("error")
+                                    if isinstance(web_result, dict)
+                                    else None,
+                                },
+                            )
+                    except Exception as exc:  # noqa: BLE001 - 联网是增益不是依赖
+                        trace(
+                            "knowledge_workflow_web_search_skipped",
+                            {"query": message, "reason": "exception", "error": str(exc)[:200]},
+                        )
+                else:
+                    trace(
+                        "knowledge_workflow_web_search_skipped",
+                        {"query": message, "reason": "local_sufficient"},
+                    )
+
+            # 4) 一次 LLM：证据 + prompt 直接出正文（复用 ResponseGenerator
             #    的 retrieved_knowledge / knowledge_citation_hints 拼装）
-            step_result = StepAgentResult(knowledge_results=[dict(data)])
+            knowledge_payloads: list[dict[str, Any]] = [dict(data)]
+            if isinstance(web_payload, dict):
+                knowledge_payloads.append(web_payload)
+            step_result = StepAgentResult(knowledge_results=knowledge_payloads)
             router_decision = turn_plan_router_decision(
                 TurnPlan(
                     decision="answer_only",
@@ -287,6 +413,12 @@ class _KnowledgeWorkflowMixin:
                     "query": message,
                     "chunk_count": search_result.get("chunk_count"),
                     "route_phases": search_result.get("route_phases"),
+                    "web_used": isinstance(web_payload, dict),
+                    "web_result_count": (
+                        web_payload.get("result_count")
+                        if isinstance(web_payload, dict)
+                        else 0
+                    ),
                 },
             )
             return TaskExecutionResult(

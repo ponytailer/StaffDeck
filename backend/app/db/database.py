@@ -78,15 +78,18 @@ def init_db() -> None:
 
     # _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
-    """
-    _migrate_tool_binding_semantics()
-    _migrate_ai_review_schema()
-    _migrate_mcp_server_timeout()
-    _migrate_general_skill_download_count()
-    _migrate_general_skill_category()
+    # 存量表补列。create_all 只建**缺失的表**，不会给已有表加列 ——
+    # 本地 dev 与线上都是老表，因此新列一律需要在这里补。
+    # 每个函数自身幂等（先查 PRAGMA/inspector，列已存在直接返回），
+    # 可重复执行。新增「已有表加列」时必须登记到这里，否则线上会
+    # 报 no such column（历史教训见 docs/config-flags-audit.md）。
     _migrate_free_model_schema()
     _migrate_ui_config_knowledge_citations()
-    """
+    _migrate_mcp_server_timeout()
+    _migrate_general_skill_category()
+    _migrate_general_skill_download_count()
+    _migrate_ai_review_schema()
+    _migrate_tool_binding_semantics()
     # _migrate_sqlite_skill_schema()
     # _migrate_pg_api_key_schema()
     # _migrate_user_ldap_schema()

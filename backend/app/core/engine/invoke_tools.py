@@ -110,6 +110,7 @@ from app.core.engine.invoke_support import (
     _KNOWLEDGE_SOURCE_READ_MAX_IDS,
     _KNOWLEDGE_SOURCE_READ_TOOL_NAME,
     _SANDBOX_JSON_FILE_KIND,
+    _WEB_SEARCH_TOOL_NAME,
 )
 from app.core.engine.invoke_support import (
     _audit_arguments,
@@ -244,6 +245,8 @@ class _ToolPackageMixin:
             return self._read_published_deliverable(arguments)
         if name == _KNOWLEDGE_SOURCE_READ_TOOL_NAME:
             return self._read_knowledge_source(arguments)
+        if name == _WEB_SEARCH_TOOL_NAME:
+            return self._search_web(arguments)
         return _failure(
             "UNSUPPORTED_INTERNAL_CAPABILITY",
             "不支持的 Harness 内部能力。",

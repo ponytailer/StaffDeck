@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -81,3 +82,114 @@ def test_chunk_count_absent_for_other_tools() -> None:
     result: dict[str, Any] = {"success": True, "data": {"ok": 1}}
     bounded = _bounded_capability_result("query_balance", result)
     assert "chunk_count" not in bounded
+
+
+def _realistic_payload(evidence_count: int = 8) -> dict[str, Any]:
+    """按 ``search_payload`` 的真实投影结构造载荷。
+
+    关键点：证据列表的键是 ``evidence_pack``。旧用例一律用 ``evidence``，与实现
+    犯了同一个错，所以「分级降档其实没生效」这个缺陷一直测不出来。
+    """
+
+    body = (
+        "# 电脑与外设故障\n\n- **打印机**：办公区打印机故障先看面板报错（缺纸/卡纸/"
+        "缺粉按提示处理），驱动问题在内网软件中心重装「打印服务包」。\n"
+    )
+    chunk = {
+        "document_id": "kdoc_1",
+        "bucket_id": "kb_1",
+        "summary": body[:300],
+        "source_ref": "IT-常见故障排查手册.md / 电脑与外设故障",
+        "metadata": {"section_path": "电脑与外设故障", "section_title": "电脑与外设故障"},
+    }
+    evidence = [
+        {
+            **chunk,
+            "chunk_id": f"kchunk_{index}",
+            "content": (body * 8)[:2_000],
+            "confidence_reason": "命中关键词「打印机」「驱动」",
+        }
+        for index in range(evidence_count)
+    ]
+    return {
+        "chunk_count": evidence_count,
+        "chunks": [
+            {**chunk, "chunk_id": item["chunk_id"], "chunk_index": index}
+            for index, item in enumerate(evidence)
+        ],
+        "evidence_pack": evidence,
+        "selected_documents": [
+            {
+                "id": f"kdoc_{index}",
+                "title": f"IT 文档 {index}",
+                "filename": f"IT-文档{index}.md",
+                "outline": [f"第{line}章 章节标题" for line in range(12)],
+            }
+            for index in range(3)
+        ],
+        "selected_buckets": [
+            {
+                "id": f"kb_{index}",
+                "title": "电脑与外设故障",
+                "summary": body[:300],
+                "metadata": {"section_paths": ["电脑与外设故障", "常见问答"]},
+            }
+            for index in range(8)
+        ],
+        "selected_concepts": [
+            {"concept_id": f"kc_{index}", "title": f"概念 {index}", "content": body * 10}
+            for index in range(5)
+        ],
+        "okf_citations": [
+            {"concept_id": f"kc_{index}", "title": f"概念 {index}"} for index in range(8)
+        ],
+        "route_trace": [{"phase": "bucket_route", "message": "选桶阶段说明"}],
+    }
+
+
+def test_evidence_pack_payload_is_tiered_not_truncated() -> None:
+    """真实键名（``evidence_pack``）的知识结果超 10K 时必须分级降档。
+
+    反证旧行为：只有 ``evidence`` 能被识别时，这份载荷会原样超预算 → 退化成
+    10K 的 ``preview``（半截 JSON），模型读不懂只能 ``read_file`` 盲读或换词重搜。
+    """
+
+    result: dict[str, Any] = {
+        "success": True,
+        "data": _realistic_payload(),
+        "chunk_count": 8,
+    }
+    bounded = _bounded_capability_result("knowledge_search", result)
+    assert bounded.get("truncated") is None
+    data = bounded["data"]
+    assert len(data["evidence_pack"]) == 8
+    # 预算内，且证据正文至少保住 top-N（正文是答问依据，不能被元数据挤掉）
+    serialized = len(json.dumps(bounded, ensure_ascii=False, sort_keys=True, default=str))
+    assert serialized <= step_support._KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS
+    kept = [item for item in data["evidence_pack"] if item.get("content")]
+    assert kept, "top-N 证据正文必须保留，否则模型只能逐条 read_knowledge_chunk"
+    assert all(len(item["content"]) <= 1_500 for item in kept)
+
+
+def test_evidence_pack_hard_squeeze_keeps_json_valid() -> None:
+    """正文全删仍超预算时：削导航区块与条数，绝不吐半截 JSON。"""
+
+    payload = _realistic_payload(evidence_count=20)
+    payload["selected_concepts"] = [
+        {"concept_id": f"kc_{index}", "title": f"概念 {index}", "content": "z" * 4_000}
+        for index in range(12)
+    ]
+    result: dict[str, Any] = {
+        "success": True,
+        "data": payload,
+        "chunk_count": 20,
+    }
+    bounded = _bounded_capability_result("knowledge_search", result)
+    assert bounded.get("truncated") is None
+    data = bounded["data"]
+    serialized = len(json.dumps(bounded, ensure_ascii=False, sort_keys=True, default=str))
+    assert serialized <= step_support._KNOWLEDGE_RESULT_TRANSCRIPT_MAX_CHARS
+    # JSON 结构完整：顶层键可读，chunk_count 随行不丢
+    assert bounded["chunk_count"] == 20
+    assert isinstance(data.get("evidence_pack"), list)
+    assert data["evidence_pack"], "证据条不可清空，否则等于没检索"

@@ -105,7 +105,11 @@ def compact_knowledge_search_payload(
     """把完整检索结果投影成可内联进 tool result 的精简载荷。
 
     返回的 dict 结构与 ``KnowledgeSearchResponse.model_dump()`` 对齐（下游按同一
-    组键读取），只是在预算内。仍然超限时由调用方按既有逻辑落沙箱文件兜底——
+    组键读取），并且**保证序列化长度不超过 ``max_chars``**：超预算的返回会被
+    ``_persist_large_json_result`` 换成沙箱文件指针，模型只能 ``read_file`` 盲读
+    （单次 25KB，截断在半截 JSON 处）→ 换词重搜，正是要消灭的那个循环。
+
+    收敛顺序按「答问价值」：正文优先于导航（路由轨迹 / 桶 / 概念 / 文档目录）。
     本函数不会抛异常，也绝不返回比输入更大的结果。
     """
 
@@ -123,11 +127,81 @@ def compact_knowledge_search_payload(
         if serialized_chars(compacted) <= max(1, max_chars):
             return compacted
         if content_limit <= _KNOWLEDGE_CONTENT_FLOOR and concept_limit <= 120:
-            return compacted
+            # 正文已压到下限仍超预算：先削导航区块，削完再把正文按原预算还原
+            # （导航往往比正文还占地方，削了它正文就放得下了）；仍不够才按条数截断。
+            pruned = _prune_sections(compacted)
+            for richer_limit in (KNOWLEDGE_EVIDENCE_CONTENT_CHAR_LIMIT, 900, 540, 324):
+                richer = _prune_sections(
+                    _project(
+                        payload,
+                        evidence,
+                        content_limit=richer_limit,
+                        concept_limit=KNOWLEDGE_CONCEPT_CONTENT_CHAR_LIMIT,
+                    )
+                )
+                if serialized_chars(richer) <= max(1, max_chars):
+                    return richer
+            if serialized_chars(pruned) <= max(1, max_chars):
+                return pruned
+            return _trim_entries(pruned, max_chars)
         content_limit = max(
             _KNOWLEDGE_CONTENT_FLOOR, int(content_limit * _KNOWLEDGE_CONTENT_SHRINK)
         )
         concept_limit = max(120, int(concept_limit * _KNOWLEDGE_CONTENT_SHRINK))
+
+
+def _prune_sections(compacted: dict[str, Any]) -> dict[str, Any]:
+    """削掉「导航类」区块，保留正文载体与定位索引。
+
+    削的顺序按「答问价值」倒排：``route_trace`` 只用于诊断；桶 / OKF 引用是路由
+    证据与导航；文档目录只说明「文档里有什么」。证据正文才是答案来源，留到最后。
+
+    OKF-only 知识库没有 ``evidence_pack``，此时 ``selected_concepts`` 的正文就是
+    答案本身，不能当导航削掉。
+
+    键一律保留（清空成空列表而不是删键）：``knowledge_citations_from_results`` /
+    ``compact_knowledge_context`` / ``message_read`` 都按同一组键读取，删键会让它们
+    在别的分支上静默拿到 ``None``。
+    """
+
+    pruned = dict(compacted)
+    if isinstance(pruned.get("route_trace"), list):
+        pruned["route_trace"] = []
+    if pruned.get("evidence_pack"):
+        pruned["selected_concepts"] = []
+    for key in ("selected_buckets", "okf_citations"):
+        if isinstance(pruned.get(key), list):
+            pruned[key] = []
+    documents = pruned.get("selected_documents")
+    if isinstance(documents, list):
+        pruned["selected_documents"] = [
+            {"id": item.get("id"), "title": item.get("title")}
+            for item in documents
+            if isinstance(item, dict)
+        ]
+    return pruned
+
+
+def _trim_entries(pruned: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    """按条数截断正文载体（至少保留 1 条，全清等于「没检索到」）。
+
+    ``evidence_pack`` 与 ``chunks`` 同源；OKF-only 库里 ``selected_concepts`` 才是
+    正文载体，所以三者按同一口径截断。
+    """
+
+    keys = ["evidence_pack", "chunks"]
+    if not pruned.get("evidence_pack"):
+        keys.append("selected_concepts")
+    trimmed = pruned
+    for limit in (6, 4, 3, 2, 1):
+        trimmed = dict(pruned)
+        for key in keys:
+            items = trimmed.get(key)
+            if isinstance(items, list) and len(items) > limit:
+                trimmed[key] = items[:limit]
+        if serialized_chars(trimmed) <= max(1, max_chars):
+            return trimmed
+    return trimmed
 
 
 def serialized_chars(value: Any) -> int:

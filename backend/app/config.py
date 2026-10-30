@@ -51,6 +51,23 @@ class Settings(BaseSettings):
     # 留空则前端回退成浏览器当前 origin（本地开发即 http://127.0.0.1:5173）。
     public_base_url: str = ""
     tool_timeout_seconds: float = 8.0
+    # ---- 互联网检索（内部 web_search 能力）----
+    # 部署级总闸：False 时 web_search 能力从所有冻结清单中消失，
+    # 即使本轮请求带 web_search=True 也不可用（企业内网禁外联用）。
+    # 默认 True = 跟随每轮开关（聊天输入框 / 公开 API 参数），那才是
+    # 用户点名的「默认关闭、打开则启用」的开关本体。
+    web_search_default_enabled: bool = True
+    # 单次检索最多返回条数。给模型的引用与正文里都要带来源，条数过多会挤
+    # 掉知识库证据的预算，8 条是实测够用且不淹没上下文的值。
+    web_search_max_results: int = 8
+    # 单次 HTTP 超时（秒）。Bing 中国站实测 0.3~1.2s；设 12s 是为了容忍
+    # 内网 egress 代理与跨境线路抖动，同时不让一轮对话卡太久。
+    web_search_timeout_seconds: float = 12.0
+    # 引擎降级顺序（逗号分隔）。前面的失败或有效结果不足才降级到下一个。
+    web_search_engines: str = "bing,baidu_news,so360,sogou"
+    # 是否还原百度/搜狗的中转跳转链（每条多一次请求）。关掉能让引用里只有
+    # 跳转链，一般不建议关。
+    web_search_resolve_redirects: bool = True
     a2a_task_timeout_seconds: float = 600.0
     a2a_poll_interval_seconds: float = 0.5
     codex_a2a_enabled: bool = False
@@ -260,6 +277,11 @@ class Settings(BaseSettings):
         except (ValueError, TypeError):
             return []
         return [str(item).strip() for item in items if str(item).strip()]
+
+    @property
+    def web_search_engine_list(self) -> list[str]:
+        """解析 WEB_SEARCH_ENGINES 为引擎名列表，忽略空项。"""
+        return [item.strip().lower() for item in (self.web_search_engines or "").split(",") if item.strip()]
 
 
 @lru_cache

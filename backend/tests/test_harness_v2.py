@@ -2642,15 +2642,21 @@ def test_knowledge_search_small_result_is_inlined_without_sandbox_reference(
     assert not tool_result_dir.exists()
 
 
-def test_knowledge_search_oversized_result_still_falls_back_to_sandbox_reference(
+def test_knowledge_search_oversized_result_is_trimmed_inline_not_sandboxed(
     tmp_path,
     monkeypatch,
 ) -> None:
-    """精简后仍超过内联预算时，保留「落沙箱文件 + 引用」的兜底路径。"""
+    """超大知识结果必须压成内联载荷，**不再**落沙箱文件。
+
+    旧行为是「精简后仍超预算就换成 ``sandbox_json_file`` 指针」：模型只能
+    ``read_file`` 盲读（单次 25KB，截断在半截 JSON 处）→ 读不全 → 换词重搜。
+    线上「打印机怎么用」就是这样烧掉 6 次 ``task_action`` 的。
+    现在 ``compact_knowledge_search_payload`` 保证不超预算：削导航区块、必要时
+    按条数截断正文载体，模型拿到的始终是**能直接读的结构化证据**。
+    """
 
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
-    # 400 条概念即使按最低正文预算裁剪也远超 24KB（真实检索不会这么多，
-    # 这里只用于覆盖兜底路径本身）
+    # 400 条概念：只靠 OKF 概念作答的库（无 evidence_pack），概念正文就是答案
     huge_payload = [
         {"concept_id": f"concept-{index}", "content": "policy-" + ("x" * 400)}
         for index in range(400)
@@ -2679,24 +2685,17 @@ def test_knowledge_search_oversized_result_still_falls_back_to_sandbox_reference
             {"query": "报销制度"},
             call_id="hcall-knowledge-huge",
         )
-        reference = result["data"]
-        read_result = invoker._invoke_file(
-            "read_file",
-            {"path": reference["sandbox_path"]},
-            call_id="hcall-read-knowledge",
-        )
         artifacts = invoker.discover_artifacts()
 
     assert result["success"] is True
-    assert reference["kind"] == "sandbox_json_file"
-    assert reference["sandbox_path"] == (
-        "/workspace/.harness/tool-results/hcall-knowledge-huge.json"
-    )
-    # 兜底文件保留精简后的完整载荷（超过 read_file 单次上限，需按页读）
-    assert read_result["success"] is True
-    assert read_result["data"]["truncated"] is True
-    assert read_result["data"]["continuation_token"]
-    assert "policy-" in read_result["data"]["content"]
+    data = result["data"]
+    # 内联结构化载荷，不是文件指针
+    assert data.get("kind") != "sandbox_json_file"
+    assert "sandbox_path" not in data
+    assert isinstance(data.get("selected_concepts"), list)
+    # 按条数截断到内联预算内，但不清空（全清等于「没检索到」）
+    assert 0 < len(data["selected_concepts"]) <= 6
+    assert all("policy-" in item.get("content", "") for item in data["selected_concepts"])
     assert artifacts == []
 
 

@@ -199,6 +199,7 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
         message=str(payload.get("input") or ""),
         attachments=attachments,
         channel="public_api",
+        web_search=bool(payload.get("web_search") or False),
     )
     seen_event_ids: set[str] = set()
     worker_done = threading.Event()

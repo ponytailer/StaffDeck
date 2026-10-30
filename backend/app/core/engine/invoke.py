@@ -165,6 +165,9 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
         trace_sink: Callable[[str, dict[str, Any]], None] | None = None,
         step_deadline_monotonic: float | None = None,
         knowledge_laya_router: Any | None = None,
+        # 本轮「互联网检索」开关。与 manifest 构建时的 web_search 同源同值：
+        # 授权校验重建清单时必须带着它，否则开启态会被误判为撤权。
+        web_search_enabled: bool = False,
     ) -> None:
         self.db = db
         self.tenant_id = tenant_id
@@ -187,6 +190,8 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
         self.step_deadline_monotonic = step_deadline_monotonic
         # Laya 知识路由旁路（可选）：None 时知识检索行为与改造前一致。
         self._knowledge_laya_router = knowledge_laya_router
+        # 互联网检索开关（与 manifest 冻结时同值，见 build(web_search=...)）。
+        self.web_search_enabled = bool(web_search_enabled)
         self.run_id = str(run_id or new_id("hrun"))
         self.workspace_root = _workspace_root(
             tenant_id, session.id, task_frame_id, db=self.db
@@ -239,6 +244,16 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
         # 知识路由（document_route/bucket_route）是轻量分类任务，优先用
         # 意图识别专用模型（flash），未配置时回退主模型。解析一次缓存。
         self._routing_model_config = self._resolve_routing_model()
+
+    @property
+    def available_capability_names(self) -> set[str]:
+        """当前冻结清单里可调用的能力名（含未 describe 的）。
+
+        代码直调方（确定性知识工作流）用它判断「某个能力是否存在」，
+        而不是探测私有字段。注意这只代表清单里有，调用仍受激活名单约束。
+        """
+
+        return set(self._descriptors)
 
     def _resolve_routing_model(self) -> ModelConfig | None:
         """意图识别轻量模型用于知识路由；失败/未配置回退主模型（None=主模型）。"""
@@ -501,6 +516,7 @@ class HarnessCapabilityInvoker(_ToolPackageMixin, _CapabilityInfoMixin):
                 self.agent_id,
                 self.active_skill,
                 self.active_step_id,
+                web_search=self.web_search_enabled,
             )
         except CapabilityAuthorizationError:
             return None

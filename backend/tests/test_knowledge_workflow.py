@@ -148,12 +148,18 @@ class _FakeInvoker:
         self.result = result
         self.invocations: list[tuple[str, dict[str, Any]]] = []
         self.kwargs: list[dict[str, Any]] = []
+        # 模拟 invoker.available_capability_names：键为能力名，值为对应返回。
+        # 未设置时视作「清单里没有 web_search」——历史员工开关默认关闭。
+        self.capabilities: dict[str, dict[str, Any]] = {}
+        self._next_responses: list[dict[str, Any]] = []
 
     def invoke(
         self, name: str, arguments: dict[str, Any], **kwargs: Any
     ) -> dict[str, Any]:
         self.invocations.append((name, arguments))
         self.kwargs.append(kwargs)
+        if name in self.capabilities:
+            return self.capabilities[name]
         return self.result
 
 
@@ -334,3 +340,158 @@ def test_workflow_falls_back_when_payload_unusable() -> None:
     assert result is None
     assert rg.calls == []
     assert [t for t, _ in events] == ["knowledge_workflow_payload_unusable"]
+
+# ---------------------------------------------------------------------------
+# 互联网检索判定（web_search 开关打开后的「何时联网」）
+# ---------------------------------------------------------------------------
+
+
+def _rich_search_result() -> dict[str, Any]:
+    """本地召回充分：3 条 × 正文 300+ 字。"""
+
+    return _ok_search_result(
+        chunk_count=3,
+        data={
+            "chunks": [
+                {"id": f"c{i}", "content": "正文" * 150 + "结尾", "title": f"条款{i}"}
+                for i in range(3)
+            ],
+            "evidence_pack": [{"id": f"e{i}"} for i in range(3)],
+        },
+        citations=[{"id": "kref_1"}, {"id": "kref_2"}, {"id": "kref_3"}],
+    )
+
+
+def _web_search_result(**overrides: Any) -> dict[str, Any]:
+    base = {
+        "success": True,
+        "result_count": 4,
+        "citations": [{"index": 1, "url": "https://example.com/a"}],
+        "data": {
+            "chunks": [
+                {
+                    "chunk_id": "web_1",
+                    "title": "网页结果",
+                    "url": "https://example.com/a",
+                    "source_ref": "https://example.com/a",
+                    "content": "网页摘要正文",
+                    "source_type": "web",
+                    "sufficient": True,
+                }
+            ],
+            "evidence_pack": [],
+            "result_count": 1,
+            "sufficient": True,
+            "insufficient_reason": "",
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+def _run(engine: Any, invoker: _FakeInvoker, message: str = "身高体重有要求吗"):
+    events: list[tuple[str, dict[str, Any]]] = []
+    result = engine._run_knowledge_workflow(
+        SimpleNamespace(tenant_id="t"),
+        SimpleNamespace(agent_id="a"),
+        SimpleNamespace(task_id="task-1", status="running"),
+        _frame(),
+        SimpleNamespace(source_user_message=message),
+        invoker,
+        object(),
+        [],
+        None,
+        lambda t, p: events.append((t, p)),
+    )
+    return result, events
+
+
+def test_local_evidence_sufficient_skips_web_search() -> None:
+    """★核心语义：本地证据够就不联网 —— 0 次网络请求，回答全部有内引用。"""
+
+    rg = _FakeResponseGenerator()
+    invoker = _FakeInvoker(_rich_search_result())
+    invoker.available_capability_names = {"knowledge_search", "web_search"}
+    invoker.capabilities["web_search"] = _web_search_result()
+
+    result, events = _run(_engine(rg), invoker)
+
+    assert result is not None
+    assert [(name, args) for name, args in invoker.invocations] == [
+        ("knowledge_search", {"query": "身高体重有要求吗", "max_chunks": 8})
+    ]
+    triggers = [p for t, p in events if t == "knowledge_workflow_web_search_skipped"]
+    assert triggers and triggers[0]["reason"] == "local_sufficient"
+
+
+def test_local_evidence_insufficient_triggers_web_search() -> None:
+    """★核心语义：本地只有 1 条孤证 → 补一次 web_search，仍是 1 次 LLM。"""
+
+    rg = _FakeResponseGenerator()
+    invoker = _FakeInvoker(_ok_search_result())  # 1 条命中
+    invoker.available_capability_names = {"knowledge_search", "web_search"}
+    invoker.capabilities["web_search"] = _web_search_result()
+
+    result, events = _run(_engine(rg), invoker)
+
+    assert result is not None
+    assert [name for name, _ in invoker.invocations] == ["knowledge_search", "web_search"]
+    # 两次直调都必须 inline_result=True（结果只在进程内用）
+    assert all({"inline_result": True} == kw for kw in invoker.kwargs)
+    triggers = [p for t, p in events if t == "knowledge_workflow_web_search"]
+    assert triggers and triggers[0]["trigger"] == "local_insufficient"
+    # 网页证据进入作答上下文（knowledge_results 两份 payload）
+    assert len(rg.calls[0][4].knowledge_results) == 2
+    assert len(rg.calls) == 1
+
+
+def test_freshness_query_searches_web_even_with_local_hits() -> None:
+    """★核心语义：带时效性信号的问题，本地有命中也联网 —— 库是静态快照。"""
+
+    rg = _FakeResponseGenerator()
+    invoker = _FakeInvoker(_rich_search_result())
+    invoker.available_capability_names = {"knowledge_search", "web_search"}
+    invoker.capabilities["web_search"] = _web_search_result()
+
+    result, events = _run(_engine(rg), invoker, message="打印机 最新价格 是多少")
+
+    assert result is not None
+    assert [name for name, _ in invoker.invocations] == ["knowledge_search", "web_search"]
+    triggers = [p for t, p in events if t == "knowledge_workflow_web_search"]
+    assert triggers and triggers[0]["trigger"] == "freshness_query"
+
+
+def test_web_search_capability_absent_skips_without_error() -> None:
+    """开关关闭（清单里没有 web_search）→ 与改造前行为完全一致。"""
+
+    rg = _FakeResponseGenerator()
+    invoker = _FakeInvoker(_ok_search_result())
+    invoker.available_capability_names = {"knowledge_search"}
+
+    result, events = _run(_engine(rg), invoker)
+
+    assert result is not None
+    assert [name for name, _ in invoker.invocations] == ["knowledge_search"]
+    assert not [t for t, _ in events if t.startswith("knowledge_workflow_web_search")]
+
+
+def test_web_search_failure_does_not_block_knowledge_answer() -> None:
+    """联网失败不阻塞回答：本地证据照常作答（联网是增益不是依赖）。"""
+
+    rg = _FakeResponseGenerator()
+    invoker = _FakeInvoker(_ok_search_result())
+    invoker.available_capability_names = {"knowledge_search", "web_search"}
+    invoker.capabilities["web_search"] = {
+        "success": False,
+        "error": {"code": "WEB_SEARCH_BLOCKED", "message": "被反爬拦截", "retryable": True},
+    }
+
+    result, events = _run(_engine(rg), invoker)
+
+    assert result is not None
+    assert result.status == "completed"
+    skipped = [p for t, p in events if t == "knowledge_workflow_web_search_skipped"]
+    assert skipped and skipped[0]["reason"] == "web_search_failed"
+    assert len(rg.calls) == 1
+    # 只带着本地证据作答
+    assert len(rg.calls[0][4].knowledge_results) == 1

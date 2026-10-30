@@ -20,6 +20,7 @@ from sqlmodel import Session, select
 from app.capabilities.local_general_skill import (
     package_from_row,
 )
+from app.config import get_settings
 from app.core.capability.discovery import (
     CAPABILITY_SEARCH_MAX_RESULTS,
     catalog_entry,
@@ -79,6 +80,7 @@ from app.knowledge.search_payload import (
 from app.knowledge.service import KnowledgeService
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
+from app.web_search import WebSearchError, WebSearchQuery, search_web
 
 from app.core.engine.invoke_support import (
     _audit_arguments,
@@ -370,6 +372,91 @@ class _CapabilityInfoMixin:
                     "并保持原文措辞不要改写数字与专有名词。"
                 ),
             },
+        }
+
+    def _search_web(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """互联网检索（Harness 内部能力）。
+
+        只有员工级开关打开时本能力才会出现在冻结清单里，因此这里不再重复
+        判权；但仍要做「本能力是否仍在清单中」的软校验，防止快照陈旧。
+
+        返回形状与 ``knowledge_search`` 对齐（``data.chunks`` +
+        ``data.evidence_pack``）：引用卡片、正文引用编号、公开 API 结果
+        投影都复用同一条链路，不需要为网页结果单开一套。
+        """
+
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return _failure("INVALID_ARGUMENTS", "web_search query 不能为空。")
+        raw_max = arguments.get("max_results")
+        settings = get_settings()
+        default_max = max(1, min(int(settings.web_search_max_results), 20))
+        if raw_max is None:
+            max_results = default_max
+        elif isinstance(raw_max, bool) or not isinstance(raw_max, int):
+            return _failure("INVALID_ARGUMENTS", "max_results 必须是整数。")
+        else:
+            max_results = max(1, min(raw_max, default_max))
+        try:
+            result = search_web(
+                WebSearchQuery(
+                    query=query,
+                    max_results=max_results,
+                    engines=settings.web_search_engine_list,
+                    timeout_seconds=settings.web_search_timeout_seconds,
+                    resolve_redirects=settings.web_search_resolve_redirects,
+                )
+            )
+        except WebSearchError as exc:
+            # 显式错误码透给模型：让它知道「是检索被拦/失败」而不是
+            # 「搜了但没有结果」——后者会让它自信地回答「未找到相关信息」。
+            self._emit_trace(
+                "web_search_failed",
+                {
+                    "query": query,
+                    "error_code": exc.code,
+                    "retryable": exc.retryable,
+                    "attempts": exc.details.get("attempts") or [],
+                },
+            )
+            return _failure(
+                exc.code,
+                exc.message,
+                retryable=exc.retryable,
+                details=exc.details,
+            )
+        payload = result.to_payload()
+        self._emit_trace(
+            "web_search_completed",
+            {
+                "query": query,
+                "engine": result.engine,
+                "result_count": result.count,
+                "sufficient": result.sufficient,
+                "elapsed_ms": result.elapsed_ms,
+                "attempts": [
+                    {
+                        "engine": item.get("engine"),
+                        "ok": item.get("ok"),
+                        "error_code": item.get("error_code") or "",
+                    }
+                    for item in result.attempts
+                ],
+            },
+        )
+        data: dict[str, Any] = dict(payload)
+        if not result.sufficient:
+            # 召回不足必须显式告知模型，否则它会拿 1 条摘要硬答成定论。
+            data["notice"] = (
+                f"{result.insufficient_reason}"
+                "回答时请明确说明「公开信息有限」，不要给出确定性结论，"
+                "必要时向用户追问更具体的检索方向。"
+            )
+        return {
+            "success": True,
+            "data": data,
+            "result_count": result.count,
+            "citations": result.to_citations(),
         }
 
     def _search_capabilities(self, arguments: dict[str, Any]) -> dict[str, Any]:

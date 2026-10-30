@@ -139,6 +139,10 @@ class AgentRunCreate(BaseModel):
     external_session_id: str | None = None
     external_user_id: str | None = None
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    # 互联网检索开关：默认不启用。开启后也不是无脑联网 —— 员工先查本地
+    # 知识库，证据不足（或问题带时效性）才补一次网络检索。语义与聊天
+    # 输入框上的「互联网检索」开关完全一致。
+    web_search: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
     webhook_url: HttpUrl | None = None
 

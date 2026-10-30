@@ -250,16 +250,57 @@ def test_compaction_shrinks_content_to_meet_budget() -> None:
     assert all(item.get("content", "").endswith("…") for item in compacted["evidence_pack"])
 
 
-def test_compaction_stops_at_floor_when_budget_is_unreachable() -> None:
+def test_compaction_degrades_to_minimal_form_when_budget_unreachable() -> None:
+    """预算小到连一条证据都装不下时：返回最小形态，绝不死循环、绝不再交给落沙箱。
+
+    旧行为是「压到下限就原样返回，交由落沙箱文件兜底」；那样做会让模型拿到
+    ``sandbox_json_file`` 指针去 ``read_file`` 盲读（25KB 截断在半截 JSON 处），
+    再换词重搜。现在改成削导航 + 按条数截断，把「模型能直接读到的证据」保住。
+    """
+
     payload = _payload(evidence=True)
     for item in payload["evidence_pack"]:
         item["content"] = "很长的正文" * 4_000
 
-    # 结构性字段本身已超预算：必须终止并返回最小形态，交由落沙箱文件兜底，而不是死循环
     compacted = compact_knowledge_search_payload(payload, max_chars=200)
 
-    assert serialized_chars(compacted) > 200
-    assert all(len(item.get("content", "")) <= 220 for item in compacted["evidence_pack"])
+    # 结构性字段本身已超预算：退到最小形态（1 条证据），而不是死循环
+    assert len(compacted["evidence_pack"]) == 1
+    assert len(compacted["evidence_pack"][0].get("content", "")) <= 220
+
+
+def test_compaction_fits_budget_when_navigation_sections_dominate() -> None:
+    """多文档 / 多桶的真实形态：导航元数据单独就能顶破预算。
+
+    反证「打印机怎么用」那次线上链路：压缩后 26,319 > 24,000 预算 → 被换成
+    ``sandbox_json_file`` 指针 → 模型 ``read_file`` 盲读（截断）→ 换词重搜 →
+    一轮问答烧掉 6 次 ``task_action``。这里要求：压得进预算，且证据正文不被打掉。
+    """
+
+    payload = _payload(evidence=False, chunk_count=12)
+    payload["evidence_pack"] = [_evidence(index) for index in range(1, 13)]
+    payload["selected_buckets"] = [_bucket(index) for index in range(1, 13)]
+    payload["selected_documents"] = payload["selected_documents"] * 6
+    payload["selected_concepts"] = payload["selected_concepts"] * 6
+    budget = knowledge_payload_budget(payload)
+
+    compacted = compact_knowledge_search_payload(payload, max_chars=budget)
+
+    assert serialized_chars(compacted) <= budget
+    # 证据与正文是答问依据：削导航可以，掉正文不行
+    assert len(compacted["evidence_pack"]) == 12
+    assert all(item.get("content") for item in compacted["evidence_pack"])
+    # 键集必须保持不变（下游按同一组键读取）：清空成空列表，不能删键
+    assert set(compacted) == {
+        "chunk_count",
+        "chunks",
+        "evidence_pack",
+        "selected_documents",
+        "selected_buckets",
+        "selected_concepts",
+        "okf_citations",
+        "route_trace",
+    }
 
 
 def test_compaction_is_defensive_for_unexpected_payloads() -> None:

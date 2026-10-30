@@ -359,6 +359,9 @@ class _FrameExecutionMixin:
                 session.agent_id,
                 active_skill,
                 frame.target_step_id,
+                # 本轮「互联网检索」开关：开了才会在冻结清单里出现 web_search
+                # 能力。invoker 持有同一标志，授权校验重建清单时必须同值。
+                web_search=bool(getattr(request, "web_search", False)),
             )
             # Keep the complete frozen manifest server-side for authorization,
             # while compiling the TaskRequirement only from the safe model
@@ -467,6 +470,7 @@ class _FrameExecutionMixin:
                 trace_sink=trace,
                 step_deadline_monotonic=step_deadline_monotonic,
                 knowledge_laya_router=knowledge_laya_router,
+                web_search_enabled=bool(getattr(request, "web_search", False)),
             )
 
             # 仅知识库 conversation 帧：走确定性工作流（寒暄直回 / 代码直调

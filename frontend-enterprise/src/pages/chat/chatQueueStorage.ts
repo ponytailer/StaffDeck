@@ -19,6 +19,8 @@ export type PreparedChatTurn = {
   createdAt: string;
   /** A2UI 表单提交的结构化取值（普通输入消息不带）。 */
   slotSubmission?: Record<string, unknown>;
+  /** 本轮「互联网检索」开关（默认 false：只在用户打开时随请求携带 true）。 */
+  webSearch?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -50,6 +52,7 @@ function isPreparedChatTurn(value: unknown): value is PreparedChatTurn {
     && INTERACTION_MODES.has(value.interactionMode as ComposerInteractionMode)
     && (value.modelConfigId === undefined || typeof value.modelConfigId === 'string')
     && (value.slotSubmission === undefined || isRecord(value.slotSubmission))
+    && (value.webSearch === undefined || typeof value.webSearch === 'boolean')
     && typeof value.createdAt === 'string'
     && Number.isFinite(Date.parse(value.createdAt))
   );

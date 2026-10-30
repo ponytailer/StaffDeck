@@ -376,6 +376,10 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [composerPlusOpen, setComposerPlusOpen] = useState(false);
   const [composerIntent, setComposerIntent] = useState<Exclude<ComposerInteractionMode, 'normal'> | null>(null);
+  // 「互联网检索」开关（输入框左上角胶囊）。默认关闭：关闭时请求体不带
+  // web_search 字段，后端 web_search 能力根本不进入冻结清单。开关是
+  // **每轮对话的选择**，随 prepared turn 进队列，重连恢复后仍然生效。
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [lastTurn, setLastTurn] = useState<ChatTurnResponse | null>(null);
   const [renameSession, setRenameSession] = useState<ChatSession | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -3205,6 +3209,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         ...(outgoingAttachments.length ? { attachments: outgoingAttachments } : {}),
         ...(resolvedInteractionMode === 'scheduled_task' ? { interaction_mode: 'scheduled_task' } : {}),
         ...(prepared.slotSubmission ? { slot_submission: prepared.slotSubmission } : {}),
+        ...(prepared.webSearch ? { web_search: true } : {}),
       },
       created_at: options.queued ? new Date().toISOString() : prepared.createdAt,
     });
@@ -3401,6 +3406,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         interaction_mode: resolvedInteractionMode,
         client_timezone: getClientTimeZone(),
         model_config_id: prepared.modelConfigId,
+        // 互联网检索开关：仅在用户打开时携带 true；关闭时不带该字段，
+        // 后端 web_search 能力不会进入冻结清单（fail-closed）。
+        ...(prepared.webSearch ? { web_search: true } : {}),
       };
       if (prepared.slotSubmission) {
         requestBody.slot_submission = prepared.slotSubmission;
@@ -3591,10 +3599,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       interactionMode: resolvedInteractionMode,
       modelConfigId: selectedModelConfig?.id,
       createdAt: new Date().toISOString(),
+      webSearch: webSearchEnabled,
     };
     setInput('');
     setComposerAttachments([]);
     setComposerIntent(null);
+    // webSearchEnabled 刻意**不重置**：开关状态跨轮保持（与 ChatGPT 的
+    // Search 开关一致），由用户手动关闭。自动重置会让连续联网检索的用户
+    // 每轮都要重新打开。
     const stream = getStreamSlot(currentConversationId);
     const hasQueuedTurnForConversation = queuedTurnsRef.current.some(
       (item) => item.conversationId === currentConversationId,
@@ -3630,6 +3642,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     sessions,
     sessionsLoading,
     uploadingComposerAttachment,
+    webSearchEnabled,
   ]);
 
   // A2UI：表单提交复用同一条聊天链路——往会话里落一条**用户消息**，附带
@@ -3850,6 +3863,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     setComposerPlusOpen,
     composerIntent,
     setComposerIntent,
+    webSearchEnabled,
+    setWebSearchEnabled,
     readyComposerAttachments,
     uploadingComposerAttachment,
     composerActive,

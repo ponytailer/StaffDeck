@@ -15,6 +15,7 @@ from app.agents.branching import (
     visible_tool_rows,
 )
 from app.capabilities.local_general_skill import package_from_row
+from app.config import get_settings
 from app.core.base.request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
@@ -68,6 +69,11 @@ class CapabilityManifestBuilder:
         # 20MB 包逐条 json 序列化 + sha256 是清单接口秒级耗时的大头）。light 模式
         # 不做 digest 字段，能力锁定执行时 invoker 仍会用完整 build 重新校验，语义不受影响。
         light: bool = False,
+        # 本轮是否启用互联网检索（聊天输入框开关 / 公开 API web_search 参数）。
+        # 默认 False：web_search 能力不进入冻结清单，模型无从调用。
+        # 授权校验重建清单时必须传**同一个值**（invoker 持有该标志），
+        # 否则开启态会被误判为「授权已撤销」。
+        web_search: bool = False,
     ) -> CapabilityManifest:
         if agent_id and get_agent(self.db, tenant_id, agent_id) is None:
             raise CapabilityAuthorizationError("当前员工不存在、已归档或不属于该租户。")
@@ -311,6 +317,15 @@ class CapabilityManifestBuilder:
             # 只在真有知识库授权时出现（与 knowledge_search 同授权、同生命周期）。
             available.append(_knowledge_chunk_read_descriptor())
 
+        # 互联网检索：**受本轮请求开关控制**，默认关闭。
+        # 关闭时能力根本不出现在清单里 —— 模型连它的存在都看不到，
+        # 与「工具停用」同一语义（不是靠提示词软约束）。
+        # 之所以放在「授权清单」这一层而不是执行期拦截：这是能力**可达性**
+        # 问题，不是权限问题。执行期拦截会让模型反复尝试调用再被拒，
+        # 白烧一次 LLM 决策轮。
+        if _web_search_enabled(bool(web_search)):
+            available.append(_web_search_descriptor())
+
         unavailable.extend(
             self._unavailable_explicit_refs(
                 tenant_id,
@@ -415,6 +430,70 @@ def _knowledge_chunk_read_descriptor() -> CapabilityDescriptor:
                     "description": "Per-source character budget.",
                 },
             },
+            "additionalProperties": False,
+        },
+        metadata={"provider": "harness", "side_effect": "read"},
+    )
+
+
+def _web_search_enabled(web_search_requested: bool) -> bool:
+    """互联网检索能力是否放进冻结清单。
+
+    两层判定（fail-closed，任一不满足即关闭）：
+
+    1. 部署级总闸 ``WEB_SEARCH_DEFAULT_ENABLED`` —— 本地桌面版默认关，
+       不想联网的部署一个环境变量就能整体禁用；
+    2. **本轮请求**显式携带 ``web_search=True``（聊天输入框开关 /
+       公开 API 参数）。这是用户点名的语义：默认关闭，打开才启用。
+
+    为什么做成「本轮开关」而不是员工级配置：开关挂在聊天输入框上，
+    是**每轮对话的选择**（像 ChatGPT 的 Search），不是员工档案里的
+    管理配置。请求不携带就等于没开，不需要额外的存储与管理界面。
+    """
+
+    if not web_search_requested:
+        return False
+    return bool(get_settings().web_search_default_enabled)
+
+
+def _web_search_descriptor() -> CapabilityDescriptor:
+    """互联网检索能力描述符（``kind=internal``，由 Harness 进程内实现）。
+
+    描述里刻意写清**何时该用、何时不该用**：这是模型唯一的决策依据，
+    写成「搜索互联网」会让它在有知识库时也去搜。
+    """
+
+    max_results = max(1, min(int(get_settings().web_search_max_results), 20))
+    return CapabilityDescriptor(
+        capability_id="builtin.web.search",
+        name="web_search",
+        kind="internal",
+        description=(
+            "检索公开互联网（搜索引擎）获取企业知识库之外的实时或外部信息。"
+            "适用：最新事件/新闻、政策法规、公开产品资料、通用常识、"
+            "知识库明确没有覆盖的外部主题。"
+            "不适用：企业内部制度/流程/人名/项目/合同——这些必须以 "
+            "knowledge_search 的企业知识库为准，联网结果不可作为内部依据。"
+            "若知识库已能回答，优先用知识库；两者都调用时，回答里要分开标注"
+            "「企业内部知识」与「互联网来源」。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "检索词。用关键实体与限定词，不要整句提问。",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": max_results,
+                    "default": max_results,
+                    "description": "最多返回条数。",
+                },
+            },
+            "required": ["query"],
             "additionalProperties": False,
         },
         metadata={"provider": "harness", "side_effect": "read"},

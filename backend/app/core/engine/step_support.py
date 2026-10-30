@@ -459,16 +459,29 @@ def _tier_knowledge_result_data(
     data: dict[str, Any],
     *,
     keep_full_evidence: int = _KNOWLEDGE_TIER_FULL_EVIDENCE,
+    level: int = 0,
 ) -> dict[str, Any]:
-    """知识检索结果三级降档（I1）。
+    """知识检索结果分级降档（I1）。
 
-    ①``evidence`` 前 ``keep_full_evidence`` 条保留正文（各 ≤1.5K）；②其余 evidence
-    与全部 ``chunks`` 去掉正文、只留定位索引（chunk_id / 文档 / 页码 / 标题 / 摘要）；
+    ①证据前 ``keep_full_evidence`` 条保留正文（各 ≤1.5K）；②其余证据与全部
+    ``chunks`` 去掉正文、只留定位索引（chunk_id / 文档 / 页码 / 标题 / 摘要）；
     ③模型需要原文时用已有的 ``read_knowledge_chunk`` 按 chunk_id 取。
+
+    证据列表的规范键名是 ``evidence_pack``（``app/knowledge/search_payload`` 的投影
+    结构），``evidence`` 是更早的旧键，保留兼容（历史事件与既有单测仍在用）。
+
+    ``level`` 用于第二次及以后的尝试：正文已经删无可删时，继续削「定位索引之外的
+    区块」——``route_trace``、概念正文、文档目录、桶摘要，最后按条数截断。8 条
+    2K 正文的证据即使全部去掉正文，加上桶与概念的元数据仍可能超过 10K 的 transcript
+    预算；压不进去就会被调用方截成半截 JSON 的 ``preview``，模型读不懂只能
+    ``read_file`` 盲读或换词重搜——正是 I1 要消灭的那个循环。
     """
 
     tiered = dict(data)
-    evidence = tiered.get("evidence")
+    evidence_key = (
+        "evidence_pack" if isinstance(tiered.get("evidence_pack"), list) else "evidence"
+    )
+    evidence = tiered.get(evidence_key)
     has_evidence = isinstance(evidence, list) and any(
         isinstance(item, dict) for item in evidence
     )
@@ -486,7 +499,7 @@ def _tier_knowledge_result_data(
                 elif len(content) > _KNOWLEDGE_TIER_EVIDENCE_CONTENT_CHARS:
                     entry["content"] = content[:_KNOWLEDGE_TIER_EVIDENCE_CONTENT_CHARS]
             projected.append(entry)
-        tiered["evidence"] = projected
+        tiered[evidence_key] = projected
     chunks = tiered.get("chunks")
     if isinstance(chunks, list):
         # chunks 与 evidence 同源：evidence 在场时正文是副本，一律退化成索引；
@@ -506,7 +519,53 @@ def _tier_knowledge_result_data(
         tiered["chunks"] = [
             _strip_chunk(item, index) for index, item in enumerate(chunks)
         ]
+    if level >= 1:
+        # 正文删无可删后，先削「对答这一问没有信息」的区块：路由轨迹只用于诊断，
+        # 概念正文/文档目录/桶摘要属于导航信息（引用卡片另有 knowledge_citations
+        # 从完整结果生成，不依赖这里）。
+        tiered.pop("route_trace", None)
+        tiered["selected_documents"] = _pick_fields(
+            tiered.get("selected_documents"), ("id", "title", "filename")
+        )
+        tiered["selected_buckets"] = _pick_fields(
+            tiered.get("selected_buckets"), ("id", "bucket_key", "title", "document_id")
+        )
+        tiered["selected_concepts"] = _pick_fields(
+            tiered.get("selected_concepts"), ("concept_id", "type", "title")
+        )
+        tiered["okf_citations"] = _pick_fields(
+            tiered.get("okf_citations"), ("concept_id", "title", "source_path")
+        )[:3]
+    if level >= 2:
+        # 只留「证据 + 文档标题」：桶/概念/OKF 引用都是路由证据，答问用不上。
+        tiered.pop("selected_buckets", None)
+        tiered.pop("selected_concepts", None)
+        tiered.pop("okf_citations", None)
+        tiered["selected_documents"] = _pick_fields(
+            tiered.get("selected_documents"), ("id", "title")
+        )
+    if level >= 3:
+        # 最后一招：按条数截断。定位索引与证据同源，截断不影响「读哪一条」的语义，
+        # 只影响模型一次能看到多少条——比截成半截 JSON（读不了）好得多。
+        limit = 6 if level == 3 else 3
+        for key in (evidence_key, "chunks"):
+            items = tiered.get(key)
+            if isinstance(items, list) and len(items) > limit:
+                tiered[key] = items[:limit]
+        tiered.pop("selected_documents", None)
     return tiered
+
+
+def _pick_fields(value: Any, keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    """把一组字典投影成只保留 ``keys`` 的精简条目（非字典条目丢弃）。"""
+
+    if not isinstance(value, list):
+        return []
+    return [
+        {key: item.get(key) for key in keys if item.get(key) is not None}
+        for item in value
+        if isinstance(item, dict)
+    ]
 
 
 def _slim_requirement_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -581,17 +640,25 @@ def _bounded_capability_result(
     )
     if len(serialized) <= max_chars:
         return payload
-    # I1：知识检索结果超预算先分级降档（top-N 正文 + 其余定位索引），两档
-    # 都压不进预算才退化为旧行为的截断 preview。
+    # I1：知识检索结果超预算先分级降档（top-N 正文 + 其余定位索引），逐级削到
+    # 「定位索引以外的区块」也去掉；全部压不进预算才退化为旧行为的截断 preview。
+    # 顺序是「先保正文、再削导航」：正文是答问的依据，桶/概念/文档目录只是导航。
+    # 正文条数从多到少，同一档正文下再逐级削区块——真实载荷 8 条 2K 正文 + 桶/概念
+    # 元数据约 10.4K，只试两档会直接落到 preview，半截 JSON 模型根本读不了。
     if (
         tool_name == "knowledge_search"
         and KNOWLEDGE_RESULT_TIERED_INLINE
         and isinstance(result.get("data"), dict)
     ):
-        for keep_full in (_KNOWLEDGE_TIER_FULL_EVIDENCE, 0):
+        ladder = [
+            (keep_full, level)
+            for keep_full in (_KNOWLEDGE_TIER_FULL_EVIDENCE, 1, 0)
+            for level in (0, 1, 2)
+        ] + [(0, 3), (0, 4)]
+        for keep_full, level in ladder:
             tiered = dict(payload)
             tiered["data"] = _tier_knowledge_result_data(
-                result["data"], keep_full_evidence=keep_full
+                result["data"], keep_full_evidence=keep_full, level=level
             )
             tiered_serialized = json.dumps(
                 tiered,
