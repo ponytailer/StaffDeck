@@ -443,6 +443,16 @@ def _normalize_source_items(
             "excerpt": content[:CITATION_EXCERPT_CHAR_LIMIT],
             "summary": summary[:CITATION_SUMMARY_CHAR_LIMIT],
         }
+        # 互联网来源：``url`` 原样保留（前端据此把标题渲染成可点外链），
+        # ``source_type="web"`` 让卡片与「企业知识」区分开。以前这两个字段
+        # 在投影时被丢掉，网页证据最后只剩一个 source_path 字符串，
+        # 界面上和普通分块长得一模一样、也点不到原文。
+        url = str(item.get("url") or "").strip()
+        if url:
+            candidate["url"] = url
+        if str(item.get("source_type") or "").strip() == "web":
+            candidate["source_type"] = "web"
+            candidate["site"] = str(item.get("site") or "").strip()
         if kind == "evidence":
             candidate.update(
                 {

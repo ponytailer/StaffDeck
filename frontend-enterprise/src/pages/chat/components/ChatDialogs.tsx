@@ -208,7 +208,18 @@ export default function ChatDialogs({ chat }: { chat: UseChatSession }) {
                   {activeCitation.source_path && (
                     <div>
                       <span>来源</span>
-                      <strong>{citationSourceLabel(activeCitation)}</strong>
+                      {activeCitation.source_type === 'web' && activeCitation.url ? (
+                        <a
+                          href={activeCitation.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[#0f7268] underline decoration-[#0f7268]/35 underline-offset-2 hover:decoration-[#0f7268]"
+                        >
+                          {activeCitation.site || citationSourceLabel(activeCitation)}
+                        </a>
+                      ) : (
+                        <strong>{citationSourceLabel(activeCitation)}</strong>
+                      )}
                     </div>
                   )}
                   {activeCitation.section_path && (

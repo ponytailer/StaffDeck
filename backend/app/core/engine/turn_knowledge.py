@@ -350,6 +350,12 @@ class _KnowledgeWorkflowMixin:
                             and web_result.get("success") is True
                         ):
                             web_payload = web_result.get("data")
+                            # 网页来源必须并入引用表：这条路径不走 step_loop，
+                            # citations 只从 knowledge_search 结果取，网页证据
+                            # 的 citations 若不在这里补上，回答正文里的 [n] 编号
+                            # 就只有知识库卡片、网页来源在界面上完全不可见
+                            # （用户实测：检索成功 8 条，页面上一张网页卡片都没有）。
+                            citations.extend(web_result.get("citations") or [])
                             trace(
                                 "knowledge_workflow_web_search",
                                 {

@@ -245,8 +245,12 @@ class ResponseGenerator:
             ),
             "tool_result": tool_result.model_dump() if tool_result else None,
             "retrieved_knowledge": compact_knowledge,
+            # 必须用全部 payload 生成编号表。默认 max_results=1 只取最后一条，
+            # 而落库的 knowledge_citations 是按全部 payload 编号的 —— 知识库
+            # 证据 + 网页证据并存时，模型看到的 [1] 是网页、卡片里的 [1] 是
+            # 知识库概念，正文编号与来源彻底错位。
             "knowledge_citation_hints": compact_citation_hints(
-                knowledge_citations_from_results(knowledge_context)
+                knowledge_citations_from_results(knowledge_context, max_results=None)
             ),
             "response_rules": skill.content_json.get("response_rules", []) if skill else [],
         }
@@ -273,7 +277,7 @@ class ResponseGenerator:
             task_citations = (
                 item.get("knowledge_citations")
                 if isinstance(item.get("knowledge_citations"), list)
-                else knowledge_citations_from_results(knowledge_context)
+                else knowledge_citations_from_results(knowledge_context, max_results=None)
             )
             projected.append(
                 {

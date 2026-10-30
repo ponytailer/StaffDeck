@@ -771,6 +771,12 @@ export type KnowledgeCitation = {
   chunk_id?: string;
   concept_id?: string;
   concept_type?: string;
+  /** 互联网来源：原文地址。有值时标题渲染为可点外链。 */
+  url?: string;
+  /** 'web' 表示来自互联网检索（区别于企业知识库）。 */
+  source_type?: string;
+  /** 互联网来源站点（域名，展示用）。 */
+  site?: string;
   /** 后端给出的展示分组键：同一文档同一位置归一张卡片。 */
   display_key?: string;
   // When several retrieved chunks resolve to the same source document, the
