@@ -67,7 +67,7 @@ URL。配置按用户保存，并在下次启动时生效。
 
 ## Agent 一键部署
 
-将下面的 Prompt 粘贴给 Cursor、Claude Code 或 Codex。代码部署时，也可以用
+将下面的 Prompt 粘贴给 Cursor、Claude Code 等。代码部署时，也可以用
 `ULTRARAG_HOST`、`ULTRARAG_PORT` 和 `STAFFDECK_PUBLIC_URL` 覆盖启动参数：
 
 ```text

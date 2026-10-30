@@ -551,7 +551,6 @@ export type A2ATaskRunRead = {
   direction: string;
   remote_task_id?: string | null;
   context_id?: string | null;
-  codex_session_id?: string | null;
   status: string;
   endpoint_url: string;
   protocol_version: string;
@@ -564,16 +563,6 @@ export type A2ATaskRunRead = {
   finished_at?: string | null;
   updated_at: string;
   events: A2ATaskEventRead[];
-};
-
-export type CodexA2AAdapterRead = {
-  enabled: boolean;
-  endpoint_url: string;
-  agent_card_url: string;
-  command: string;
-  workspace_root: string;
-  timeout_seconds: number;
-  token_configured: boolean;
 };
 
 export type MCPTransport = 'stdio' | 'streamable_http' | 'sse' | 'builtin';

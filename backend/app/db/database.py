@@ -94,7 +94,6 @@ def init_db() -> None:
     # _migrate_pg_api_key_schema()
     # _migrate_user_ldap_schema()
     # _migrate_user_department_manual()
-    # _migrate_tenant_seed_fingerprint()
     # _migrate_model_custom_headers_schema()
     # _migrate_agent_usage_count()
     # _purge_orphaned_chat_sessions()
@@ -2487,19 +2486,6 @@ def _migrate_user_department_manual() -> None:
                 "BOOLEAN NOT NULL DEFAULT FALSE"
             )
         )
-
-
-def _migrate_tenant_seed_fingerprint() -> None:
-    """tenants 表补齐种子指纹列(seed_fingerprint)，SQLite 与 PostgreSQL 通用。"""
-    inspector = inspect(engine)
-    tables = set(inspector.get_table_names())
-    if "tenants" not in tables:
-        return
-    columns = {column["name"] for column in inspector.get_columns("tenants")}
-    if "seed_fingerprint" in columns:
-        return
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE tenants ADD COLUMN seed_fingerprint VARCHAR"))
 
 
 def _migrate_model_custom_headers_schema() -> None:

@@ -16,7 +16,6 @@ from app.api.tools import (
     _tool_config,
     cancel_a2a_task_run,
     delete_tool,
-    get_codex_a2a_adapter,
     list_a2a_task_runs,
     list_tools,
     publish_tool,
@@ -90,11 +89,11 @@ def test_a2a_run_listing_includes_events_and_cancel_is_persisted() -> None:
         tool = Tool(
             id="tool_a2a",
             tenant_id="tenant_demo",
-            name="codex.remote",
-            display_name="Codex",
+            name="a2a.remote",
+            display_name="Remote A2A",
             tool_type="a2a",
             method="POST",
-            url="https://codex.example.test/api/a2a",
+            url="https://a2a.example.test/api/a2a",
         )
         db.add(tool)
         db.flush()
@@ -140,26 +139,6 @@ def test_a2a_run_listing_includes_events_and_cancel_is_persisted() -> None:
 
         assert cancelled.cancel_requested is True
         assert db.get(A2ATaskRun, run.id).cancel_requested is True
-
-
-def test_codex_a2a_adapter_status_never_returns_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "app.api.tools.get_settings",
-        lambda: SimpleNamespace(
-            codex_a2a_enabled=True,
-            codex_a2a_command="codex",
-            codex_a2a_workspace_root="/srv/codex",
-            codex_a2a_timeout_seconds=1800.0,
-            codex_a2a_token="secret-token",
-        ),
-    )
-
-    result = get_codex_a2a_adapter()
-
-    assert result.enabled is True
-    assert result.command == "codex"
-    assert result.token_configured is True
-    assert "token" not in result.model_dump(exclude={"token_configured"})
 
 
 def test_tool_config_namespaces_execution_and_preserves_existing_policy() -> None:

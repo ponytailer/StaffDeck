@@ -5,8 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
-from app.a2a import recover_codex_a2a_tasks, stop_codex_a2a_tasks
-from app.a2a import router as a2a_router
 from app.api import (
     agent_apps,
     agent_shares,
@@ -129,7 +127,6 @@ def on_startup() -> None:
                 from app.scheduled_tasks import rq_dispatch
 
                 rq_dispatch.sync_all_on_startup(db)
-        recover_codex_a2a_tasks()
         recover_a2a_client_tasks()
         if settings.scheduler_backend != "rq":
             start_background_worker()
@@ -150,7 +147,6 @@ def on_startup() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     try:
-        stop_codex_a2a_tasks()
         stop_public_api_maintenance()
         stop_background_worker()
         stop_timeout_sweeper()
@@ -207,7 +203,6 @@ app.include_router(agent_apps.router)
 app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)
-app.include_router(a2a_router)
 
 if settings.public_api_enabled:
     app.mount("/api/v1", create_public_api_app())

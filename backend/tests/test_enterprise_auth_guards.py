@@ -42,7 +42,6 @@ def test_enterprise_read_endpoints_require_authentication() -> None:
         "/api/enterprise/memories?tenant_id=tenant_demo",
         "/api/enterprise/tools?tenant_id=tenant_demo",
         "/api/enterprise/tools/buckets?tenant_id=tenant_demo",
-        "/api/enterprise/tools/a2a/codex-adapter",
         "/api/enterprise/tools/tool_demo?tenant_id=tenant_demo",
         "/api/enterprise/tools/tool_demo/a2a-runs?tenant_id=tenant_demo",
         "/api/enterprise/mcp-servers?tenant_id=tenant_demo",

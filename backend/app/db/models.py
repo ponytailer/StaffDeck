@@ -21,8 +21,6 @@ class Tenant(SQLModel, table=True):
 
     id: str = Field(primary_key=True)
     name: str
-    # 种子数据指纹:画廊 fixture 内容未变化时跳过启动时的全量重播(启动提速)
-    seed_fingerprint: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -196,7 +194,6 @@ class A2ATaskRun(SQLModel, table=True):
     protocol_version: str = "1.0"
     remote_task_id: Optional[str] = Field(default=None, index=True)
     context_id: Optional[str] = Field(default=None, index=True)
-    codex_session_id: Optional[str] = Field(default=None, index=True)
     status: str = Field(default="submitted", index=True)
     request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))

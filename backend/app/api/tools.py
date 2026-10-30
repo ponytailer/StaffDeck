@@ -103,7 +103,6 @@ class A2ATaskRunRead(BaseModel):
     direction: str
     remote_task_id: str | None = None
     context_id: str | None = None
-    codex_session_id: str | None = None
     status: str
     endpoint_url: str
     protocol_version: str
@@ -116,16 +115,6 @@ class A2ATaskRunRead(BaseModel):
     finished_at: str | None = None
     updated_at: str
     events: list[A2ATaskEventRead] = Field(default_factory=list)
-
-
-class CodexA2AAdapterRead(BaseModel):
-    enabled: bool
-    endpoint_url: str
-    agent_card_url: str
-    command: str
-    workspace_root: str
-    timeout_seconds: float
-    token_configured: bool
 
 
 def tool_read(
@@ -583,24 +572,6 @@ def probe_tool(
 
 
 @router.get(
-    "/a2a/codex-adapter",
-    response_model=CodexA2AAdapterRead,
-    dependencies=[Depends(require_agent_scope_viewer)],
-)
-def get_codex_a2a_adapter() -> CodexA2AAdapterRead:
-    settings = get_settings()
-    return CodexA2AAdapterRead(
-        enabled=bool(settings.codex_a2a_enabled),
-        endpoint_url="/api/a2a/codex",
-        agent_card_url="/.well-known/agent-card.json",
-        command=settings.codex_a2a_command,
-        workspace_root=settings.codex_a2a_workspace_root,
-        timeout_seconds=settings.codex_a2a_timeout_seconds,
-        token_configured=bool(settings.codex_a2a_token),
-    )
-
-
-@router.get(
     "/{tool_id}/a2a-runs",
     response_model=list[A2ATaskRunRead],
     dependencies=[Depends(require_agent_scope_viewer)],
@@ -1009,7 +980,6 @@ def _a2a_task_run_read(
         direction=run.direction,
         remote_task_id=run.remote_task_id,
         context_id=run.context_id,
-        codex_session_id=run.codex_session_id,
         status=run.status,
         endpoint_url=run.endpoint_url,
         protocol_version=run.protocol_version,

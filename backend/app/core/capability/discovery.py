@@ -243,7 +243,7 @@ def _budget_catalog(
     entries: list[CapabilityCatalogEntry],
     budget_chars: int,
 ) -> tuple[list[CapabilityCatalogEntry], bool]:
-    # Match Codex's progressive-disclosure behavior: shorten descriptions
+    # Match progressive-disclosure behavior: shorten descriptions
     # before omitting entries.  The measured budget is the compact JSON payload
     # actually sent to the model, not Python object size.
     for description_limit in (240, 120, 64, 0):
