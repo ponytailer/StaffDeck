@@ -682,7 +682,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const emptyDispatcherSummary = displayedAgentIsDispatcher
     ? (displayedDispatcher?.description || '').trim()
       // 说明没填时给一句能自解释的话，不要留空块
-      || `我是 ${displayedAgent ? employeeDisplayName(displayedAgent) : '多智能体'}，先说需求，我来判断交给谁。`
+      || `我是 ${displayedAgent ? employeeDisplayName(displayedAgent) : '员工小队'}，先说需求，我来判断交给谁。`
     : '';
   const emptyDispatcherStats = displayedAgentIsDispatcher
     ? [

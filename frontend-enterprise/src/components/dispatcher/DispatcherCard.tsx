@@ -62,7 +62,7 @@ export default function DispatcherCard({
             )}
           </div>
           <div className="mt-[1px] truncate text-[11.5px] text-[#9aa1b1]">
-            多智能体 · {members.length}/{MAX_DISPATCH_MEMBERS} 位同事
+            员工小队 · {members.length}/{MAX_DISPATCH_MEMBERS} 位同事
           </div>
         </div>
       </div>

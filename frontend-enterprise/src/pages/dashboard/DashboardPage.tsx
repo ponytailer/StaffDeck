@@ -572,7 +572,7 @@ function DispatcherProfileView({
                   {dispatcher.name}
                 </h2>
                 <span className="whitespace-nowrap rounded-[5px] bg-[#e1f1ed] px-[6px] py-[2px] text-[11px] leading-none text-[#0f7268]">
-                  多智能体 · 纯路由
+                  员工小队 · 纯路由
                 </span>
               </div>
 
@@ -601,7 +601,7 @@ function DispatcherProfileView({
 
               <p className="m-0 line-clamp-2 max-w-[720px] text-[14px] leading-[22px] text-[#757f9c]">
                 {dispatcher.description
-                  || '我是多智能体：先说需求，我来判断这一轮该交给谁，把问题转给最合适的同事。'}
+                  || '我是员工小队：先说需求，我来判断这一轮该交给谁，把问题转给最合适的同事。'}
               </p>
 
               <div className="flex w-full max-w-[640px] gap-3">
@@ -665,7 +665,7 @@ function DispatcherProfileView({
             <span className="text-[13px] font-medium text-[#18181a]">模型</span>
             <p className="mt-[8px] m-0 break-words text-[12.5px] leading-[1.7] text-[#757f9c]">
               路由判断用 {dispatcher.model_name || '（未配置）'}；成员自己配了模型就走自己的，
-              没配才用入口这个。多智能体不参与免费额度。
+              没配才用入口这个。员工小队不参与免费额度。
             </p>
           </div>
         </div>
@@ -714,7 +714,7 @@ function DispatcherProfileTabs({
       className="flex w-full flex-col items-start"
     >
       <TabsList
-        aria-label="多智能体档案分区"
+        aria-label="员工小队档案分区"
         className="h-[35px]! max-w-full gap-1 overflow-x-auto rounded-none bg-transparent p-0 scrollbar-hide"
       >
         {DISPATCHER_TABS.map(({ key, label, Icon }) => (

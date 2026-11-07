@@ -247,12 +247,12 @@ describe('DashboardPage dispatcher profile tabs', () => {
     renderDispatcherProfile();
 
     // 三个 tab 都在：档案总览 / 定时任务 / 对话日志
-    const tablist = await screen.findByLabelText('多智能体档案分区');
+    const tablist = await screen.findByLabelText('员工小队档案分区');
     expect(tablist.textContent).toContain('档案总览');
     expect(tablist.textContent).toContain('定时任务');
     expect(tablist.textContent).toContain('对话日志');
 
-    // 多智能体不该出现它根本不配的四块
+    // 员工小队不该出现它根本不配的四块
     expect(tablist.textContent).not.toContain('知识库');
     expect(tablist.textContent).not.toContain('SOP');
     expect(tablist.textContent).not.toContain('记忆');

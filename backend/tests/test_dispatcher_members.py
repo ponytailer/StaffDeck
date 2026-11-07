@@ -333,7 +333,7 @@ def test_replace_members_keeps_config_on_validation_error() -> None:
 
 
 def test_deleting_member_agent_requires_unbinding_first() -> None:
-    """员工在某个多智能体里当成员时**不许直接删**，必须先解绑。
+    """员工在某个员工小队里当成员时**不许直接删**，必须先解绑。
 
     旧行为是「删员工 → 静默摘掉各入口的成员行」，等于替入口主人改了配置还不告诉他：
     少一个成员后路由分叉会变，极端情况跌到 1 个甚至 0 个成员、问题全走兜底。
@@ -362,7 +362,7 @@ def test_deleting_member_agent_requires_unbinding_first() -> None:
         delete_agent(agent_id=MEMBER_A, tenant_id=TENANT, db=db, current_user=admin)
     assert excinfo.value.status_code == 409
     detail = str(excinfo.value.detail)
-    assert "2 个多智能体" in detail
+    assert "2 个员工小队" in detail
     assert "前台调度" in detail and "第二个调度" in detail
     # 401 之后员工必须还在（不能留半删状态）
     db.rollback()

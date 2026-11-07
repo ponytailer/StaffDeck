@@ -125,7 +125,7 @@ export default function DispatcherTopology({
       <svg
         viewBox={`0 0 ${TOPO_W} ${height}`}
         role="img"
-        aria-label="多智能体与成员的关系拓扑"
+        aria-label="员工小队与成员的关系拓扑"
         className="block h-auto w-full"
       >
         <defs>
@@ -169,7 +169,7 @@ export default function DispatcherTopology({
             {trunc(entryName, 14)}
           </text>
           <text x={rootX + 38} y={rootY + 32} fontSize="9.5" fill="#757f9c">
-            多智能体 · {trunc(entryModel, 16)}
+            员工小队 · {trunc(entryModel, 16)}
           </text>
           <text
             x={rootX + rootW - 10}

@@ -459,7 +459,7 @@ function Shell({
       ? employeeDisplayName(selectedAgent)
       : "未选择";
   const selectedAgentCaption = sidebarDispatcher
-    ? "多智能体"
+    ? "员工小队"
     : selectedAgent
       ? selectedAgent.is_overall
         ? "开放广场"

@@ -122,7 +122,7 @@ describe('DispatcherEditorDialog 三段式骨架', () => {
     const user = userEvent.setup();
     renderEditor();
 
-    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+    await user.click(screen.getByRole('button', { name: '新建小队' }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -138,7 +138,7 @@ describe('DispatcherEditorDialog 成员数校验', () => {
     await addMember(user, '小王');
     expect(screen.getByText('1 / 3')).toBeTruthy();
 
-    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+    await user.click(screen.getByRole('button', { name: '新建小队' }));
     expect(fetchMock).not.toHaveBeenCalled();
     // 计数徽标进入警示态以外，提示条必须解释为什么不行
     expect(screen.getByText(/只有 1 个成员时没有「选谁」的判断/)).toBeTruthy();
@@ -183,7 +183,7 @@ describe('DispatcherEditorDialog 成员数校验', () => {
     await addMember(user, '小王');
     await addMember(user, '小李');
 
-    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+    await user.click(screen.getByRole('button', { name: '新建小队' }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -214,7 +214,7 @@ describe('DispatcherEditorDialog 提交载荷', () => {
     await user.type(ruleInputs[0], '入职、离职、考勤异常');
     await user.type(ruleInputs[1], '薪资、个税、社保');
 
-    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+    await user.click(screen.getByRole('button', { name: '新建小队' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -259,7 +259,7 @@ describe('DispatcherEditorDialog 提交载荷', () => {
     await user.type(ruleInputs[1], '薪资核算');
 
     await user.click(screen.getByText('转给默认同事'));
-    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+    await user.click(screen.getByRole('button', { name: '新建小队' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];

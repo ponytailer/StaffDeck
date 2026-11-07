@@ -357,7 +357,7 @@ function renderPage() {
 }
 
 describe('AgentsPage dispatcher grouping', () => {
-  it('多智能体单独成组，不混进员工卡片网格', async () => {
+  it('员工小队单独成组，不混进员工卡片网格', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -371,20 +371,20 @@ describe('AgentsPage dispatcher grouping', () => {
 
     renderPage();
 
-    // 员工与入口都要出现，但入口在独立的「多智能体」tab 里，不混进员工网格。
+    // 员工与入口都要出现，但入口在独立的「员工小队」tab 里，不混进员工网格。
     expect((await screen.findAllByText('小艾')).length).toBeGreaterThan(0);
     expect(screen.queryByText('人事服务台')).toBeNull();
-    expect(screen.queryByLabelText('多智能体')).toBeNull();
+    expect(screen.queryByLabelText('员工小队')).toBeNull();
 
-    fireEvent.click(screen.getByRole('tab', { name: '多智能体' }));
+    fireEvent.click(screen.getByRole('tab', { name: '员工小队' }));
     expect(await screen.findByText('人事服务台')).toBeTruthy();
-    const section = screen.getByLabelText('多智能体');
+    const section = screen.getByLabelText('员工小队');
     expect(section.textContent).toContain('人事服务台');
     // 员工统计卡也不该把入口算进去（切 tab 后员工区已不渲染）
     expect(screen.queryByLabelText('数字员工统计')).toBeNull();
   });
 
-  it('没有多智能体时给创建引导，而不是空分区', async () => {
+  it('没有员工小队时给创建引导，而不是空分区', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -396,11 +396,11 @@ describe('AgentsPage dispatcher grouping', () => {
 
     renderPage();
     expect((await screen.findByText('小艾')).textContent).toBeTruthy();
-    expect(screen.queryByLabelText('多智能体')).toBeNull();
+    expect(screen.queryByLabelText('员工小队')).toBeNull();
 
-    fireEvent.click(screen.getByRole('tab', { name: '多智能体' }));
-    expect(await screen.findByText('还没有多智能体')).toBeTruthy();
-    expect(screen.getByText('创建多智能体')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '员工小队' }));
+    expect(await screen.findByText('还没有员工小队')).toBeTruthy();
+    expect(screen.getByText('新建小队')).toBeTruthy();
   });
 
   it('缺规则的成员在卡片上标出来', async () => {
@@ -419,7 +419,7 @@ describe('AgentsPage dispatcher grouping', () => {
     );
 
     renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: '多智能体' }));
+    fireEvent.click(screen.getByRole('tab', { name: '员工小队' }));
     expect(await screen.findByText('缺规则')).toBeTruthy();
   });
 });

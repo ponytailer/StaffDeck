@@ -152,8 +152,8 @@ const PLATFORM_CONFIGS: PlatformConfig[] = [
   {
     kind: 'squads',
     title: '员工小队',
-    subtitle: '已发布的多智能体：一个入口，自动分派给你要找的那位同事。',
-    detail: '多智能体不直接回答业务问题，它只判断该由哪位同事处理，然后转接过去。',
+    subtitle: '已发布的员工小队：一个入口，自动分派给你要找的那位同事。',
+    detail: '员工小队不直接回答业务问题，它只判断该由哪位同事处理，然后转接过去。',
     useLabel: '去对话',
     metricLabel: '小队',
     signals: ['自动分派', '多同事协作', '一个入口'],

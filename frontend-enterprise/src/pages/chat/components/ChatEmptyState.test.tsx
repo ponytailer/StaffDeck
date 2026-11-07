@@ -152,7 +152,7 @@ describe('ChatEmptyState dispatcher card', () => {
     expect(screen.getByText('小艾')).toBeTruthy();
     expect(screen.getByText('小北')).toBeTruthy();
     expect(screen.getByTitle('问人事政策时转给他')).toBeTruthy();
-    // 统计格换成多智能体真实成立的指标
+    // 统计格换成员工小队真实成立的指标
     expect(screen.getByText('同事')).toBeTruthy();
     expect(screen.getByText('无法匹配')).toBeTruthy();
     expect(screen.getByText('反问')).toBeTruthy();

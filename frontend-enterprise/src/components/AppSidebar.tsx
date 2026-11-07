@@ -116,7 +116,7 @@ const CAPABILITY_NAV: NavItem[] = [
  * 注意这里没有新增路由：三者都复用 DashboardPage 的不同 tab。
  */
 const DISPATCHER_PROFILE_NAV: NavItem[] = [
-  { route: EnterpriseRoute.Dashboard, label: '多智能体档案', Icon: IconFile },
+  { route: EnterpriseRoute.Dashboard, label: '员工小队档案', Icon: IconFile },
   { route: EnterpriseRoute.ScheduledTasks, label: '定时任务', Icon: IconAlarm },
   { route: EnterpriseRoute.Feedback, label: '对话日志', Icon: IconCalendar },
 ];
@@ -405,7 +405,7 @@ function AgentSwitcher({
   const caption = selectedTeamId
     ? '当前团队'
     : currentDispatcher
-      ? '多智能体'
+      ? '员工小队'
       : currentAgent
         ? '当前员工'
         : scopeLoading
@@ -517,7 +517,7 @@ function DispatcherScopeItems({
   return (
     <>
       <DropdownMenuLabel className="px-[8px] pt-[6px] pb-[2px] text-[10px] leading-none text-[#464c5e]">
-        多智能体
+        员工小队
       </DropdownMenuLabel>
       {scopeDispatchers.map((dispatcher) => (
         <DropdownMenuItem

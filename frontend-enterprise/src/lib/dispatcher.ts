@@ -220,7 +220,7 @@ export function isMemberCountValid(count: number): boolean {
 
 export function memberCountHint(count: number): string | null {
   if (count <= 0) {
-    return `至少要有 ${MIN_DISPATCH_MEMBERS} 个同事才需要多智能体。只有一位同事时，直接找他聊就行。`;
+    return `至少要有 ${MIN_DISPATCH_MEMBERS} 个同事才需要员工小队。只有一位同事时，直接找他聊就行。`;
   }
   if (count < MIN_DISPATCH_MEMBERS) {
     return `还差 ${MIN_DISPATCH_MEMBERS - count} 个同事。只有 1 个成员时没有「选谁」的判断，直接建普通员工更合适。`;

@@ -303,7 +303,7 @@ export default function EmployeeCard({
             title={`${referencedBy.map((item) => item.name).join('、')}`}
             className="rounded-[20px] border border-[#cfe7e2] bg-[#eef7f5] px-[8px] py-px text-[10px] leading-[13px] text-[#0f7268]"
           >
-            被 {referencedBy.length} 个多智能体引用
+            被 {referencedBy.length} 个员工小队引用
           </span>
         )}
         {profile.workStyles.slice(0, 3).map((item) => (

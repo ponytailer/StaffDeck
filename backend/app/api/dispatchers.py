@@ -366,7 +366,7 @@ def publish_dispatcher_to_gallery(
     if not members:
         raise HTTPException(
             status_code=400,
-            detail="该多智能体还没有成员，先添加同事并写好路由规则再发布",
+            detail="该员工小队还没有成员，先添加同事并写好路由规则再发布",
         )
     metadata = dict(row.metadata_json or {})
     if metadata.get("published_to_gallery") is True:

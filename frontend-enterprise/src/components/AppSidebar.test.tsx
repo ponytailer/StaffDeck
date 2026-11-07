@@ -193,11 +193,11 @@ describe('AppSidebar dispatcher scope', () => {
     );
   }
 
-  it('当前作用域是多智能体时显示它的名字，而不是「未选择 / -」', () => {
+  it('当前作用域是员工小队时显示它的名字，而不是「未选择 / -」', () => {
     renderDispatcherSidebar();
 
     const trigger = screen.getByLabelText('切换当前员工');
-    expect(within(trigger).getByText('多智能体')).toBeTruthy();
+    expect(within(trigger).getByText('员工小队')).toBeTruthy();
     expect(within(trigger).getByText('测试Multi')).toBeTruthy();
     expect(within(trigger).queryByText('未选择')).toBeNull();
     expect(within(trigger).queryByText('-')).toBeNull();
@@ -210,14 +210,14 @@ describe('AppSidebar dispatcher scope', () => {
     expect(screen.queryByText('技能')).toBeNull();
     expect(screen.queryByText('SOP')).toBeNull();
     expect(screen.queryByText('工具')).toBeNull();
-    // 换成对多智能体成立的入口
-    expect(screen.getByText('多智能体档案')).toBeTruthy();
+    // 换成对员工小队成立的入口
+    expect(screen.getByText('员工小队档案')).toBeTruthy();
     expect(screen.getByText('成员与路由规则')).toBeTruthy();
     // 员工档案这个名字也不该出现（它不是一个员工）
     expect(screen.queryByText('员工档案')).toBeNull();
   });
 
-  it('切换器下拉里把多智能体单独分组，副标题是成员数而不是岗位名', async () => {
+  it('切换器下拉里把员工小队单独分组，副标题是成员数而不是岗位名', async () => {
     const user = userEvent.setup();
     const onSelectAgent = vi.fn();
     render(
@@ -243,7 +243,7 @@ describe('AppSidebar dispatcher scope', () => {
 
     await user.click(screen.getByLabelText('切换当前员工'));
     const menu = await screen.findByRole('menu');
-    expect(within(menu).getByText('多智能体')).toBeTruthy();
+    expect(within(menu).getByText('员工小队')).toBeTruthy();
     const item = within(menu)
       .getAllByRole('menuitem')
       .find((row) => row.textContent?.includes('测试Multi'));

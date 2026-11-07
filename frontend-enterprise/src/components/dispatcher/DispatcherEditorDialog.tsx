@@ -309,7 +309,7 @@ export default function DispatcherEditorDialog({
       return;
     }
     if (!modelConfigId) {
-      notify.error('多智能体必须配置模型才能保存');
+      notify.error('员工小队必须配置模型才能保存');
       return;
     }
     if (countInvalid) {
@@ -361,7 +361,7 @@ export default function DispatcherEditorDialog({
             config,
           });
 
-      notify.success(dispatcher ? '多智能体已更新' : '多智能体已创建');
+      notify.success(dispatcher ? '员工小队已更新' : '员工小队已创建');
       onSaved?.(row);
       onClose();
     } catch (error) {
@@ -381,7 +381,7 @@ export default function DispatcherEditorDialog({
           `absolute inset-0` 相对的是 Content，不需要这里再声明相对定位。 */}
       <DialogContent className="flex max-h-[calc(100dvh-32px)] w-[calc(100%-32px)] flex-col gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[880px]">
         <DialogTitle className="shrink-0 px-[24px] pt-[18px] text-[16px] font-semibold text-[#18181a]">
-          {dispatcher ? '编辑多智能体' : '创建多智能体'}
+          {dispatcher ? '编辑员工小队' : '新建员工小队'}
           <span className="ml-[8px] rounded-[6px] bg-[#e1f1ed] px-[7px] py-[2px] align-middle text-[11px] font-normal text-[#0f7268]">
             路由型 Agent
           </span>
@@ -461,7 +461,7 @@ export default function DispatcherEditorDialog({
                 </svg>
               </span>
               <span>
-                多智能体<b className="text-[#5b6274]">不配置知识库、技能与工具</b>
+                员工小队<b className="text-[#5b6274]">不配置知识库、技能与工具</b>
                 ，也不参与免费额度。路由判断与所有子流程都用上面的模型（成员自己配了模型则用成员自己的）。
               </span>
             </div>
@@ -801,7 +801,7 @@ export default function DispatcherEditorDialog({
               onClick={() => void save()}
               className="h-[34px] rounded-[10px] bg-[#18181a] px-[18px] text-[12.5px] font-normal text-white hover:bg-[#303030]"
             >
-              {saving ? '保存中…' : dispatcher ? '保存' : '创建多智能体'}
+              {saving ? '保存中…' : dispatcher ? '保存' : '新建小队'}
             </UIButton>
           </div>
         </div>

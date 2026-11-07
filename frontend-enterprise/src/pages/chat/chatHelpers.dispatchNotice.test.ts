@@ -5,7 +5,7 @@ import type { ChatMessage } from '@/types';
 import { shouldKeepRealtimeMessage } from './chatHelpers';
 
 /**
- * 多智能体转接答案「消失 2~3s 又出现」的回归防线。
+ * 员工小队转接答案「消失 2~3s 又出现」的回归防线。
  *
  * 这一轮的转接通知（「已转交给 X」）和成员答案是**两条独立气泡、同为 assistant、
  * 共享同一个 turn**。`hasServerMessageForTurn` 早期只比对 role + turn，于是把
@@ -21,7 +21,7 @@ function msg(overrides: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'role'>)
   } as ChatMessage;
 }
 
-describe('shouldKeepRealtimeMessage — 多智能体转接气泡', () => {
+describe('shouldKeepRealtimeMessage — 员工小队转接气泡', () => {
   it('服务端只有「转接通知」时，必须保留实时流式出来的答案', () => {
     const serverNotice = msg({
       id: 'msg_notice',

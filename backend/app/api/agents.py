@@ -523,7 +523,7 @@ def delete_agent(
     _ensure_can_manage_agent(row, current_user)
     if row.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent cannot be deleted")
-    # 在「多智能体」里当成员的员工不许直接删：先解绑再删。
+    # 在「员工小队」里当成员的员工不许直接删：先解绑再删。
     #
     # 以前这里是静默摘掉绑定（删员工 → 各入口少一个成员），看起来省事，实际是
     # **把别人的入口改坏了还不告诉他**：多智能体少一个成员后路由分叉会变，
@@ -550,9 +550,9 @@ def delete_agent(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"该员工是 {len(referencing_ids)} 个多智能体的成员"
+                f"该员工是 {len(referencing_ids)} 个员工小队的成员"
                 f"（{'、'.join(names) or '未命名'}），"
-                "请先在多智能体里解绑，再删除员工。"
+                "请先在员工小队里解绑，再删除员工。"
             ),
         )
     # 子表清理一律走批量语句：逐行 db.delete/db.update 在远程 PG 上每次都要一次往返，

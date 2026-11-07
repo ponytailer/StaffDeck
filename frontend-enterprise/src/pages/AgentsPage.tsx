@@ -88,9 +88,9 @@ export default function AgentsPage({
   const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline'>('all');
-  // 页面级 tab：数字员工 / 多智能体 / 技能管理 / 知识库 / 工具管理 / 静态资源。
-  // 多智能体是与员工并列的一等对象（不是员工的一种），所以给它独立 tab，
-  // 顺序紧跟数字员工、排在技能管理之前；静态资源与技能/工具面板同构，排最后。
+  // 页面级 tab：数字员工 / 员工小队 / 技能管理 / 知识库 / 工具管理 / 静态资源。
+  // 员工小队（Dispatcher，纯路由）是与员工并列的一等对象（不是员工的一种），
+  // 所以给它独立 tab，顺序紧跟数字员工、排在技能管理之前；静态资源与技能/工具面板同构，排最后。
   const [pageTab, setPageTab] = useState<
     'employees' | 'dispatchers' | 'skills' | 'knowledge' | 'tools' | 'assets'
   >(() => {
@@ -241,7 +241,7 @@ export default function AgentsPage({
       emitAgentScopeChange(row.id);
       navigate(`/workspace/chat/draft/${row.id}`);
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '打开多智能体失败');
+      notify.error(error instanceof Error ? error.message : '打开员工小队失败');
     } finally {
       setSelectingAgentId(null);
     }
@@ -349,11 +349,11 @@ export default function AgentsPage({
     setDeletingDispatcher(true);
     try {
       await deleteDispatcher(row.id);
-      notify.success('多智能体已删除');
+      notify.success('员工小队已删除');
       setDispatcherDeleteTarget(null);
       setDispatchers((current) => current.filter((item) => item.id !== row.id));
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '删除多智能体失败');
+      notify.error(error instanceof Error ? error.message : '删除员工小队失败');
     } finally {
       setDeletingDispatcher(false);
     }
@@ -387,7 +387,7 @@ export default function AgentsPage({
         onChange={setPageTab}
         items={[
           { value: 'employees', label: '数字员工' },
-          { value: 'dispatchers', label: '多智能体' },
+          { value: 'dispatchers', label: '员工小队' },
           { value: 'skills', label: '技能管理' },
           { value: 'knowledge', label: '知识库' },
           { value: 'tools', label: '工具管理' },
@@ -477,11 +477,11 @@ export default function AgentsPage({
       </RevealGroup>
         </>
       ) : pageTab === 'dispatchers' ? (
-        // 多智能体是一等对象，独立成一个页面级 tab（与技能管理并列、排它之前）。
+        // 员工小队是一等对象，独立成一个页面级 tab（与技能管理并列、排它之前）。
         // 它是「只路由不干活」的另一种类型：混进员工网格会让员工总数虚高，
         // 也容易被误以为能配知识库，所以从员工页彻底搬出来。
-        <div className="mt-[24px]" aria-label="多智能体">
-          {/* 不再重复一个「多智能体」大标题：tab 已经标明了当前位置，
+        <div className="mt-[24px]" aria-label="员工小队">
+          {/* 不再重复一个「员工小队」大标题：tab 已经标明了当前位置，
               再写一遍就成了同一句话出现两次（技能管理/工具管理两颗 tab 也没有标题）。 */}
           <div className="mb-[16px] flex flex-wrap items-center justify-between gap-[12px]">
             <p className="text-[12px] leading-[18px] text-[#757f9c]">
@@ -493,7 +493,7 @@ export default function AgentsPage({
               className="h-[38px] shrink-0 rounded-[10px] border border-[#cfe7e2] bg-[#eef7f5] px-[18px] text-[13px] font-medium text-[#0f5f57] hover:bg-[#e4f3ef] hover:text-[#0f5f57]"
             >
               <IconPlus className="size-[16px]" />
-              创建多智能体
+              新建小队
             </UIButton>
           </div>
           {dispatchers.length > 0 ? (
@@ -517,8 +517,8 @@ export default function AgentsPage({
           ) : (
             <SearchEmptyState
               height="h-[240px]"
-              title="还没有多智能体"
-              description="点右上角「创建多智能体」，选 2~3 位同事并写清各自负责什么"
+              title="还没有员工小队"
+              description="点右上角「新建小队」，选 2~3 位同事并写清各自负责什么"
               icon={
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" className="shrink-0">
                   <circle cx="8" cy="3.2" r="1.9" />
@@ -661,7 +661,7 @@ export default function AgentsPage({
           if (!open) setDispatcherDeleteTarget(null);
         }}
         loading={deletingDispatcher}
-        title={`删除多智能体「${dispatcherDeleteTarget?.name || ''}」？`}
+        title={`删除员工小队「${dispatcherDeleteTarget?.name || ''}」？`}
         description="删除后该入口的路由配置将一并移除；下辖的数字员工本身不受影响。"
         onConfirm={() => void confirmDispatcherDelete()}
       />
