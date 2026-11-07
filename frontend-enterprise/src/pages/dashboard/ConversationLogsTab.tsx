@@ -33,6 +33,8 @@ import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { SELECT_TRIGGER_CLASS, formatDateTime } from '@/lib/enterprise-ui';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
+import { isDispatcherScopeId } from '@/lib/dispatcher-scope';
+import { listDispatchers, type DispatcherRead } from '@/lib/dispatcher';
 import { MarkdownMessage } from '../chat/chatHelpers';
 
 import { api, TENANT_ID } from '../../api/client';
@@ -94,6 +96,7 @@ export default function ConversationLogsTab() {
   const [downRows, setDownRows] = useState<FeedbackSessionRead[]>([]);
   const [upRows, setUpRows] = useState<FeedbackSessionRead[]>([]);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
+  const [dispatchers, setDispatchers] = useState<DispatcherRead[]>([]);
   const [summary, setSummary] = useState<FeedbackSummaryRead | null>(null);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [filter, setFilter] = useState<ConversationLogFilter>('all');
@@ -117,18 +120,21 @@ export default function ConversationLogsTab() {
     setLoading(true);
     const agentQuery = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
     // Load each source independently so one failing endpoint doesn't blank the whole tab.
-    const [sessionResult, downResult, upResult, summaryResult, agentResult] = await Promise.allSettled([
+    const [sessionResult, downResult, upResult, summaryResult, agentResult, dispatcherResult] = await Promise.allSettled([
       api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}${agentQuery}`),
       api.get<FeedbackSessionRead[]>(`/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=down${agentQuery}`),
       api.get<FeedbackSessionRead[]>(`/api/enterprise/feedback/sessions?tenant_id=${TENANT_ID}&rating=up${agentQuery}`),
       api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}${agentQuery}`),
       api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
+      // 员工小队不在 /agents 里；不拉这份，「数字员工」列会显示裸 agent id
+      listDispatchers(),
     ]);
     if (sessionResult.status === 'fulfilled') setSessions(sessionResult.value);
     if (downResult.status === 'fulfilled') setDownRows(downResult.value);
     if (upResult.status === 'fulfilled') setUpRows(upResult.value);
     if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
     if (agentResult.status === 'fulfilled') setAgents(agentResult.value);
+    if (dispatcherResult.status === 'fulfilled') setDispatchers(dispatcherResult.value);
     const failure = [sessionResult, downResult, upResult, summaryResult, agentResult].find(
       (item): item is PromiseRejectedResult => item.status === 'rejected',
     );
@@ -162,10 +168,25 @@ export default function ConversationLogsTab() {
 
   const agentsById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
 
+  /**
+   * 员工 id → 可读名字。
+   *
+   * 员工小队不在 `/api/enterprise/agents` 里（后端按设计排除），所以对小队作用域
+   * 的会话，`agentsById` 查不到 → 以前直接把裸 id（`agent_1ed87a26afe848cb`）
+   * 打到「数字员工」列上。员工小队自己在「我的数字员工」页有独立列表，这里补一份。
+   */
+  const dispatcherNamesById = useMemo(
+    () => new Map(dispatchers.map((item) => [item.id, item.name])),
+    [dispatchers],
+  );
+
   const agentLabelFromId = (rowAgentId?: string | null): string => {
     if (!rowAgentId) return '-';
     const agent = agentsById.get(rowAgentId);
-    return agent ? employeeDisplayNameWithCreator(agent) : rowAgentId;
+    if (agent) return employeeDisplayNameWithCreator(agent);
+    const dispatcherName = dispatcherNamesById.get(rowAgentId);
+    if (dispatcherName) return dispatcherName;
+    return isDispatcherScopeId(rowAgentId) ? '员工小队' : rowAgentId;
   };
 
   const agentLabel = (row: ConversationLogRow): string => agentLabelFromId(row.agent_id);

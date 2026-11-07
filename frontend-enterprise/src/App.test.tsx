@@ -5,6 +5,10 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ENTERPRISE_AGENT_STORAGE_KEY } from '@/lib/agent-scope-storage';
+import {
+  rememberDispatcherScopeIds,
+  resetDispatcherScopeCacheForTests,
+} from '@/lib/dispatcher-scope';
 import { I18nProvider } from '@/i18n';
 import type { AgentProfileRead, TeamRead } from '@/types';
 
@@ -75,7 +79,38 @@ const modelConfig = {
   enabled: true,
 };
 
-function stubAppFetch(currentUser: unknown = authUser) {
+/**
+ * 一个员工小队的桩数据。`members` 里的员工不影响路由守卫，只求结构完整可解析。
+ */
+const dispatcher = {
+  id: 'dispatcher-1',
+  tenant_id: 'tenant_demo',
+  name: 'X Man 小队',
+  description: '',
+  persona_prompt: '',
+  kind: 'dispatcher',
+  status: 'active',
+  model_config_id: 'model-1',
+  model_name: '默认模型',
+  members: [],
+  config: {
+    fallback_mode: 'clarify',
+    fallback_reply: '',
+    default_member_agent_id: null,
+    offer_candidates: true,
+    min_confidence: 0.5,
+  },
+  usage_count: 0,
+  published_to_gallery: false,
+};
+
+function stubAppFetch(
+  currentUser: unknown = authUser,
+  options: { agents?: AgentProfileRead[]; dispatchers?: unknown[] } = {},
+) {
+  const agents = options.agents ?? [agent];
+  // 不给就当成「没有员工小队」，避免影响既有的团队/落地页用例
+  const dispatchers = options.dispatchers ?? [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method || 'GET').toUpperCase();
@@ -83,13 +118,18 @@ function stubAppFetch(currentUser: unknown = authUser) {
       return jsonResponse({ session_id: 'session-tl-1' });
     }
     if (url.includes('/api/auth/me')) return jsonResponse(currentUser);
-    if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+    if (url.includes('/api/enterprise/dispatchers')) return jsonResponse(dispatchers);
+    if (url.includes('/api/enterprise/agents')) return jsonResponse(agents);
     if (/\/api\/enterprise\/teams\/team-1\/(tasks|blackboard|events)/.test(url)) {
       return jsonResponse([]);
     }
     if (url.includes('/api/enterprise/teams/team-1')) return jsonResponse(team);
     if (url.includes('/api/enterprise/teams')) return jsonResponse([team]);
     if (url.includes('/api/enterprise/model-configs')) return jsonResponse([modelConfig]);
+    // 知识库列表是分页对象（{items,...}），返空数组会让页面里的 page.items 变 undefined
+    if (url.includes('/api/enterprise/knowledge-bases')) {
+      return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
+    }
     if (url.includes('/api/chat/')) return jsonResponse([]);
     if (url.includes('/api/enterprise/')) return jsonResponse([]);
     return jsonResponse({});
@@ -124,6 +164,7 @@ function stubBrowserApis() {
 
 beforeEach(() => {
   stubBrowserApis();
+  resetDispatcherScopeCacheForTests();
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token: 'token-1', user: authUser }));
   window.localStorage.setItem('staffdeck_onboarding_guide_seen', '1');
   window.localStorage.setItem('staffdeck_quick_start_guide_seen', '1');
@@ -175,6 +216,99 @@ describe('App team scope selection', () => {
       expect(switcher.textContent).toContain('增长团队');
     });
     expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('team:team-1');
+  });
+});
+
+describe('App dispatcher scope route guard', () => {
+  /**
+   * 回归：员工小队作用域下点「创建技能 / 新建工具 / 从 Swagger 导入」，
+   * 曾经被「员工小队不配技能/工具 → 送回档案页」的守卫按路径前缀误伤，
+   * 全部直接跳到档案页（用户原话：「点击新建都直接跳到 X Man 的档案页」）。
+   */
+  const createRoutes = [
+    '/enterprise/general-skills/new',
+    '/enterprise/tools/new',
+    '/enterprise/tools/mcp/new',
+    '/enterprise/tools/import/swagger',
+    '/enterprise/knowledge/new',
+    '/enterprise/general-skills/demo-skill/edit',
+  ];
+
+  it.each(createRoutes)(
+    'keeps the create/edit page %s instead of bouncing to the profile',
+    async (route) => {
+      stubAppFetch(authUser, { dispatchers: [dispatcher] });
+      window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, dispatcher.id);
+      window.history.pushState({}, '', route);
+      render(<I18nProvider><App /></I18nProvider>);
+
+      // 等一次列表加载落地（dispatchers 拿到之后守卫才会真正生效）
+      await waitFor(() => {
+        expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe(dispatcher.id);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(window.location.pathname).toBe(route);
+    },
+  );
+
+  it('still sends the capability list page back to the profile', async () => {
+    stubAppFetch(authUser, { dispatchers: [dispatcher] });
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, dispatcher.id);
+    window.history.pushState({}, '', '/enterprise/general-skills');
+    render(<I18nProvider><App /></I18nProvider>);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/enterprise/dashboard');
+    });
+  });
+
+  it('does not block the create page with the empty-employee guide', async () => {
+    // 一个员工都没有时，新建技能页仍要能打开（它不是某个员工的资源页）
+    stubAppFetch(authUser, { agents: [] });
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, '');
+    window.history.pushState({}, '', '/enterprise/general-skills/new');
+    render(<I18nProvider><App /></I18nProvider>);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/enterprise/general-skills/new');
+    });
+    expect(screen.queryByText('还没有数字员工')).toBeNull();
+  });
+
+  /**
+   * 回归：守卫以前依赖 `dispatchers` 列表（异步，冷启动实测 3~8s），
+   * 列表没到之前恒 false → 会先渲染出员工页再跳走。这里让 dispatchers 接口
+   * **永远不返回**，模拟冷启动窗口，守卫必须靠 localStorage 缓存立刻生效。
+   */
+  it('blocks the capability list page even before the dispatchers list resolves', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method || 'GET').toUpperCase();
+      if (method === 'POST' && url.includes('/tl/session')) {
+        return jsonResponse({ session_id: 'session-tl-1' });
+      }
+      if (url.includes('/api/auth/me')) return jsonResponse(authUser);
+      // 关键：dispatcher 列表永远挂起
+      if (url.includes('/api/enterprise/dispatchers')) return new Promise<Response>(() => {});
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      if (url.includes('/api/enterprise/model-configs')) return jsonResponse([modelConfig]);
+      if (url.includes('/api/enterprise/knowledge-bases')) {
+        return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
+      }
+      if (url.includes('/api/chat/')) return jsonResponse([]);
+      if (url.includes('/api/enterprise/')) return jsonResponse([]);
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    rememberDispatcherScopeIds([dispatcher.id]);
+
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, dispatcher.id);
+    window.history.pushState({}, '', '/enterprise/general-skills');
+    render(<I18nProvider><App /></I18nProvider>);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/enterprise/dashboard');
+    });
   });
 });
 

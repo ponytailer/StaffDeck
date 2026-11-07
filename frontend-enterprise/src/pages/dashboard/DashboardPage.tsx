@@ -63,6 +63,7 @@ import {
   type DispatcherRead,
 } from '../../lib/dispatcher';
 import DispatcherGlyph from '../../components/dispatcher/DispatcherGlyph';
+import { isDispatcherScopeId } from '../../lib/dispatcher-scope';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
@@ -133,8 +134,24 @@ export default function DashboardPage({
         setModels(modelRows);
         // 多智能体作用域必须原样保留：它不在员工花名册里，若走下面的兜底就会被
         // 悄悄改写成别人的档案（页面上「当前员工信息」变成另一个人）。
-        const isDispatcherScope = dispatcherRows.some((item) => item.id === agentId);
-        if (!isDispatcherScope && (!agentId || !visibleAgents.some((item) => item.id === agentId))) {
+        // 同步缓存优先 —— 这份 dispatcher 列表要等远程 PG 往返（冷启动 3~8s），
+        // 等它回来之前 `dispatcherRows` 还是空数组，用户会先看到别人的档案再被切走。
+        const isDispatcherScope =
+          isDispatcherScopeId(agentId) || dispatcherRows.some((item) => item.id === agentId);
+        // 团队作用域（`team:xxx`）不在员工花名册里，档案页按既有约定**回落到可用员工**
+        // 渲染（团队没有独立档案页）。但绝不能把 `team:xxx` 永久改写成员工 id ——
+        // 那会让左下角从「当前团队 OneTeam」跳成「当前员工 亚特」，用户以为
+        // 自己切错了作用域。所以这里只跳过「写入」，渲染回落交给下面的 selectedAgent。
+        // 注意必须读 localStorage 原始值：`readEmployeeScope()` 已把 team scope
+        // 折成空串（员工向页面的语义），拿 agentId 判断永远为 false。
+        const isTeamAgentScope = isTeamScope(
+          window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY),
+        );
+        if (
+          !isDispatcherScope &&
+          !isTeamAgentScope &&
+          (!agentId || !visibleAgents.some((item) => item.id === agentId))
+        ) {
           const manageableAgents = visibleAgents.filter((item) => canManageEmployeeAgent(item, currentUser));
           const next = isAdmin
             ? preferredEmployeeAgent(visibleAgents)?.id || ''
@@ -169,12 +186,19 @@ export default function DashboardPage({
 
   /** 当前作用域是多智能体时，它就是页面主体 —— 不能退回「挑一个员工」。 */
   const selectedDispatcher = dispatchers?.find((item) => item.id === agentId) || null;
-  const selectedAgent = selectedDispatcher
+  /**
+   * 同步缓存的兜底：dispatcher 列表还没回来、但作用域确实是小队时，
+   * 绝不能走 `agents.find(...) || agents.find(!is_overall)` 挑一个员工上来
+   * —— 那会把「X Man 的档案页」渲染成别人的档案（真实事故）。
+   * 此时 `selectedAgent` 保持 null，由下面 `selectedDispatcher` 异步到位后再渲染。
+   */
+  const scopeIsDispatcher = Boolean(selectedDispatcher) || isDispatcherScopeId(agentId);
+  const selectedAgent = scopeIsDispatcher
     ? null
     : agents.find((item) => item.id === agentId)
       || agents.find((item) => !item.is_overall)
       || null;
-  const employeeSessions = selectedDispatcher
+  const employeeSessions = scopeIsDispatcher
     ? sessions
     : selectedAgent?.is_overall
       ? sessions
@@ -214,6 +238,12 @@ export default function DashboardPage({
   // Avoid flashing the 开放广场 / empty state before the agents API resolves,
   // which would otherwise briefly render before the employee profile appears.
   if (!loaded && agents.length === 0 && !selectedDispatcher) {
+    return <div className="page dashboard-page" />;
+  }
+
+  // 作用域是员工小队、但它的详情还没到（列表要等远程 PG 往返）：给一块占位。
+  // 绝不能往下走到「挑一个员工」或「开放广场」分支 —— 那会让用户先看到别人的档案。
+  if (scopeIsDispatcher && !selectedDispatcher) {
     return <div className="page dashboard-page" />;
   }
 

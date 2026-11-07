@@ -463,9 +463,13 @@ function AgentSwitcher({
           <IconChevronDown className="size-[14px] shrink-0 text-sidebar-foreground group-data-[collapsible=icon]:hidden" />
         </div>
       </DropdownMenuTrigger>
+      {/* 不能锁 `w-(--radix-dropdown-menu-trigger-width)`：触发块在侧栏里只有 ~163px，
+          锁死后「数据分析 @Administrator」这类长名字被截断。给一个最小宽度 + 允许内容撑开。
+          max-h 也要放宽：员工 7 位 + 小队 + 团队后总高 ~435px，320px 会把「员工小队」
+          这一组压到折叠线以下 —— 而小队作用域下当前选中项恰恰就在那组里。 */}
       <DropdownMenuContent
         align="start"
-        className="flex max-h-[320px] w-(--radix-dropdown-menu-trigger-width) flex-col gap-[4px] overflow-y-auto"
+        className="flex max-h-[min(440px,70vh)] min-w-[240px] flex-col gap-[4px] overflow-y-auto"
       >
         {employeeAgents.map((agent) => (
           <DropdownMenuItem

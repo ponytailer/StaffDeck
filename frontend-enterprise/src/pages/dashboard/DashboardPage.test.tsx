@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '@/i18n';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ENTERPRISE_AGENT_STORAGE_KEY } from '@/lib/agent-scope-storage';
+import { rememberDispatcherScopeIds } from '@/lib/dispatcher-scope';
 import type { AgentProfileRead } from '@/types';
 
 import DashboardPage from './DashboardPage';
@@ -65,6 +66,10 @@ describe('DashboardPage team scope compatibility', () => {
         return jsonResponse({ reply_stats: { total: 0, today: 0, by_day: {} }, events: [] });
       }
       if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      // knowledge-bases 是分页包，页面读的是 `.items`（裸数组会让整棵树崩掉）
+      if (url.includes('/api/enterprise/knowledge-bases')) {
+        return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
+      }
       if (url.includes('/api/enterprise/feedback/summary')) {
         return jsonResponse({ total_feedback: 0, up_count: 0, down_count: 0, bucket_counts: [] });
       }
@@ -147,6 +152,10 @@ describe('DashboardPage hero metrics', () => {
       }
       if (url.includes('/api/enterprise/feedback/summary')) {
         return jsonResponse({ total_feedback: 0, up_count: 0, down_count: 0, bucket_counts: [] });
+      }
+      // knowledge-bases 是分页包，页面读的是 `.items`（裸数组会让整棵树崩掉）
+      if (url.includes('/api/enterprise/knowledge-bases')) {
+        return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
       }
       return jsonResponse([]);
     }));
@@ -316,5 +325,102 @@ describe('DashboardPage dispatcher profile tabs', () => {
 
     expect(await screen.findByText(/无法匹配：固定话术/)).toBeTruthy();
     expect(screen.getByText(/累计转接 3 次/)).toBeTruthy();
+  });
+
+  /**
+   * 回归：dispatcher 列表要等远程 PG 往返（冷启动实测 3~8s）。列表没回来的窗口里，
+   * `selectedDispatcher` 是 null，旧代码会落到 `agents.find(!is_overall)` 兜底
+   * → **先渲染出某个员工的档案**（用户看到的就是「X Man 的档案页不对」）。
+   *
+   * 现在靠 localStorage 里的同步缓存判定，此窗口应给占位、绝不出现员工信息。
+   */
+  it('员工小队列表未返回时不回退渲染别人的档案', async () => {
+    rememberDispatcherScopeIds([dispatcher.id]);
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, dispatcher.id);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        // 关键：小队详情永远挂起
+        if (url.includes('/api/enterprise/dispatchers')) return new Promise<Response>(() => {});
+        if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+        if (url.includes('/api/enterprise/knowledge-bases')) {
+          return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
+        }
+        if (url.includes('/api/enterprise/feedback/summary')) {
+          return jsonResponse({ total_feedback: 0, up_count: 0, down_count: 0, bucket_counts: [] });
+        }
+        return jsonResponse([]);
+      }),
+    );
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <DashboardPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+              isAdmin
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+
+    // 员工档案的 hero（职位/入职时间/能力 tab）绝不能出现
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(screen.queryByText(/入职时间/)).toBeNull();
+    expect(screen.queryByText(/员工档案分区/)).toBeNull();
+    // 也不该把作用域改写成员工
+    expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe(dispatcher.id);
+  });
+
+  /**
+   * 回归：团队作用域（`team:<id>`）按既有约定**回落到可用员工渲染**（团队没有
+   * 独立档案页），但绝不能把 `team:xxx` 永久覆写成员工 id。
+   *
+   * 原因：`readEmployeeScope()` 把 team scope 折成空串（员工向页面的语义），
+   * 于是档案页拿到的 `agentId` 是 `''`，走进「没有当前员工 → 挑一个员工」的
+   * 兜底分支，连 `localStorage` 一起改写成某个员工 —— 选中团队后左下角从
+   * 「当前团队 OneTeam」跳成「当前员工 亚特」，用户以为自己切错了作用域。
+   * readEmployeeScope 的折算是对的，判断必须看 localStorage 原始值。
+   */
+  it('团队作用域回落到员工渲染，但不把 team scope 覆写成员工 id', async () => {
+    const teamScope = 'team:team_demo';
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, teamScope);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/work-record')) {
+          return jsonResponse({ reply_stats: { total: 0, today: 0, by_day: {} }, events: [] });
+        }
+        if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([]);
+        if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+        if (url.includes('/api/enterprise/knowledge-bases')) {
+          return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
+        }
+        if (url.includes('/api/enterprise/feedback/summary')) {
+          return jsonResponse({ total_feedback: 0, up_count: 0, down_count: 0, bucket_counts: [] });
+        }
+        return jsonResponse([]);
+      }),
+    );
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <DashboardPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+              isAdmin
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+
+    // 页面照旧渲染可用员工（既有约定，不能变成空白）
+    expect((await screen.findByText('小艾')).textContent).toBeTruthy();
+    // 但作用域仍是团队，没有被悄悄改成员工
+    expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe(teamScope);
   });
 });

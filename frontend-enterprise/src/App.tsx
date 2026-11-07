@@ -117,11 +117,30 @@ import {
   listDispatchers,
   type DispatcherRead,
 } from "@/lib/dispatcher";
+import {
+  isDispatcherScopeId,
+  rememberDispatcherScopeIds,
+} from "@/lib/dispatcher-scope";
 import { useI18n } from "./i18n";
 
 const ENTERPRISE_SIDEBAR_STORAGE_KEY = "ultrarag_enterprise_sidebar_expanded";
 const MODEL_CONFIGS_UPDATED_EVENT = "ultrarag-enterprise-model-configs-updated";
 type AgentCreateMode = "copy" | "blank";
+
+/**
+ * 这些是「创建/编辑动作页」，不是某个员工的资源清单页。
+ *
+ * 它们虽然挂在 /enterprise/general-skills、/enterprise/tools 下面，但作用域是
+ * **当前账号**（技能广场 / 个人工具），不随左下角选中的员工变。判断时要把它们
+ * 从「员工专属页」里摘出来，否则两条基于路径前缀的守卫会误伤：
+ * - 员工小队作用域下点「创建技能/新建工具」被 `<Navigate>` 送回档案页（真实回归 bug）；
+ * - 一个员工都没有时点「新建知识库」撞上「还没有数字员工」引导页。
+ */
+function isCreateOrEditRoute(pathname: string): boolean {
+  const rest = pathname.replace(/^\/enterprise\/?/, "").replace(/\/+$/, "");
+  if (!rest) return false;
+  return /(^|\/)(new|edit|import|test)(\/|$)/.test(rest);
+}
 
 type AgentCreateFormState = {
   name: string;
@@ -324,6 +343,9 @@ function Shell({
       .then(([rows, dispatcherRows]) => {
         setAgents(rows);
         setDispatchers(dispatcherRows);
+        // 同步缓存「哪些 id 是员工小队」：本页与其它页面（知识库作用域解析、档案页
+        // 兜底、路由守卫）都靠它判断，不能等这份异步列表。
+        rememberDispatcherScopeIds(dispatcherRows.map((item) => item.id));
         const dispatcherIds = new Set(dispatcherRows.map((item) => item.id));
         const selectableRows = rows.filter((item) => canUseAgentScope(item));
         setSelectedAgentId((current) => {
@@ -425,15 +447,20 @@ function Shell({
     "/enterprise/tools",
   ];
   const hasEmployees = scopeAgents.some((item) => !item.is_overall);
-  const isEmployeeScopedRoute = EMPLOYEE_SCOPED_PREFIXES.some((prefix) =>
-    location.pathname.startsWith(prefix),
-  );
+  const isEmployeeScopedRoute =
+    !isCreateOrEditRoute(location.pathname) &&
+    EMPLOYEE_SCOPED_PREFIXES.some((prefix) =>
+      location.pathname.startsWith(prefix),
+    );
   const showEmployeeEmptyState =
     agentsLoaded && !hasEmployees && isEmployeeScopedRoute;
   /**
    * 多智能体不配知识库/技能/SOP/工具。若它还停在这类员工专属页上（收藏链接、
    * 旧会话回退、浏览器后退），页面会显示「这个员工的空资源」，与左下角自相矛盾。
    * 统一送回它的档案页 —— 那一页有成员、规则、兜底、模型，是它唯一成立的主页。
+   *
+   * 但「新建/编辑/导入」这类动作页不属于任何员工（作用域是当前账号的技能广场 /
+   * 个人工具），不能被送回去 —— 否则员工小队作用域下点任何「新建」都跳档案页。
    */
   const DISPATCHER_UNSUPPORTED_PREFIXES = [
     "/enterprise/knowledge",
@@ -442,11 +469,16 @@ function Shell({
     "/enterprise/tools",
     "/enterprise/memories",
   ];
-  const dispatcherOnUnsupportedRoute = Boolean(
-    dispatchers.some((item) => item.id === selectedAgentId),
-  ) && DISPATCHER_UNSUPPORTED_PREFIXES.some((prefix) =>
-    location.pathname.startsWith(prefix),
-  );
+  const dispatcherOnUnsupportedRoute =
+    !isCreateOrEditRoute(location.pathname) &&
+    // 用同步判定而不是 `dispatchers.some(...)`：那份列表要等远程 PG 往返（冷启动
+    // 实测 3~8s），等它回来之前守卫恒 false → 先渲染出员工页/别人的档案再跳走。
+    // 首次访问（缓存为空）仍回退到已加载的列表，行为不变。
+    (isDispatcherScopeId(selectedAgentId) ||
+      Boolean(dispatchers.some((item) => item.id === selectedAgentId))) &&
+    DISPATCHER_UNSUPPORTED_PREFIXES.some((prefix) =>
+      location.pathname.startsWith(prefix),
+    );
   const sourceAgents = agents.filter((item) =>
     canAccessEmployeeAgent(item, auth.user, {
       activeOnly: true,

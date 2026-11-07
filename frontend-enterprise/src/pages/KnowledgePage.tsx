@@ -73,6 +73,7 @@ import {
   persistSharedAgentScope,
   readEmployeeScope,
 } from '@/lib/agent-scope-storage';
+import { isDispatcherScopeId } from '@/lib/dispatcher-scope';
 import IconAdd from '../assets/icons/add.svg?react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconClear from '../assets/icons/field-clear.svg?react';
@@ -171,6 +172,14 @@ function resolveKnowledgeAgentScope(
   currentUser: EnterpriseAuthUser | undefined,
   currentAgentId: string,
 ): string {
+  // 当前作用域是员工小队时**原样返回、绝不改写**。
+  // 小队不在 `rows`（后端按设计把它排除在员工花名册外），若不在这里提前放行，
+  // 下面的兜底会挑一个员工 id 出来 → `applyResolvedAgentScope` 把 localStorage
+  // 里的作用域从小队改写成员工（真实事故：员工小队下点「新建知识库」，
+  // 左下角变成某个员工，档案页也跟着变成那个人的档案）。
+  if (isDispatcherScopeId(currentAgentId)) return currentAgentId;
+  // 团队作用域同理：`team:xxx` 也不在员工花名册里，同样不能被兜底挑员工顶掉。
+  if (isTeamScope(currentAgentId)) return currentAgentId;
   const currentAgent = rows.find((item) => item.id === currentAgentId);
   if (currentAgent) {
     if (!currentAgent.is_overall || isEnterpriseAdmin(currentUser)) return currentAgent.id;
