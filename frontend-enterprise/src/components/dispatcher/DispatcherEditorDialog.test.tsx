@@ -1,0 +1,271 @@
+// @vitest-environment jsdom
+
+/**
+ * 调度入口编辑器的保存/试跑校验。
+ *
+ * 这些断言针对用户明确要求的那条规则：**成员数至少要 >1，保存或者试运行时得检查**。
+ * 所以三个入口都要拦：保存按钮、试跑按钮、以及后端返回的兜底。
+ */
+
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { I18nProvider } from '@/i18n';
+import type { AgentProfileRead, ModelConfigRead } from '@/types';
+
+import DispatcherEditorDialog from './DispatcherEditorDialog';
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: 'OK',
+    text: async () => JSON.stringify(body ?? {}),
+  } as Response;
+}
+
+const models: ModelConfigRead[] = [
+  {
+    id: 'model-1',
+    tenant_id: 'tenant_demo',
+    name: 'deepseek-v4-flash',
+    model: 'deepseek-v4-flash',
+    enabled: true,
+    is_default: true,
+  } as ModelConfigRead,
+];
+
+function agent(id: string, name: string): AgentProfileRead {
+  return {
+    id,
+    tenant_id: 'tenant_demo',
+    name,
+    is_overall: false,
+    status: 'active',
+    metadata: {},
+    resources: [],
+    created_at: '2026-08-01T00:00:00Z',
+    updated_at: '2026-08-01T00:00:00Z',
+  } as AgentProfileRead;
+}
+
+const agents = [agent('agent-a', '小王'), agent('agent-b', '小李'), agent('agent-c', '小陈')];
+
+beforeEach(() => {
+  if (!window.matchMedia) {
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+  }
+  if (!HTMLElement.prototype.scrollIntoView) {
+    HTMLElement.prototype.scrollIntoView = () => {};
+  }
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+function renderEditor(overrides: Partial<Parameters<typeof DispatcherEditorDialog>[0]> = {}) {
+  const onClose = vi.fn();
+  const onSaved = vi.fn();
+  render(
+    <I18nProvider>
+      <DispatcherEditorDialog
+        open
+        dispatcher={null}
+        agents={agents}
+        models={models}
+        onClose={onClose}
+        onSaved={onSaved}
+        {...overrides}
+      />
+    </I18nProvider>,
+  );
+  return { onClose, onSaved };
+}
+
+/** 走「添加同事」选择器把成员加进去。 */
+async function addMember(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(screen.getByRole('button', { name: /添加同事/ }));
+  await user.click(await screen.findByText(name));
+}
+
+describe('DispatcherEditorDialog 三段式骨架', () => {
+  it('渲染三段标题与模型必填标记', () => {
+    renderEditor();
+    expect(screen.getByText('基础信息')).toBeTruthy();
+    expect(screen.getByText('成员与路由规则')).toBeTruthy();
+    expect(screen.getByText('无法匹配时怎么办')).toBeTruthy();
+    // 模型必填：下拉里带「请选择模型（必填）」
+    expect(screen.getByText(/请选择模型（必填）/)).toBeTruthy();
+  });
+
+  it('空态显示 0 / 3 与下限提示', () => {
+    renderEditor();
+    expect(screen.getByText('0 / 3')).toBeTruthy();
+    expect(screen.getByText(/至少要有 2 个同事/)).toBeTruthy();
+  });
+
+  it('不填名称时保存被拦', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('DispatcherEditorDialog 成员数校验', () => {
+  it('只有 1 个成员时保存被拦，且不发请求', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.type(screen.getByPlaceholderText('例如：人事服务台'), '人事服务台');
+    await addMember(user, '小王');
+    expect(screen.getByText('1 / 3')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    // 计数徽标进入警示态以外，提示条必须解释为什么不行
+    expect(screen.getByText(/只有 1 个成员时没有「选谁」的判断/)).toBeTruthy();
+  });
+
+  it('只有 1 个成员时试跑被拦，不发 preview 请求', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderEditor();
+
+    await addMember(user, '小王');
+    await user.type(
+      screen.getByPlaceholderText(/输入一句用户可能会问的话/),
+      '报销怎么提交',
+    );
+    await user.click(screen.getByRole('button', { name: '试一下' }));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await screen.findByText('无法试跑')).toBeTruthy();
+  });
+
+  it('3 个成员时不再提示下限', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await addMember(user, '小王');
+    await addMember(user, '小李');
+    await addMember(user, '小陈');
+    expect(screen.getByText('3 / 3')).toBeTruthy();
+    expect(screen.queryByText(/至少要有 2 个同事/)).toBeNull();
+    // 达到上限后「添加同事」按钮禁用并换文案
+    expect(screen.getByRole('button', { name: /已达上限 3 个同事/ })).toBeTruthy();
+  });
+
+  it('成员缺路由规则时保存被拦', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.type(screen.getByPlaceholderText('例如：人事服务台'), '人事服务台');
+    await addMember(user, '小王');
+    await addMember(user, '小李');
+
+    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('DispatcherEditorDialog 提交载荷', () => {
+  it('两个成员 + 规则 → payload 形状正确', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        id: 'agent_disp',
+        tenant_id: 'tenant_demo',
+        name: '人事服务台',
+        kind: 'dispatcher',
+        status: 'active',
+        members: [],
+        config: {},
+        usage_count: 0,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    const { onSaved } = renderEditor();
+
+    await user.type(screen.getByPlaceholderText('例如：人事服务台'), '人事服务台');
+    await addMember(user, '小王');
+    await addMember(user, '小李');
+
+    const ruleInputs = screen.getAllByPlaceholderText(/员工咨询入职材料/);
+    await user.type(ruleInputs[0], '入职、离职、考勤异常');
+    await user.type(ruleInputs[1], '薪资、个税、社保');
+
+    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(call[1].body));
+    expect(body.name).toBe('人事服务台');
+    // 模型必填且默认预选了一条
+    expect(body.model_config_id).toBe('model-1');
+    expect(body.members).toHaveLength(2);
+    expect(body.members[0]).toMatchObject({
+      member_agent_id: 'agent-a',
+      routing_rule: '入职、离职、考勤异常',
+      sort_order: 0,
+    });
+    expect(body.config.fallback_mode).toBe('clarify');
+    // clarify 模式下不该把默认成员带上去
+    expect(body.config.default_member_agent_id).toBeNull();
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
+  it('切成「转给默认同事」时带上 default_member_agent_id', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        id: 'agent_disp',
+        tenant_id: 'tenant_demo',
+        name: '人事服务台',
+        kind: 'dispatcher',
+        status: 'active',
+        members: [],
+        config: {},
+        usage_count: 0,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.type(screen.getByPlaceholderText('例如：人事服务台'), '人事服务台');
+    await addMember(user, '小王');
+    await addMember(user, '小李');
+    const ruleInputs = screen.getAllByPlaceholderText(/员工咨询入职材料/);
+    await user.type(ruleInputs[0], '入职流程');
+    await user.type(ruleInputs[1], '薪资核算');
+
+    await user.click(screen.getByText('转给默认同事'));
+    await user.click(screen.getByRole('button', { name: '创建多智能体' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(call[1].body));
+    expect(body.config.fallback_mode).toBe('default_member');
+    // 切过去时自动预选第一位成员，避免用户漏选
+    expect(body.config.default_member_agent_id).toBe('agent-a');
+  });
+});

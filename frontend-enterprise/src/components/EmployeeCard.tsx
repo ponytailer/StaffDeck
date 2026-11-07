@@ -36,6 +36,17 @@ export type EmployeeCardProps = {
   busy?: boolean;
   /** Show the top-right "更多" actions menu. Hidden on the 对话端 gallery. */
   showMenu?: boolean;
+  /**
+   * 这个员工被哪些调度入口当成成员用。
+   *
+   * 由 AgentsPage 从已加载的 `dispatchers[].members` 本地算出来传进来 ——
+   * 卡片的 props 里不给「去拉一次引用关系」的入口，否则网格里每张卡就是一个请求
+   * （N 张卡 = N 次往返，远程 PG 下单次 10ms 起步）。
+   *
+   * 再说「下线/删除」这位同事会**直接打断**那些入口的路由，不是纯粹的展示数字，
+   * 所以必须让用户在动手之前就看见。
+   */
+  referencedBy?: Array<{ id: string; name: string }>;
   onOpen: () => void;
   onStatus: (status: 'active' | 'archived') => void;
   onGallery: (published: boolean) => void;
@@ -53,6 +64,7 @@ export default function EmployeeCard({
   selected = false,
   busy = false,
   showMenu = true,
+  referencedBy,
   onOpen,
   onStatus,
   onGallery,
@@ -258,12 +270,19 @@ export default function EmployeeCard({
             <DropdownMenuItem
               variant="destructive"
               className={MENU_ITEM_DANGER_CLASS}
-              disabled={!canManage || busy}
+              // 被多智能体引用时禁用：后端会返回 409（不会静默摘绑定）。
+              // 这里先禁掉，让用户在点之前就知道「得先解绑」。
+              disabled={!canManage || busy || !!referencedBy?.length}
+              title={
+                referencedBy?.length
+                  ? `先在 ${referencedBy.map((item) => item.name).join('、')} 里解绑，再删除`
+                  : undefined
+              }
               onClick={(event) => event.stopPropagation()}
               onSelect={() => onDelete()}
             >
               <IconTrash className="size-[16px]" />
-              删除
+              {referencedBy?.length ? '删除（需先解绑）' : '删除'}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -277,6 +296,16 @@ export default function EmployeeCard({
 
       {/* Work style tags */}
       <div className="flex flex-wrap my-[8px] items-center gap-[10px]">
+        {/* 依赖提示优先于工作风格：它是「动手前必须知道」的信息，
+            不能被工作风格标签挤到换行之后看不见 */}
+        {!!referencedBy?.length && (
+          <span
+            title={`${referencedBy.map((item) => item.name).join('、')}`}
+            className="rounded-[20px] border border-[#cfe7e2] bg-[#eef7f5] px-[8px] py-px text-[10px] leading-[13px] text-[#0f7268]"
+          >
+            被 {referencedBy.length} 个多智能体引用
+          </span>
+        )}
         {profile.workStyles.slice(0, 3).map((item) => (
           <span
             key={item}

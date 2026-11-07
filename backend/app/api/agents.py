@@ -50,6 +50,9 @@ from app.agents.branching import (
 from app.agents.free_model import agent_free_summary, get_global_free_model
 from app.db import get_session
 from app.db.bulk_delete import bulk_delete_matching, expunge_matching
+# 员工列表要按 kind 排除调度入口。DISPATCH_KIND 的唯一事实源在 dispatch 服务层；
+# 这里只依赖常量，dispatch 包不反向依赖 app.api，不会成环。
+from app.dispatch.service import DISPATCH_KIND
 from app.db.models import (
     APIClient,
     APICredential,
@@ -61,6 +64,7 @@ from app.db.models import (
     AgentSkillBranchVersion,
     AgentUsage,
     ChatSession,
+    DispatcherMember,
     GeneralSkill,
     HumanHandoffRequest,
     KnowledgeBase,
@@ -127,9 +131,15 @@ def list_agents(
     ensure_tenant(db, tenant_id)
     user = current_user
     _ensure_request_tenant(tenant_id, user)
+    # 只返回普通数字员工。调度入口（kind="dispatcher"）有独立的 /dispatchers 接口
+    # 与独立的列表分区；混在这里会把员工总数算多，也会在员工卡网格里冒出一张
+    # 没有知识库/技能/SOP 的空卡。
     rows = db.exec(
         select(AgentProfile)
-        .where(AgentProfile.tenant_id == tenant_id)
+        .where(
+            AgentProfile.tenant_id == tenant_id,
+            AgentProfile.kind != DISPATCH_KIND,
+        )
         .order_by(AgentProfile.is_overall.desc(), AgentProfile.updated_at.desc())
     ).all()
     rows = [row for row in rows if not _agent_hidden_from_staffdeck(row)]
@@ -488,6 +498,7 @@ def set_agent_free_model(
     row = _get_agent(db, tenant_id, agent_id)
     if row.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent cannot be marked as free")
+    _ensure_not_dispatcher_scope(row, DISPATCHER_FREE_ERROR)
     if request.enabled and get_global_free_model(db, tenant_id) is None:
         raise HTTPException(
             status_code=400,
@@ -512,9 +523,43 @@ def delete_agent(
     _ensure_can_manage_agent(row, current_user)
     if row.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent cannot be deleted")
+    # 在「多智能体」里当成员的员工不许直接删：先解绑再删。
+    #
+    # 以前这里是静默摘掉绑定（删员工 → 各入口少一个成员），看起来省事，实际是
+    # **把别人的入口改坏了还不告诉他**：多智能体少一个成员后路由分叉会变，
+    # 极端情况跌到 1 个成员甚至 0 个，问题全部走兜底，而入口主人毫不知情。
+    # 现在改成硬拦截：报 409 并把引用它的入口名字带回去，前端提示去解绑。
+    # 注意 (kind="dispatcher") 自己删除时走的是「删入口」语义，用 dispatcher_agent_id
+    # 那一路清理，不受这里影响。
+    referencing = db.exec(
+        select(DispatcherMember.dispatcher_agent_id).where(
+            DispatcherMember.tenant_id == tenant_id,
+            DispatcherMember.member_agent_id == row.id,
+            DispatcherMember.status == "active",
+        )
+    ).all()
+    referencing_ids = [str(item) for item in referencing if item]
+    if referencing_ids:
+        names = [
+            str(name)
+            for name in db.exec(
+                select(AgentProfile.name).where(AgentProfile.id.in_(referencing_ids))
+            ).all()
+            if name
+        ]
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"该员工是 {len(referencing_ids)} 个多智能体的成员"
+                f"（{'、'.join(names) or '未命名'}），"
+                "请先在多智能体里解绑，再删除员工。"
+            ),
+        )
     # 子表清理一律走批量语句：逐行 db.delete/db.update 在远程 PG 上每次都要一次往返，
     # 员工资源多的租户删一个员工会明显卡住（与会话/团队删除同一类问题）。
     bulk_delete_matching(db, AgentResourceBinding, agent_id=row.id)
+    # 调度入口自身被删除时，它下辖的成员绑定全部作废（成员再多也不会有人引用它）。
+    bulk_delete_matching(db, DispatcherMember, dispatcher_agent_id=row.id)
     # 会话级联清理:员工删除后其会话若保留,新消息会由租户默认 persona 静默接管,
     # 与删除团队一致,直接清空其全部会话(消息/事件/反馈/Harness 记录与工作区)。
     sessions = db.exec(
@@ -588,6 +633,7 @@ def update_agent_resources(
     _ensure_can_manage_agent(agent, current_user)
     if agent.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent uses the global resource pool")
+    _ensure_not_dispatcher_scope(agent, DISPATCHER_RESOURCE_ERROR)
     existing = db.exec(
         select(AgentResourceBinding).where(
             AgentResourceBinding.tenant_id == request.tenant_id,
@@ -649,6 +695,7 @@ def _import_agent_resources_once(
     target_agent = _get_agent(db, request.tenant_id, agent_id)
     user = current_user
     _ensure_can_import_to_agent(target_agent, user)
+    _ensure_not_dispatcher_scope(target_agent, DISPATCHER_RESOURCE_ERROR)
     resource_ids = _dedupe_ids(request.resource_ids)
     if not resource_ids:
         raise HTTPException(status_code=400, detail="No resources selected")
@@ -1153,6 +1200,7 @@ def agent_read(
         persona_prompt=row.persona_prompt,
         is_overall=row.is_overall,
         status=row.status,
+        kind=row.kind or "standard",
         harness_max_actions=max(1, min(int(row.harness_max_actions or 32), 100)),
         usage_count=max(0, int(row.usage_count or 0)),
         free_model_enabled=bool(getattr(row, "free_model_enabled", False)),
@@ -1343,6 +1391,20 @@ def _ensure_can_import_to_agent(row: AgentProfile, user: User) -> None:
         _ensure_admin_user(row.tenant_id, user)
         return
     _ensure_can_manage_agent(row, user)
+
+
+DISPATCHER_RESOURCE_ERROR = "Dispatcher agents cannot bind resources"
+DISPATCHER_FREE_ERROR = "Dispatcher agents cannot be marked as free"
+
+
+def _ensure_not_dispatcher_scope(row: AgentProfile, detail: str) -> None:
+    """调度入口是纯路由：不绑知识库/技能/工具，也不能标免费。
+
+    dispatcher 不跑 harness（没有可执行的东西），绑资源既没用也会误导管理员；
+    而「免费额度」链路正是它必须避开的（方案 §3），所以连标记都要拒绝。
+    """
+    if (row.kind or "standard") == "dispatcher":
+        raise HTTPException(status_code=403, detail=detail)
 
 
 def _ensure_admin_user(tenant_id: str, user: User) -> None:

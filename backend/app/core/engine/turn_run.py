@@ -217,11 +217,16 @@ class _TurnRunMixin:
         # 意图识别（Turn Planner）是纯分类/任务拆分任务，允许使用更轻量的
         # 专用模型。用户在模型配置中勾选「用于意图识别」后，该阶段优先使用
         # 该模型；未配置或解析失败时回退到本轮请求的模型，行为与历史一致。
+        #
+        # 传入 model_config_id 的调用方（调度委派是最典型的一个）已经明确指定了
+        # 本轮用哪条模型；此时 intent_recognition 也不许落免费模型 —— 否则
+        # 「谁配谁付费」的口径会在意图识别这一步被免费链路截胡。
         planner_model_config = self.owner._get_default_model(
             request.tenant_id,
             session.agent_id,
             "intent_recognition",
             user_id=request.user_id,
+            allow_free_model=not request.model_config_id,
         ) or model_config
         source_skills = self.owner._list_published_skills(
             request.tenant_id, session.agent_id

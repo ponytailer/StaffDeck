@@ -8,7 +8,7 @@ import IconSearch from '../assets/icons/search.svg?react';
 import { SearchEmptyState } from '@/components/SearchEmptyState';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { api, TENANT_ID } from '../api/client';
 import { type EnterpriseAuthUser } from '../auth';
@@ -19,6 +19,8 @@ import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import AgentShareDialog from '../components/AgentShareDialog';
 import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
+import DispatcherCard from '../components/dispatcher/DispatcherCard';
+import DispatcherEditorDialog from '../components/dispatcher/DispatcherEditorDialog';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import MyCreatedToolsPanel from '../components/MyCreatedToolsPanel';
 import KnowledgeManagePage from './KnowledgePage';
@@ -39,7 +41,14 @@ import {
   persistSharedAgentScope,
   readEmployeeScope,
 } from '../lib/agent-scope-storage';
-import type { AgentProfileRead } from '../types';
+import type { AgentProfileRead, ModelConfigRead } from '../types';
+import {
+  deleteDispatcher,
+  listDispatchers,
+  publishDispatcher,
+  unpublishDispatcher,
+  type DispatcherRead,
+} from '../lib/dispatcher';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
@@ -55,18 +64,36 @@ export default function AgentsPage({
   onLogout?: () => void;
 }) {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
+  // 调度入口不在 /api/enterprise/agents 里（那接口按 kind 之外的口径返回普通员工），
+  // 走自己的列表接口，这里独立维护。
+  const [dispatchers, setDispatchers] = useState<DispatcherRead[]>([]);
+  const [dispatcherEditorOpen, setDispatcherEditorOpen] = useState(false);
+  const [editingDispatcher, setEditingDispatcher] = useState<DispatcherRead | null>(null);
+  const [dispatcherDeleteTarget, setDispatcherDeleteTarget] = useState<DispatcherRead | null>(null);
+  const [deletingDispatcher, setDeletingDispatcher] = useState(false);
+  // 正在发布/下架的多智能体 id（同一时刻只处理一个，按钮显示「处理中…」）
+  const [publishingDispatcherId, setPublishingDispatcherId] = useState<string | null>(null);
+  const [models, setModels] = useState<ModelConfigRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
   const [apiKeyAgent, setApiKeyAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
   const [shareAgent, setShareAgent] = useState<AgentProfileRead | null>(null);
+  // 非空表示「这次删除被多智能体挡住了」：弹窗切换成告知态，
+  // 文案用后端返回的原话（里面已带上入口名字与「先解绑」的指引）。
+  const [deleteBlockedBy, setDeleteBlockedBy] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline'>('all');
-  // 页面级 tab：数字员工 / 技能管理 / 知识库 / 工具管理。
-  const [pageTab, setPageTab] = useState<'employees' | 'skills' | 'knowledge' | 'tools'>(() => {
+  // 页面级 tab：数字员工 / 多智能体 / 技能管理 / 知识库 / 工具管理。
+  // 多智能体是与员工并列的一等对象（不是员工的一种），所以给它独立 tab，
+  // 顺序紧跟数字员工、排在技能管理之前。
+  const [pageTab, setPageTab] = useState<
+    'employees' | 'dispatchers' | 'skills' | 'knowledge' | 'tools'
+  >(() => {
+    if (window.location.hash.includes('dispatchers')) return 'dispatchers';
     if (window.location.hash.includes('knowledge')) return 'knowledge';
     if (window.location.hash.includes('skills')) return 'skills';
     if (window.location.hash.includes('tools')) return 'tools';
@@ -76,12 +103,33 @@ export default function AgentsPage({
     () => readEmployeeScope() || null,
   );
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // 侧栏「成员与路由规则」用 `/enterprise/agents#dispatchers` 深链跳进来。
+  // 从员工页点它属于「同路由换 hash」，组件不会重挂载 → 只能监听 hash 变化。
+  useEffect(() => {
+    const hash = location.hash.replace(/^#/, '');
+    if (!hash) return;
+    if (hash.startsWith('dispatchers')) setPageTab('dispatchers');
+    else if (hash.startsWith('skills')) setPageTab('skills');
+    else if (hash.startsWith('knowledge')) setPageTab('knowledge');
+    else if (hash.startsWith('tools')) setPageTab('tools');
+  }, [location.hash]);
 
   async function load() {
     setLoading(true);
     try {
-      const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+      // 两个列表并行拉：调度入口是独立类型，混在 /agents 里会污染员工计数
+      const [rows, dispatchRows, modelRows] = await Promise.all([
+        api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
+        listDispatchers().catch(() => [] as DispatcherRead[]),
+        api
+          .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`)
+          .catch(() => [] as ModelConfigRead[]),
+      ]);
       setAgents(rows);
+      setDispatchers(dispatchRows);
+      setModels(modelRows);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载员工失败');
     } finally {
@@ -117,6 +165,23 @@ export default function AgentsPage({
     () => agents.filter((item) => !item.is_overall && canManageEmployeeAgent(item, currentUser)),
     [agents, currentUser],
   );
+  // 员工 → 引用它的调度入口。一次 O(n·m) 的本地计算，比每张卡各拉一次
+  // `/dispatchers/{id}/referenced-by` 便宜得多（远程 PG 单次往返 10ms 起）。
+  // 数据源就是上面 load() 已经拿到的 dispatchers[].members，没有额外请求。
+  const referencedByMemo = useMemo(() => {
+    const map = new Map<string, Array<{ id: string; name: string }>>();
+    for (const dispatcher of dispatchers) {
+      for (const member of dispatcher.members) {
+        const list = map.get(member.member_agent_id);
+        if (list) {
+          list.push({ id: dispatcher.id, name: dispatcher.name });
+        } else {
+          map.set(member.member_agent_id, [{ id: dispatcher.id, name: dispatcher.name }]);
+        }
+      }
+    }
+    return map;
+  }, [dispatchers]);
   const offlineEmployees = employees.filter((item) => item.status !== 'active');
   const onlineEmployees = employees.filter((item) => item.status === 'active');
   const filteredEmployees = employees.filter((item) => {
@@ -163,6 +228,22 @@ export default function AgentsPage({
     navigate(`/workspace/chat/draft/${row.id}`);
   }
 
+  /** 调度入口直接进对话页：它就是唯一对话入口，不需要「先选用再聊」。 */
+  async function selectDispatcher(row: DispatcherRead) {
+    if (selectingAgentId) return;
+    setSelectingAgentId(row.id);
+    try {
+      setSelectedAgentId(row.id);
+      persistSharedAgentScope(row.id, currentUser?.id);
+      emitAgentScopeChange(row.id);
+      navigate(`/workspace/chat/draft/${row.id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '打开多智能体失败');
+    } finally {
+      setSelectingAgentId(null);
+    }
+  }
+
   async function updateStatus(row: AgentProfileRead, status: 'active' | 'archived') {
     try {
       await api.put<AgentProfileRead>(`/api/enterprise/agents/${row.id}`, {
@@ -198,6 +279,25 @@ export default function AgentsPage({
     }
   }
 
+  /**
+   * 多智能体的发/下架。走 dispatcher 自己的端点（不走 PUT agents），原因：
+   * agents 的更新接口对 dispatcher 只放行极少数字段，metadata 那套是普通员工的口径。
+   */
+  async function updateDispatcherGalleryState(row: DispatcherRead, published: boolean) {
+    setPublishingDispatcherId(row.id);
+    try {
+      const next = published ? await publishDispatcher(row.id) : await unpublishDispatcher(row.id);
+      setDispatchers((current) => current.map((item) => (item.id === next.id ? next : item)));
+      notify.success(published ? '已发布到开放广场「员工小队」' : '已从广场下架');
+      // 广场页可能正在别处打开着，广播一次让角标与列表刷新。
+      emitAgentRosterRefresh();
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '更新广场状态失败');
+    } finally {
+      setPublishingDispatcherId(null);
+    }
+  }
+
   async function confirmDelete() {
     const row = deleteTarget;
     if (!row) return;
@@ -220,7 +320,12 @@ export default function AgentsPage({
       // 本页也订阅了该事件，会自行重新拉取，无需再单独 await load()。
       emitAgentRosterRefresh();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '删除员工失败');
+      // 409 = 这位员工还在某个多智能体里当成员。后端已经把入口名字拼进 detail，
+      // 这里原样透出（不再补一句「请先解绑」，那句话后端已经写了），并给出指路。
+      const message = error instanceof Error ? error.message : '删除员工失败';
+      notify.error(message);
+      // 弹窗别关、别静默失败：用户需要知道「去多智能体里解绑」这条下一步。
+      setDeleteBlockedBy(message);
     } finally {
       setDeleting(false);
     }
@@ -228,6 +333,27 @@ export default function AgentsPage({
 
   function updateAgentInList(row: AgentProfileRead) {
     setAgents((current) => current.map((item) => (item.id === row.id ? row : item)));
+  }
+
+  function openDispatcherEditor(row: DispatcherRead | null) {
+    setEditingDispatcher(row);
+    setDispatcherEditorOpen(true);
+  }
+
+  async function confirmDispatcherDelete() {
+    const row = dispatcherDeleteTarget;
+    if (!row) return;
+    setDeletingDispatcher(true);
+    try {
+      await deleteDispatcher(row.id);
+      notify.success('多智能体已删除');
+      setDispatcherDeleteTarget(null);
+      setDispatchers((current) => current.filter((item) => item.id !== row.id));
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '删除多智能体失败');
+    } finally {
+      setDeletingDispatcher(false);
+    }
   }
 
   const employeeTabs: UnderlineTabItem<typeof employeeFilter>[] = [
@@ -258,6 +384,7 @@ export default function AgentsPage({
         onChange={setPageTab}
         items={[
           { value: 'employees', label: '数字员工' },
+          { value: 'dispatchers', label: '多智能体' },
           { value: 'skills', label: '技能管理' },
           { value: 'knowledge', label: '知识库' },
           { value: 'tools', label: '工具管理' },
@@ -293,7 +420,7 @@ export default function AgentsPage({
             <span className="whitespace-nowrap text-[12px] text-[#757F9C]">几步搭好你的数字员工</span>
           </span>
         </button>
-      </div>
+        </div>
 
       <div className="mb-[16px] flex h-[50px] w-full items-center gap-[6px] rounded-[20px] bg-white px-[20px] text-[#757F9C] shadow-[0_0_6px_rgba(0,0,0,0.05)]">
         <IconSearch className="size-[20px] shrink-0" />
@@ -328,6 +455,7 @@ export default function AgentsPage({
             busy={selectingAgentId === employee.id}
             canManage={canManageEmployeeAgent(employee, currentUser)}
             selected={employee.id === selectedAgentId}
+            referencedBy={referencedByMemo.get(employee.id)}
             onOpen={() => void selectEmployee(employee)}
             onStatus={(status) => void updateStatus(employee, status)}
             onGallery={(published) => void updateGalleryState(employee, published)}
@@ -344,6 +472,60 @@ export default function AgentsPage({
         )}
       </RevealGroup>
         </>
+      ) : pageTab === 'dispatchers' ? (
+        // 多智能体是一等对象，独立成一个页面级 tab（与技能管理并列、排它之前）。
+        // 它是「只路由不干活」的另一种类型：混进员工网格会让员工总数虚高，
+        // 也容易被误以为能配知识库，所以从员工页彻底搬出来。
+        <div className="mt-[24px]" aria-label="多智能体">
+          {/* 不再重复一个「多智能体」大标题：tab 已经标明了当前位置，
+              再写一遍就成了同一句话出现两次（技能管理/工具管理两颗 tab 也没有标题）。 */}
+          <div className="mb-[16px] flex flex-wrap items-center justify-between gap-[12px]">
+            <p className="text-[12px] leading-[18px] text-[#757f9c]">
+              一个入口把问题路由给合适的同事，本身不回答业务问题。
+            </p>
+            <UIButton
+              type="button"
+              onClick={() => openDispatcherEditor(null)}
+              className="h-[38px] shrink-0 rounded-[10px] border border-[#cfe7e2] bg-[#eef7f5] px-[18px] text-[13px] font-medium text-[#0f5f57] hover:bg-[#e4f3ef] hover:text-[#0f5f57]"
+            >
+              <IconPlus className="size-[16px]" />
+              创建多智能体
+            </UIButton>
+          </div>
+          {dispatchers.length > 0 ? (
+            <RevealGroup
+              className="grid auto-rows-[minmax(240px,auto)] grid-cols-1 content-start gap-[24px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]"
+              itemCount={dispatchers.length}
+            >
+              {dispatchers.map((row) => (
+                <DispatcherCard
+                  key={row.id}
+                  dispatcher={row}
+                  busy={selectingAgentId === row.id}
+                  publishing={publishingDispatcherId === row.id}
+                  onChat={() => void selectDispatcher(row)}
+                  onEdit={() => openDispatcherEditor(row)}
+                  onDelete={() => setDispatcherDeleteTarget(row)}
+                  onGallery={(published) => void updateDispatcherGalleryState(row, published)}
+                />
+              ))}
+            </RevealGroup>
+          ) : (
+            <SearchEmptyState
+              height="h-[240px]"
+              title="还没有多智能体"
+              description="点右上角「创建多智能体」，选 2~3 位同事并写清各自负责什么"
+              icon={
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" className="shrink-0">
+                  <circle cx="8" cy="3.2" r="1.9" />
+                  <circle cx="3.4" cy="12.4" r="1.9" />
+                  <circle cx="12.6" cy="12.4" r="1.9" />
+                  <path d="M7 4.8 4.2 10.9M9 4.8l2.8 6.1" />
+                </svg>
+              }
+            />
+          )}
+        </div>
       ) : pageTab === 'skills' ? (
         <div className="mt-[24px]">
           <div className="flex items-center justify-end mb-[16px]">
@@ -415,12 +597,64 @@ export default function AgentsPage({
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open) {
+            setDeleteTarget(null);
+            setDeleteBlockedBy(null);
+          }
         }}
         loading={deleting}
-        title={`删除员工「${deleteTarget ? employeeDisplayName(deleteTarget) : ''}」？`}
-        description="删除后该员工的所有配置将一并移除，操作不可撤销。"
-        onConfirm={() => void confirmDelete()}
+        title={
+          deleteBlockedBy
+            ? '暂时不能删除这位员工'
+            : `删除员工「${deleteTarget ? employeeDisplayName(deleteTarget) : ''}」？`
+        }
+        description={
+          deleteBlockedBy
+            ? deleteBlockedBy
+            : '删除后该员工的所有配置将一并移除，操作不可撤销。'
+        }
+        // 被拦住时是「告知」而不是「确认」：不给二次删除按钮，避免用户反复撞同一个 409
+        confirmText={deleteBlockedBy ? '知道了' : '删除'}
+        destructive={!deleteBlockedBy}
+        cancelText={deleteBlockedBy ? '关闭' : '取消'}
+        onConfirm={() => {
+          if (deleteBlockedBy) {
+            setDeleteTarget(null);
+            setDeleteBlockedBy(null);
+            return;
+          }
+          void confirmDelete();
+        }}
+      />
+      <DispatcherEditorDialog
+        open={dispatcherEditorOpen}
+        dispatcher={editingDispatcher}
+        agents={agents}
+        models={models}
+        onClose={() => {
+          setDispatcherEditorOpen(false);
+          setEditingDispatcher(null);
+        }}
+        onSaved={(row) => {
+          setDispatchers((current) => {
+            const exists = current.some((item) => item.id === row.id);
+            return exists
+              ? current.map((item) => (item.id === row.id ? row : item))
+              : [row, ...current];
+          });
+          // 新建的入口要立刻能出现在对话页花名册与侧边栏范围内
+          emitAgentRosterRefresh();
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(dispatcherDeleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) setDispatcherDeleteTarget(null);
+        }}
+        loading={deletingDispatcher}
+        title={`删除多智能体「${dispatcherDeleteTarget?.name || ''}」？`}
+        description="删除后该入口的路由配置将一并移除；下辖的数字员工本身不受影响。"
+        onConfirm={() => void confirmDispatcherDelete()}
       />
     </div>
   );

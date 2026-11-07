@@ -1,4 +1,5 @@
 import {
+  BranchesOutlined,
   FileSearchOutlined,
   ProfileOutlined,
   RobotOutlined,
@@ -39,6 +40,7 @@ import plazaKnowledgeIcon from '../assets/icons/plaza-knowledge.svg';
 import plazaAgentIcon from '../assets/icons/plaza-agent.svg';
 import plazaSkillIcon from '../assets/icons/plaza-skill.svg';
 import plazaSopIcon from '../assets/icons/plaza-sop.svg';
+import plazaSquadIcon from '../assets/icons/plaza-squad.svg';
 import plazaToolIcon from '../assets/icons/plaza-tool.svg';
 import {
   agentResourceCount,
@@ -62,8 +64,14 @@ import {
   type PlatformResourceAccent,
   type PlatformStat,
 } from '@/components/openPlatform';
-import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
+import {
+  emitAgentScopeChange,
+  isTeamScope,
+  persistSharedAgentScope,
+  readEmployeeScope,
+} from '@/lib/agent-scope-storage';
 import PlazaAllTab from '@/components/openPlatform/PlazaAllTab';
+import { listDispatchers, unpublishDispatcher, type DispatcherRead } from '@/lib/dispatcher';
 import {
   GENERAL_SKILL_CATEGORY_ALL,
   GENERAL_SKILL_CATEGORY_NONE,
@@ -116,6 +124,8 @@ type PlatformItem = {
   agent?: AgentProfileRead;
   /** Agent 广场条目（来自本地清单，不落库）。 */
   agentEntry?: AgentCatalogEntry;
+  /** 员工小队条目（已发布的多智能体）。 */
+  squad?: DispatcherRead;
 };
 
 const PLATFORM_CONFIGS: PlatformConfig[] = [
@@ -138,6 +148,17 @@ const PLATFORM_CONFIGS: PlatformConfig[] = [
     metricLabel: 'Agent',
     signals: ['开箱即用', '只读不可编辑', '模型可选'],
     icon: <RobotOutlined />,
+  },
+  {
+    kind: 'squads',
+    title: '员工小队',
+    subtitle: '已发布的多智能体：一个入口，自动分派给你要找的那位同事。',
+    detail: '多智能体不直接回答业务问题，它只判断该由哪位同事处理，然后转接过去。',
+    useLabel: '去对话',
+    metricLabel: '小队',
+    signals: ['自动分派', '多同事协作', '一个入口'],
+    // 图标组件在下方 PLATFORM_ICON 处定义，这里用配置数组里已有的写法保持一致
+    icon: <UsergroupAddOutlined />,
   },
   {
     kind: 'knowledge',
@@ -190,12 +211,18 @@ const AgentAppsIcon: ComponentType<SVGProps<SVGSVGElement>> = ({ className }) =>
   <RobotOutlined className={typeof className === 'string' ? className : undefined} />
 );
 
+// 员工小队（多智能体）：用分支图标表达「一个入口分派给多位同事」。
+const SquadIcon: ComponentType<SVGProps<SVGSVGElement>> = ({ className }) => (
+  <BranchesOutlined className={typeof className === 'string' ? className : undefined} />
+);
+
 const PLATFORM_ICON: Record<PlatformKind, ComponentType<SVGProps<SVGSVGElement>>> = {
   'agent-apps': AgentAppsIcon,
   agents: IconAgents,
   knowledge: IconFolder,
   'general-skills': IconMagicWand,
   skills: IconClipboard,
+  squads: SquadIcon,
   tools: IconBriefcase,
 };
 
@@ -205,6 +232,7 @@ const PLATFORM_RESOURCE_ICON: Partial<Record<PlatformKind, string>> = {
   knowledge: plazaKnowledgeIcon,
   'general-skills': plazaSkillIcon,
   skills: plazaSopIcon,
+  squads: plazaSquadIcon,
   tools: plazaToolIcon,
 };
 
@@ -214,6 +242,7 @@ const PLATFORM_ACCENT: Partial<Record<PlatformKind, PlatformResourceAccent>> = {
   knowledge: 'green',
   'general-skills': 'indigo',
   skills: 'blue',
+  squads: 'teal',
   tools: 'orange',
 };
 
@@ -221,6 +250,7 @@ const PLATFORM_ACCENT: Partial<Record<PlatformKind, PlatformResourceAccent>> = {
 function platformCountLabel(kind: PlatformKind): string {
   if (kind === 'agents') return '员工';
   if (kind === 'agent-apps') return 'Agent';
+  if (kind === 'squads') return '小队';
   return '内容';
 }
 
@@ -246,6 +276,8 @@ function resourceDrawerBadge(kind: PlatformKind, item: PlatformItem): string {
     const parts = item.meta.split(' / ');
     return parts[parts.length - 1] || item.tags[0] || '';
   }
+  // 员工小队的角标是「成员名字」，对员工本身没意义，用成员数更有信息量
+  if (kind === 'squads') return `${item.squad?.members.length || 0} 位同事`;
   return item.tags[0] || '';
 }
 
@@ -266,6 +298,8 @@ function resourceMetaField(kind: PlatformKind, item: PlatformItem): { label: str
       return { label: 'SOP 编号 / 版本', value: item.meta };
     case 'tools':
       return { label: '类型', value: item.meta };
+    case 'squads':
+      return { label: '成员 / 使用量', value: item.meta };
     default:
       return { label: '分类', value: item.meta };
   }
@@ -278,6 +312,15 @@ function resourceMetaField(kind: PlatformKind, item: PlatformItem): { label: str
 function resourceDetailText(kind: PlatformKind, item: PlatformItem, config: PlatformConfig): string {
   if (item.agentEntry) {
     return `能力：${item.agentEntry.capability}｜由平台统一维护，所有成员只能使用、不能编辑或删除。`;
+  }
+  if (kind === 'squads' && item.squad) {
+    // 多智能体的关键信息是「它会把你交给谁」，成员与分派方式比描述更有用
+    const names = item.squad.members.map((member) => member.agent_name).join('、');
+    return [
+      item.description?.trim() || config.detail,
+      `成员：${names || '暂无'}`,
+      '它只负责判断该由谁处理，业务答案由被分派的那位同事给出。',
+    ].join('\n');
   }
   const base = item.description?.trim() || config.detail;
   return kind === 'general-skills'
@@ -400,6 +443,9 @@ export default function OpenPlatformPage({
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
   const [skills, setSkills] = useState<SkillRead[]>([]);
   const [tools, setTools] = useState<ToolRead[]>([]);
+  // 员工小队 = 已发布到广场的多智能体（kind=dispatcher 的 AgentProfile）。
+  // 走 dispatcher 自己的列表接口 + gallery_only=true，不掺进 /agents 的口径。
+  const [squads, setSquads] = useState<DispatcherRead[]>([]);
   const [kindStates, setKindStates] = useState<Partial<Record<PlatformKind, KindLoadState>>>({});
   // 首页角标：各模块可见资源数量来自聚合接口，一次请求即可填满 5 个 tab，不必等懒加载列表。
   const [galleryCounts, setGalleryCounts] = useState<Record<PlatformKind, number> | null>(null);
@@ -465,7 +511,7 @@ export default function OpenPlatformPage({
     galleryCountsFetchedRef.current = true;
     // 后端 snake_case（general_skills），前端模块 key 是 'general-skills'，这里归一化。
     return api
-      .get<Partial<Record<'agents' | 'knowledge' | 'general_skills' | 'skills' | 'tools', number>>>(
+      .get<Partial<Record<'agents' | 'knowledge' | 'general_skills' | 'skills' | 'squads' | 'tools', number>>>(
         `/api/enterprise/gallery/counts?tenant_id=${TENANT_ID}`,
       )
       .then((rows) => {
@@ -475,6 +521,7 @@ export default function OpenPlatformPage({
           knowledge: rows.knowledge,
           'general-skills': rows.general_skills,
           skills: rows.skills,
+          squads: rows.squads,
           tools: rows.tools,
         } as Record<PlatformKind, number>);
       })
@@ -521,6 +568,13 @@ export default function OpenPlatformPage({
     try {
       // Agent 广场的数据在本地清单里，不需要任何网络请求，直接落终态。
       if (target === 'agent-apps') {
+        setKindState(target, 'ready');
+        return;
+      }
+      // 员工小队也不依赖 agents 列表（它自带成员与模型信息），单独一条查询即可，
+      // 不必为了看小队先把整个员工花名册拉下来。
+      if (target === 'squads') {
+        setSquads(await listDispatchers(undefined, { galleryOnly: true }));
         setKindState(target, 'ready');
         return;
       }
@@ -651,7 +705,17 @@ export default function OpenPlatformPage({
       meta: `${item.bucket || '工具'} / ${item.tool_type.toUpperCase()}`,
       tags: [item.method, `${item.reference_count || 0} 个员工引用`],
     })),
-  }), [generalSkills, knowledgeBases, isAdmin, skills, tools, visibleAgents]);
+    squads: squads.map((item) => ({
+      id: item.id,
+      deleteKey: item.id,
+      title: item.name,
+      // 不写「广场开放的多智能体」这种废话；没描述时告诉用户点进去能看到什么
+      description: item.description || '一个入口，自动分派给最合适的同事。',
+      meta: `${item.members.length} 位同事 · ${item.usage_count || 0} 次使用`,
+      tags: item.members.slice(0, 2).map((member) => member.agent_name),
+      squad: item,
+    })),
+  }), [generalSkills, knowledgeBases, isAdmin, skills, squads, tools, visibleAgents]);
 
   const filteredItems = useMemo(() => {
     // 「全部」tab 不消费模块列表（渲染走 PlazaAllTab）
@@ -762,8 +826,24 @@ export default function OpenPlatformPage({
     setAgentId(agent.id);
   }
 
+  /**
+   * 把广场上的一个小队设为当前对话对象。
+   *
+   * 和普通员工不一样：`/enterprise/dashboard` 的工作台只认 `/api/enterprise/agents`
+   * 返回的花名册，而那个接口**排除**了 dispatcher（见 list_agents 的 kind != DISPATCH_KIND）
+   * → 落到 dashboard 会被换成别的员工，小队根本没被选中。
+   * 所以这里沿用员工页 `selectDispatcher` 的落点：直进对话端的 draft 路由。
+   */
+  async function markPlatformSquadUsed(squad: DispatcherRead) {
+    await api.post<unknown>(`/api/chat/agents/${squad.id}/use?tenant_id=${TENANT_ID}`, {});
+    persistSharedAgentScope(squad.id);
+    window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+    emitAgentScopeChange(squad.id);
+    setAgentId(squad.id);
+    navigate(`/workspace/chat/draft/${squad.id}`);
+  }
+
   async function downloadPlazaSkillPackage(item: PlatformItem) {
-    // general-skills 分支的 deleteKey 就是技能 slug（见 platformItems 构造）
     const slug = item.deleteKey || item.id;
     setDownloadingSkill(item.deleteKey || item.id);
     setTransfer({ label: `正在下载技能包 ${slug}.zip…`, percent: 0, receivedBytes: undefined });
@@ -812,6 +892,23 @@ export default function OpenPlatformPage({
         navigate('/enterprise/dashboard');
       } catch (error) {
         notify.error(error instanceof Error ? error.message : '使用数字员工失败');
+      }
+      return;
+    }
+    if (platformKind === 'squads') {
+      const squad = squads.find((item) => item.id === itemId) || squads[0];
+      if (!squad) {
+        notify.warning('广场暂无可用的小队');
+        return;
+      }
+      // 直接把该小队设为当前对话对象：多智能体就是对话入口，不需要「复制到员工」。
+      // 落点（/workspace/chat/draft/:id）在 markPlatformSquadUsed 内部完成，
+      // 这里不要再补 navigate('/enterprise/dashboard') —— 那条路由的工作台只认
+      // /api/enterprise/agents 的花名册（已排除 dispatcher），会把作用域改回普通员工。
+      try {
+        await markPlatformSquadUsed(squad);
+      } catch (error) {
+        notify.error(error instanceof Error ? error.message : '打开小队失败');
       }
       return;
     }
@@ -929,10 +1026,21 @@ export default function OpenPlatformPage({
           {},
         );
         window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+      } else if (platformKind === 'squads' && item.squad) {
+        // 只摘广场发布标记：入口本体、成员、会话全部保留，写回列表以免卡片变空
+        const next = await unpublishDispatcher(item.squad.id);
+        setSquads((current) => current.map((entry) => (entry.id === next.id ? next : entry)));
+        window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
       } else {
         await api.delete(platformDeleteUrl(platformKind, item));
       }
-      notify.success(platformKind === 'agents' ? '员工已从广场下线' : '已从广场移除');
+      notify.success(
+        platformKind === 'agents'
+          ? '员工已从广场下线'
+          : platformKind === 'squads'
+            ? '小队已从广场下架'
+            : '已从广场移除',
+      );
       setDetailItem((current) => (
         current && current.kind === platformKind && current.item.id === item.id ? null : current
       ));
@@ -943,7 +1051,9 @@ export default function OpenPlatformPage({
         ? error.message
         : platformKind === 'agents'
           ? '员工广场下线失败'
-          : '删除失败');
+          : platformKind === 'squads'
+            ? '小队下架失败'
+            : '删除失败');
     } finally {
       setDeletingItemKey('');
     }
@@ -1030,6 +1140,9 @@ export default function OpenPlatformPage({
         // Agent 广场对所有成员一律只读：不暴露删除/下线入口。
         canManage={detailItem.kind === 'agent-apps' ? false : canManagePlatform}
         deleting={deletingItemKey === deleteKey}
+        // 「员工小队」是下架而不是删除：只摘发布标记，入口本体还在。
+        deleteLabel={detailItem.kind === 'squads' ? '从广场下架' : '删除'}
+        deleteIsUnpublish={detailItem.kind === 'squads'}
         hasPrev={drawerIndex > 0}
         hasNext={drawerIndex >= 0 && drawerIndex < drawerItems.length - 1}
         onClose={() => setDetailItem(null)}
@@ -1059,6 +1172,8 @@ export default function OpenPlatformPage({
 
   function renderConfirm() {
     const config = confirmTarget ? PLATFORM_BY_KIND.get(confirmTarget.kind) || PLATFORM_CONFIGS[0] : null;
+    // 「下线」语义的两种：员工下架、小队下架——都只摘发布标记，不删本体。
+    const isUnpublish = confirmTarget?.kind === 'agents' || confirmTarget?.kind === 'squads';
     return (
       <ConfirmDialog
         open={Boolean(confirmTarget)}
@@ -1066,12 +1181,16 @@ export default function OpenPlatformPage({
         title={confirmTarget && config
           ? confirmTarget.kind === 'agents'
             ? `从广场下线员工「${confirmTarget.item.title}」？`
-            : `删除${config.metricLabel}「${confirmTarget.item.title}」？`
+            : confirmTarget.kind === 'squads'
+              ? `从广场下架小队「${confirmTarget.item.title}」？`
+              : `删除${config.metricLabel}「${confirmTarget.item.title}」？`
           : ''}
         description={confirmTarget?.kind === 'agents'
           ? '下线后该员工不再出现在开放广场，也不能被新用户添加；员工本体及其资源、已有使用记录都会保留。'
-          : '删除后该广场内容会从开放平台移除，已复制到员工侧的引用可能不再可同步。'}
-        confirmText={confirmTarget?.kind === 'agents' ? '确认下线' : '删除'}
+          : confirmTarget?.kind === 'squads'
+            ? '下架后该小队不再出现在开放广场；入口本体、成员配置和已有对话都会保留，可随时重新发布。'
+            : '删除后该广场内容会从开放平台移除，已复制到员工侧的引用可能不再可同步。'}
+        confirmText={isUnpublish ? '确认下线' : '删除'}
         loading={Boolean(confirmTarget) && deletingItemKey === (confirmTarget ? platformItemDeleteKey(confirmTarget.kind, confirmTarget.item) : '')}
         onConfirm={() => void runDelete()}
       />

@@ -44,6 +44,13 @@ export type PlatformResourceDrawerProps = {
   onPrev?: () => void;
   onNext?: () => void;
   onDelete?: () => void;
+  /**
+   * 销毁性操作的文案与图标语义。
+   * 员工小队是「从广场下架」而不是「删除」——下架只摘发布标记，入口本体还在，
+   * 用「删除」会让人以为把整个多智能体删掉了。
+   */
+  deleteLabel?: string;
+  deleteIsUnpublish?: boolean;
   onUse: () => void;
 };
 
@@ -110,6 +117,8 @@ export default function PlatformResourceDrawer({
   onPrev,
   onNext,
   onDelete,
+  deleteLabel = '删除',
+  deleteIsUnpublish = false,
   onUse,
 }: PlatformResourceDrawerProps) {
   const accentStyles = platformResourceAccentStyles[accent];
@@ -191,7 +200,9 @@ export default function PlatformResourceDrawer({
 
           <div className="flex min-h-0 flex-1 flex-col gap-[8px]">
             <span className="text-[12px] capitalize text-[#464c5e]">说明</span>
-            <p className="text-[12px] leading-[20px] text-[#757f9c]">
+            {/* whitespace-pre-line：允许详情文本用 \n 分行（员工小队要分行写成员名单），
+                其它模块是单行文本，加了这个类不会有任何视觉变化。 */}
+            <p className="whitespace-pre-line text-[12px] leading-[20px] text-[#757f9c]">
               {detailText}
             </p>
           </div>
@@ -246,10 +257,16 @@ export default function PlatformResourceDrawer({
               type="button"
               disabled={deleting}
               onClick={onDelete}
-              className="inline-flex h-[34px] w-[80px] items-center justify-center gap-[4px] rounded-[10px] border-[0.5px] border-[#d20b0b] bg-white text-[12px] text-[#d20b0b] transition-colors hover:bg-[#fce7e7] disabled:cursor-not-allowed disabled:opacity-50"
+              className={cn(
+                'inline-flex h-[34px] shrink-0 items-center justify-center gap-[4px] rounded-[10px] border-[0.5px] bg-white px-[10px] text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                // 下架不是销毁：用中性描边，不用红色警示
+                deleteIsUnpublish
+                  ? 'border-[#dfe4ee] text-[#464c5e] hover:bg-[#f4f6fa]'
+                  : 'border-[#d20b0b] text-[#d20b0b] hover:bg-[#fce7e7]',
+              )}
             >
               <IconTrash className="size-[14px]" />
-              删除
+              {deleteLabel}
             </button>
           )}
           <button

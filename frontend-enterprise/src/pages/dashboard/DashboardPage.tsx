@@ -56,6 +56,13 @@ import type {
   ToolRead,
 } from '../../types';
 import { isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
+import {
+  MAX_DISPATCH_MEMBERS,
+  dispatchFallbackLabel,
+  listDispatchers,
+  type DispatcherRead,
+} from '../../lib/dispatcher';
+import DispatcherGlyph from '../../components/dispatcher/DispatcherGlyph';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
@@ -82,6 +89,7 @@ export default function DashboardPage({
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskRead[]>([]);
   const [activityEvents, setActivityEvents] = useState<AgentWorkRecordEventRead[]>([]);
   const [agentId, setAgentId] = useState(readEmployeeScope);
+  const [dispatchers, setDispatchers] = useState<DispatcherRead[] | null>(null);
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -103,6 +111,8 @@ export default function DashboardPage({
     setLoaded(false);
     Promise.all([
       api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
+      // 多智能体不在 /agents 里（后端按设计排除），单独取一份用于判断「当前作用域是不是它」
+      listDispatchers().catch(() => [] as DispatcherRead[]),
       api.get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       // include_files=0：dashboard 只用技能计数与列表元信息，文件包 MB 级不拉
       api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}&include_files=0`),
@@ -113,14 +123,18 @@ export default function DashboardPage({
       api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<ScheduledTaskRead[]>(`/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
     ])
-      .then(([agentRows, skillRows, generalSkillRows, kbRows, modelRows, toolRows, sessionRows, feedbackRows, taskRows]) => {
+      .then(([agentRows, dispatcherRows, skillRows, generalSkillRows, kbRows, modelRows, toolRows, sessionRows, feedbackRows, taskRows]) => {
         if (cancelled) return;
         const visibleAgents = agentRows.filter((item) => canSelectCurrentEmployeeAgent(item, currentUser, {
           activeOnly: true,
         }));
         setAgents(visibleAgents);
+        setDispatchers(dispatcherRows);
         setModels(modelRows);
-        if (!agentId || !visibleAgents.some((item) => item.id === agentId)) {
+        // 多智能体作用域必须原样保留：它不在员工花名册里，若走下面的兜底就会被
+        // 悄悄改写成别人的档案（页面上「当前员工信息」变成另一个人）。
+        const isDispatcherScope = dispatcherRows.some((item) => item.id === agentId);
+        if (!isDispatcherScope && (!agentId || !visibleAgents.some((item) => item.id === agentId))) {
           const manageableAgents = visibleAgents.filter((item) => canManageEmployeeAgent(item, currentUser));
           const next = isAdmin
             ? preferredEmployeeAgent(visibleAgents)?.id || ''
@@ -153,12 +167,18 @@ export default function DashboardPage({
     };
   }, [agentId, currentUser, isAdmin]);
 
-  const selectedAgent = agents.find((item) => item.id === agentId)
-    || agents.find((item) => !item.is_overall)
-    || null;
-  const employeeSessions = selectedAgent?.is_overall
+  /** 当前作用域是多智能体时，它就是页面主体 —— 不能退回「挑一个员工」。 */
+  const selectedDispatcher = dispatchers?.find((item) => item.id === agentId) || null;
+  const selectedAgent = selectedDispatcher
+    ? null
+    : agents.find((item) => item.id === agentId)
+      || agents.find((item) => !item.is_overall)
+      || null;
+  const employeeSessions = selectedDispatcher
     ? sessions
-    : sessions.filter((item) => item.agent_id === selectedAgent?.id);
+    : selectedAgent?.is_overall
+      ? sessions
+      : sessions.filter((item) => item.agent_id === selectedAgent?.id);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,12 +213,12 @@ export default function DashboardPage({
 
   // Avoid flashing the 开放广场 / empty state before the agents API resolves,
   // which would otherwise briefly render before the employee profile appears.
-  if (!loaded && agents.length === 0) {
+  if (!loaded && agents.length === 0 && !selectedDispatcher) {
     return <div className="page dashboard-page" />;
   }
 
   // 技能广场在无数字员工时也应可浏览（公司内部 skill 分享）
-  if (profileTab === 'skills' && !selectedAgent) {
+  if (profileTab === 'skills' && !selectedAgent && !selectedDispatcher) {
     return (
       <div className="page dashboard-page">
         <GeneralSkillsPage embedded currentUser={currentUser} onLogout={onLogout} />
@@ -206,7 +226,7 @@ export default function DashboardPage({
     );
   }
 
-  if (!selectedAgent && !isAdmin) {
+  if (!selectedAgent && !selectedDispatcher && !isAdmin) {
     return (
       <div className="page dashboard-page">
         <div className="empty-workspace-card p-[24px]">
@@ -220,6 +240,23 @@ export default function DashboardPage({
           </div>
         </div>
       </div>
+    );
+  }
+
+  // 多智能体作用域：它没有知识库/技能/SOP/工具，也没有头像/岗位/入职时间，
+  // 套员工 hero 会全是「待补充岗位 / 0」。这里给一套只对它成立的字段。
+  if (selectedDispatcher) {
+    return (
+      <DispatcherProfileView
+        dispatcher={selectedDispatcher}
+        profileTab={profileTab}
+        sessions={sessions}
+        feedbackSummary={feedbackSummary}
+        onOpenChat={() => navigate(`/workspace/chat/draft/${selectedDispatcher.id}`)}
+        onConfigure={() => navigate(EnterpriseRoute.Agents)}
+        onLogout={onLogout}
+        userName={currentUser?.username}
+      />
     );
   }
 
@@ -453,6 +490,202 @@ export default function DashboardPage({
         onClose={() => setProfileEditorOpen(false)}
         onSaved={(saved) => setAgents((current) => current.map((item) => (item.id === saved.id ? saved : item)))}
       />
+    </div>
+  );
+}
+
+/**
+ * 多智能体在「员工档案」位的呈现。
+ *
+ * 与员工 hero 的差异都是刻意的：头像位换成拓扑图标（它不是一个人）、
+ * 第二行是「多智能体」而不是岗位名、三格换成 成员 / 无法匹配 / 模型，
+ * 主行动是「去对话」，次行动是「配置成员与规则」。
+ */
+function DispatcherProfileView({
+  dispatcher,
+  profileTab,
+  sessions,
+  feedbackSummary,
+  onOpenChat,
+  onConfigure,
+  onLogout,
+  userName,
+}: {
+  dispatcher: DispatcherRead;
+  profileTab: ProfileTabKey;
+  sessions: EnterpriseChatSessionRead[];
+  feedbackSummary: FeedbackSummaryRead | null;
+  onOpenChat: () => void;
+  onConfigure: () => void;
+  onLogout?: () => void;
+  userName?: string;
+}) {
+  const members = dispatcher.members;
+  const sessionCount = sessions.filter((item) => item.agent_id === dispatcher.id).length;
+  const missingRule = members.filter((item) => !item.routing_rule.trim()).length;
+  // 侧栏「对话日志 / 定时任务」对多智能体是成立的；只有 knowledge/sop/skills/tools
+  // 这四个它根本不配的分区才需要落回档案说明。
+  if (profileTab === 'logs') {
+    return (
+      <div className="min-h-full w-full min-w-0 max-w-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
+        <AppHeader onLogout={onLogout} userName={userName} left={<DispatcherHeaderTitle dispatcher={dispatcher} />} />
+        <ConversationLogsTab />
+      </div>
+    );
+  }
+  if (profileTab === 'scheduled') {
+    return (
+      <div className="min-h-full w-full min-w-0 max-w-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
+        <AppHeader onLogout={onLogout} userName={userName} left={<DispatcherHeaderTitle dispatcher={dispatcher} />} />
+        <ScheduledTasksTab />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-full w-full min-w-0 max-w-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
+      <AppHeader
+        onLogout={onLogout}
+        userName={userName}
+        left={(
+          <div className="flex flex-wrap items-center gap-x-9 gap-y-6 pt-1 pl-1">
+            <div className="flex shrink-0 flex-col items-center">
+              <span className="grid h-[160px] w-[136px] place-items-center rounded-[18px] bg-[#e1f1ed] text-[#0f7268]">
+                <DispatcherGlyph className="size-[62px]" />
+              </span>
+              <div className="mt-[4px] flex flex-wrap items-center gap-4">
+                <UiButton
+                  variant="default"
+                  className="inline-flex h-[40px] items-center justify-center gap-[7px] rounded-[12px] border-0 bg-[#0f7268] px-[20px] text-[13.5px] font-semibold text-white shadow-[0_10px_22px_-10px_rgba(15,114,104,0.85)] transition-all hover:-translate-y-[1px] hover:bg-[#0c6158]"
+                  onClick={onOpenChat}
+                >
+                  <IconChat className="size-[16px]" />
+                  去对话
+                </UiButton>
+                <UiButton
+                  variant="outline"
+                  className="inline-flex items-center justify-center gap-[4px] rounded-[14px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] py-[8px] text-[12px] text-[#858b9c] shadow-[0px_6px_6px_rgba(0,0,0,0.05)] hover:bg-[#f6f6f6]"
+                  onClick={onConfigure}
+                >
+                  <IconEdit className="size-[14px]" />
+                  配置成员与规则
+                </UiButton>
+              </div>
+            </div>
+
+            <div className="flex min-w-[280px] flex-1 flex-col gap-2">
+              <div className="flex items-end gap-2">
+                <h2 className="m-0 text-[22px] leading-none font-semibold text-[#18181a]">
+                  {dispatcher.name}
+                </h2>
+                <span className="rounded-[5px] bg-[#e1f1ed] px-[6px] py-[2px] text-[11px] leading-none text-[#0f7268]">
+                  多智能体 · 纯路由
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f6f6f6] px-2.5 py-0.5">
+                  <span
+                    className="size-1.5 rounded-full ring-[1.5px] ring-white"
+                    style={{ background: dispatcher.status === 'active' ? '#22c55e' : '#c4c9d4' }}
+                  />
+                  <span className="text-[12px] text-[#757f9c]">
+                    {dispatcher.status === 'active' ? '在线' : '下线'}
+                  </span>
+                </span>
+                <span className="text-[12px] text-[#757f9c]">
+                  无法匹配：{dispatchFallbackLabel(dispatcher.config.fallback_mode)}
+                </span>
+                <span className="text-[12px] text-[#757f9c]">
+                  累计转接：{dispatcher.usage_count} 次
+                </span>
+                {missingRule > 0 && (
+                  <span className="rounded-[5px] bg-[#fdf6ec] px-[6px] py-[2px] text-[11px] text-[#8a5a12]">
+                    {missingRule} 位缺路由规则
+                  </span>
+                )}
+              </div>
+
+              <p className="m-0 line-clamp-2 max-w-[720px] text-[14px] leading-[22px] text-[#757f9c]">
+                {dispatcher.description
+                  || '我是多智能体：先说需求，我来判断这一轮该交给谁，把问题转给最合适的同事。'}
+              </p>
+
+              <div className="flex w-full max-w-[640px] gap-3">
+                <HeroMetric value={members.length} label="成员" />
+                <HeroMetric value={sessionCount} label="对话" />
+                <HeroMetric value={feedbackSummary?.total_feedback || 0} label="反馈" />
+              </div>
+            </div>
+          </div>
+        )}
+      />
+      <div className="mt-[20px] grid gap-[12px] pl-[226px] max-[900px]:pl-1">
+        <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
+          <div className="flex items-center justify-between">
+            <span className="text-[13px] font-medium text-[#18181a]">
+              成员与路由规则 · {members.length}/{MAX_DISPATCH_MEMBERS}
+            </span>
+            <button
+              type="button"
+              onClick={onConfigure}
+              className="text-[12px] text-[#0f7268] hover:underline"
+            >
+              去配置
+            </button>
+          </div>
+          <div className="mt-[12px] flex flex-col gap-[10px]">
+            {members.length === 0 && (
+              <span className="text-[12.5px] text-[#8a5a12]">
+                还没有成员，所有问题都会走兜底。至少添加 {MAX_DISPATCH_MEMBERS > 1 ? 2 : 1} 位同事才有路由意义。
+              </span>
+            )}
+            {members.map((member, index) => (
+              <div key={member.member_agent_id} className="flex items-start gap-[10px]">
+                <span className="mt-[1px] grid size-[20px] shrink-0 place-items-center rounded-[6px] bg-[#f0f1f4] text-[10.5px] font-medium text-[#9aa1b1]">
+                  {index + 1}
+                </span>
+                <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                  <span className="flex items-center gap-[6px] text-[13px] text-[#18181a]">
+                    {member.agent_name}
+                    {member.has_own_model && (
+                      <span className="rounded-[4px] bg-[#f2f9f7] px-[4px] py-[1px] text-[10px] text-[#0f7268]">
+                        自有模型
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[12px] leading-[1.5] text-[#757f9c]">
+                    {member.routing_rule.trim() || '还没写「什么情况交给他」，这一位基本选不中。'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
+          <span className="text-[13px] font-medium text-[#18181a]">模型</span>
+          <p className="mt-[8px] m-0 text-[12.5px] leading-[1.7] text-[#757f9c]">
+            路由判断用 {dispatcher.model_name || '（未配置）'}；成员自己配了模型就走自己的，
+            没配才用入口这个。多智能体不参与免费额度。
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DispatcherHeaderTitle({ dispatcher }: { dispatcher: DispatcherRead }) {
+  return (
+    <div className="flex items-center gap-[10px] pt-1 pl-1">
+      <span className="grid size-[34px] place-items-center rounded-[10px] bg-[#e1f1ed] text-[#0f7268]">
+        <DispatcherGlyph className="size-[18px]" />
+      </span>
+      <div className="flex flex-col gap-[2px]">
+        <h2 className="m-0 text-[18px] leading-none font-semibold text-[#18181a]">{dispatcher.name}</h2>
+        <span className="text-[11px] leading-none text-[#757f9c]">
+          多智能体 · {dispatcher.members.length}/{MAX_DISPATCH_MEMBERS} 位同事
+        </span>
+      </div>
     </div>
   );
 }

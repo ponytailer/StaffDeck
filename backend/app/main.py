@@ -14,6 +14,7 @@ from app.api import (
     app_updates,
     auth,
     chat,
+    dispatchers,
     evolution,
     feedback,
     gallery,
@@ -165,6 +166,7 @@ app.include_router(app_updates.router)
 app.include_router(agent_shares.router)
 app.include_router(agent_shares.public_router)
 app.include_router(chat.router)
+app.include_router(dispatchers.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)

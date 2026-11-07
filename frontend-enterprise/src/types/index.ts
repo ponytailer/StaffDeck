@@ -226,6 +226,11 @@ export type AgentProfileRead = {
   persona_prompt?: string;
   is_overall: boolean;
   status: 'active' | 'archived' | string;
+  /**
+   * Agent 类型：`standard` 普通数字员工；`dispatcher` 调度入口（纯路由，
+   * 不配知识库/技能/工具，成员 2~3 人）。后端 `/api/enterprise/dispatchers` 维护。
+   */
+  kind?: 'standard' | 'dispatcher' | string;
   harness_max_actions?: number;
   /** 被使用次数：每次新建会话 +1，员工广场卡片展示 */
   usage_count?: number;

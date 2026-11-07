@@ -113,6 +113,10 @@ import {
   DIALOG_PRIMARY_BUTTON_CLASS,
 } from "@/lib/enterprise-ui";
 import type { AgentProfileRead, ModelConfigRead, TeamRead } from "./types";
+import {
+  listDispatchers,
+  type DispatcherRead,
+} from "@/lib/dispatcher";
 import { useI18n } from "./i18n";
 
 const ENTERPRISE_SIDEBAR_STORAGE_KEY = "ultrarag_enterprise_sidebar_expanded";
@@ -152,6 +156,12 @@ function Shell({
   const contentRef = useRouteReveal<HTMLDivElement>(location.pathname);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
+  /**
+   * 多智能体不在 `/api/enterprise/agents` 里（后端按设计排除，见 list_agents），
+   * 所以侧栏的「当前作用域」不能只看 agents —— 必须单独拿一份 dispatchers，
+   * 否则选中多智能体时左下角会退化成「未选择 / -」，或被兜底改写成别的员工。
+   */
+  const [dispatchers, setDispatchers] = useState<DispatcherRead[]>([]);
   const [scopeTeams, setScopeTeams] = useState<TeamRead[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(
     () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || "",
@@ -306,10 +316,15 @@ function Shell({
   }
 
   function loadAgents(preferredAgentId = "") {
-    return api
-      .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
-      .then((rows) => {
+    return Promise.all([
+      api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
+      // 多智能体是独立接口：这里的失败不能拖垮员工列表，故各自 catch
+      listDispatchers().catch(() => [] as DispatcherRead[]),
+    ])
+      .then(([rows, dispatcherRows]) => {
         setAgents(rows);
+        setDispatchers(dispatcherRows);
+        const dispatcherIds = new Set(dispatcherRows.map((item) => item.id));
         const selectableRows = rows.filter((item) => canUseAgentScope(item));
         setSelectedAgentId((current) => {
           // A team scope is not part of the employee roster; keep it untouched.
@@ -319,6 +334,12 @@ function Shell({
             requestedAgentId &&
             selectableRows.some((item) => item.id === requestedAgentId)
           ) {
+            persistSharedAgentScope(requestedAgentId, auth.user.id);
+            return requestedAgentId;
+          }
+          // 多智能体作用域是合法的，绝不能被「挑一个员工」的兜底覆盖掉
+          // —— 否则用户点进多智能体，页面上却显示别人的档案。
+          if (requestedAgentId && dispatcherIds.has(requestedAgentId)) {
             persistSharedAgentScope(requestedAgentId, auth.user.id);
             return requestedAgentId;
           }
@@ -339,7 +360,10 @@ function Shell({
           return next;
         });
       })
-      .catch(() => setAgents([]))
+      .catch(() => {
+        setAgents([]);
+        setDispatchers([]);
+      })
       .finally(() => setAgentsLoaded(true));
   }
 
@@ -386,6 +410,10 @@ function Shell({
     : t("当前账号还没有可用模型，数字员工暂不能调用模型。请在「模型配置」中完成配置。");
   const selectedAgent = scopeAgents.find((item) => item.id === selectedAgentId);
   const sidebarAgent = selectedAgent;
+  /** 当前作用域是多智能体时，它是谁 —— 侧栏/折叠态/页头都靠它判断，不能靠 agents。 */
+  const sidebarDispatcher =
+    dispatchers.find((item) => item.id === selectedAgentId) || null;
+  const selectedIsDispatcher = Boolean(sidebarDispatcher);
   // Routes that operate on a specific employee; show the empty guide when none exist.
   const EMPLOYEE_SCOPED_PREFIXES = [
     "/enterprise/dashboard",
@@ -402,20 +430,41 @@ function Shell({
   );
   const showEmployeeEmptyState =
     agentsLoaded && !hasEmployees && isEmployeeScopedRoute;
+  /**
+   * 多智能体不配知识库/技能/SOP/工具。若它还停在这类员工专属页上（收藏链接、
+   * 旧会话回退、浏览器后退），页面会显示「这个员工的空资源」，与左下角自相矛盾。
+   * 统一送回它的档案页 —— 那一页有成员、规则、兜底、模型，是它唯一成立的主页。
+   */
+  const DISPATCHER_UNSUPPORTED_PREFIXES = [
+    "/enterprise/knowledge",
+    "/enterprise/skills",
+    "/enterprise/general-skills",
+    "/enterprise/tools",
+    "/enterprise/memories",
+  ];
+  const dispatcherOnUnsupportedRoute = Boolean(
+    dispatchers.some((item) => item.id === selectedAgentId),
+  ) && DISPATCHER_UNSUPPORTED_PREFIXES.some((prefix) =>
+    location.pathname.startsWith(prefix),
+  );
   const sourceAgents = agents.filter((item) =>
     canAccessEmployeeAgent(item, auth.user, {
       activeOnly: true,
       includeOverall: isAdmin,
     }),
   );
-  const selectedAgentName = selectedAgent
-    ? employeeDisplayName(selectedAgent)
-    : "未选择";
-  const selectedAgentCaption = selectedAgent
-    ? selectedAgent.is_overall
-      ? "开放广场"
-      : employeeProfile(selectedAgent).roleName
-    : "-";
+  const selectedAgentName = sidebarDispatcher
+    ? sidebarDispatcher.name
+    : selectedAgent
+      ? employeeDisplayName(selectedAgent)
+      : "未选择";
+  const selectedAgentCaption = sidebarDispatcher
+    ? "多智能体"
+    : selectedAgent
+      ? selectedAgent.is_overall
+        ? "开放广场"
+        : employeeProfile(selectedAgent).roleName
+      : "-";
   function openCreateAgentModal() {
     setAgentForm({
       ...EMPTY_AGENT_FORM,
@@ -513,7 +562,9 @@ function Shell({
         onNavigate={navigate}
         isAdmin={isAdmin}
         sidebarAgent={sidebarAgent}
+        sidebarDispatcher={sidebarDispatcher}
         scopeAgents={scopeAgents}
+        scopeDispatchers={dispatchers}
         scopeTeams={scopeTeams}
         selectedAgentId={selectedAgentId}
         onSelectAgent={(agentId) => {
@@ -529,6 +580,7 @@ function Shell({
           navigate(EnterpriseRoute.Gallery);
         }}
         modelSetupAttention={isAdmin && showModelSetupNotice}
+        scopeLoading={!agentsLoaded}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="sd1-content-island" data-island="double">
@@ -577,7 +629,10 @@ function Shell({
               onBrowsePlatform={() => navigate(EnterpriseRoute.Platform)}
             />
           )}
-          {!isDistillRoute && !showEmployeeEmptyState && (
+          {!isDistillRoute && !showEmployeeEmptyState && dispatcherOnUnsupportedRoute && (
+            <Navigate to={EnterpriseRoute.Dashboard} replace />
+          )}
+          {!isDistillRoute && !showEmployeeEmptyState && !dispatcherOnUnsupportedRoute && (
             <Routes>
               <Route
                 path="/enterprise"

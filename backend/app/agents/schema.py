@@ -54,6 +54,8 @@ class AgentProfileRead(BaseModel):
     persona_prompt: Optional[str] = None
     is_overall: bool
     status: str
+    # standard = 普通数字员工；dispatcher = 调度入口（纯路由，不配资源）
+    kind: str = "standard"
     harness_max_actions: int = 32
     # 被使用次数:员工广场卡片展示(每次新建会话 +1)
     usage_count: int = 0

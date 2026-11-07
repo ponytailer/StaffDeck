@@ -11,8 +11,15 @@ PILOTDECK_GROUP_CHAT_CHANNEL = "pilotdeck_group_chat"
 # Public API（第三方/AI 小程序）创建的会话：对话页侧边栏是站内人的会话列表，
 # 这些由 API Key 托管的会话不该混进来（会话本身仍可通过 API 按 id 访问）。
 PUBLIC_API_SESSION_CHANNEL = "public_api"
+# 调度入口派生的子会话：它是调度入口与某个员工之间的内部执行通道，
+# 用户在侧边栏应该只看到调度入口那一层会话（答案已经回流到父会话）。
+DISPATCH_CHILD_CHANNEL = "dispatch_child"
 # 站内人不应在侧边栏看到的会话来源
-HIDDEN_FROM_CHAT_LIST_CHANNELS = ("skill_test", PUBLIC_API_SESSION_CHANNEL)
+HIDDEN_FROM_CHAT_LIST_CHANNELS = (
+    "skill_test",
+    PUBLIC_API_SESSION_CHANNEL,
+    DISPATCH_CHILD_CHANNEL,
+)
 
 
 def _is_pilotdeck_metadata(value: object) -> bool:

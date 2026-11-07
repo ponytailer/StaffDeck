@@ -188,7 +188,7 @@ describe('AgentsPage 页面级 tab', () => {
     expect(await screen.findByText('小艾')).toBeTruthy();
   });
 
-  it('tab 顺序为 数字员工 / 技能管理 / 知识库 / 工具管理', async () => {
+  it('tab 顺序为 数字员工 / 多智能体 / 技能管理 / 知识库 / 工具管理', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
@@ -198,8 +198,16 @@ describe('AgentsPage 页面级 tab', () => {
 
     await screen.findByText('小艾');
     const labels = screen.getAllByRole('tab').map((tab) => tab.textContent?.trim());
-    // 页面级 tab 在前，员工筛选 tab 紧随其后
-    expect(labels.slice(0, 4)).toEqual(['数字员工', '技能管理', '知识库', '工具管理']);
+    // 页面级 tab 在前，员工筛选 tab 紧随其后。
+    // 「多智能体」与员工并列（不是员工的一种），且必须排在「技能管理」之前。
+    expect(labels.slice(0, 5)).toEqual([
+      '数字员工',
+      '多智能体',
+      '技能管理',
+      '知识库',
+      '工具管理',
+    ]);
+    expect(labels.indexOf('多智能体')).toBeLessThan(labels.indexOf('技能管理'));
     const importTabIndex = labels.indexOf('知识库');
     expect(importTabIndex).toBeLessThan(labels.indexOf('工具管理'));
   });
@@ -238,5 +246,189 @@ describe('AgentsPage 页面级 tab', () => {
     // hash 路径默认在技能 tab，数字员工区不渲染
     expect(screen.queryByText('小艾')).toBeNull();
     window.location.hash = '';
+  });
+
+  it('hash 带 #dispatchers 时默认落在多智能体 tab', async () => {
+    window.location.hash = '#dispatchers';
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      return jsonResponse([]);
+    }));
+    renderAgentsPage();
+
+    // 侧栏「成员与路由规则」用这个深链直达多智能体 tab
+    expect(await screen.findByLabelText('多智能体')).toBeTruthy();
+    expect(screen.queryByText('员工总数')).toBeNull();
+    window.location.hash = '';
+  });
+});
+
+describe('AgentsPage 多智能体引用计数', () => {
+  /**
+   * 引用关系必须是**本地算**的：数据源就是已经拉到的 `dispatchers[].members`。
+   * 曾经的做法是每张员工卡各拉一次 `/dispatchers/{id}/referenced-by` ——
+   * 网格里 10 张卡就是 10 次往返（远程 PG 单次 10ms 起），而且多一个请求
+   * 就多一处可能失败的地方。这条测试把「不发额外请求」钉住。
+   */
+  it('员工卡显示被几个多智能体引用，且不额外拉引用接口', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      if (url.includes('/api/enterprise/dispatchers')) {
+        return jsonResponse([
+          {
+            id: 'agent_disp_1',
+            tenant_id: 'tenant_demo',
+            name: '前台调度',
+            kind: 'dispatcher',
+            status: 'active',
+            members: [
+              {
+                member_agent_id: 'agent-1',
+                agent_name: '小艾',
+                agent_status: 'active',
+                routing_rule: '入职相关',
+                example_queries: [],
+                sort_order: 0,
+                status: 'active',
+                free_model_enabled: false,
+                has_own_model: false,
+              },
+            ],
+            config: {
+              fallback_mode: 'clarify',
+              fallback_reply: '',
+              offer_candidates: true,
+              min_confidence: 0.6,
+            },
+            usage_count: 0,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentsPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByText('被 1 个多智能体引用')).toBeTruthy();
+    // 引用关系是本地算的，不许为它单独打接口
+    const referencedCalls = fetchMock.mock.calls.filter(([input]) =>
+      String(input).includes('/referenced-by'),
+    );
+    expect(referencedCalls).toHaveLength(0);
+  });
+});
+
+describe('AgentsPage 创建多智能体的入口可见性', () => {
+  /**
+   * 真实反馈链：
+   * 1.「入口在哪，我没找到创建入口」→ 顶部那张卡和「创建新员工」灰底黑图标长得一样
+   *   → 改成 teal 语义色区分（这条靠人眼验收，单测只钉文案）。
+   * 2.「点击调度入口的弹窗位置偏下，看不见」→ DialogContent 的 className 里写了
+   *   `relative`，tailwind-merge 把它和 `fixed` 归为同组直接覆盖掉 → 弹窗被
+   *   `top: 50%` 推到 body 高度一半，底部溢出视口。那条在 DispatcherEditorDialog 里修，
+   *   这里只钉「页面上只有一个创建入口」。
+   * 3.「删除页面最下方的创建调度入口」→ 页尾引导条整个删掉，创建入口只在顶部。
+   */
+  function mockAgents(agentRows: AgentProfileRead[], dispatcherRows: unknown[] = []) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/dispatchers')) return jsonResponse(dispatcherRows);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse(agentRows);
+      return jsonResponse([]);
+    });
+  }
+
+  function renderPage() {
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentsPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it('创建入口只出现在「多智能体」tab，且页面上只有这一个', async () => {
+    vi.stubGlobal('fetch', mockAgents([agent, { ...agent, id: 'agent-2', name: '小新' }]));
+    renderPage();
+
+    // 数字员工 tab 里不该再有创建入口（原先那张 teal 卡已随多智能体一起搬走）
+    expect(await screen.findByText('小艾')).toBeTruthy();
+    expect(screen.queryByText('创建多智能体')).toBeNull();
+
+    await userEvent.click(screen.getByRole('tab', { name: '多智能体' }));
+    expect(await screen.findAllByText('创建多智能体')).toHaveLength(1);
+    // 旧的页尾引导条必须彻底消失
+    expect(screen.queryByLabelText('调度入口引导')).toBeNull();
+    expect(screen.queryByText(/还没有调度入口/)).toBeNull();
+  });
+
+  it('新建弹窗标题是「创建多智能体」', async () => {
+    vi.stubGlobal('fetch', mockAgents([agent, { ...agent, id: 'agent-2', name: '小新' }]));
+    renderPage();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: '多智能体' }));
+    // 入口卡片与弹窗标题现在同名，所以点完要按 dialog 作用域内的
+    // [data-slot="dialog-title"] 断言，直接 findByText 会同时命中卡片上的文字
+    await user.click(await screen.findByText('创建多智能体'));
+
+    const dialog = await screen.findByRole('dialog');
+    const title = dialog.querySelector('[data-slot="dialog-title"]');
+    expect(title?.textContent).toContain('创建多智能体');
+  });
+
+  it('没有多智能体时给创建引导，而不是空分区', async () => {
+    vi.stubGlobal('fetch', mockAgents([agent]));
+    renderPage();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: '多智能体' }));
+    expect(await screen.findByText('还没有多智能体')).toBeTruthy();
+  });
+
+  it('已有入口时显示的是「多智能体」分区', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockAgents([agent, { ...agent, id: 'agent-2', name: '小新' }], [
+        {
+          id: 'agent_disp_1',
+          tenant_id: 'tenant_demo',
+          name: '前台调度',
+          kind: 'dispatcher',
+          status: 'active',
+          members: [],
+          config: {
+            fallback_mode: 'clarify',
+            fallback_reply: '',
+            offer_candidates: true,
+            min_confidence: 0.6,
+          },
+          usage_count: 0,
+        },
+      ]),
+    );
+    renderPage();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: '多智能体' }));
+    expect(await screen.findByLabelText('多智能体')).toBeTruthy();
   });
 });

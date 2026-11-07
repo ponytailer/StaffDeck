@@ -38,6 +38,7 @@ from app.api.agents import _agent_hidden_from_staffdeck, _agent_visible_to_user
 from app.api.gallery import _is_empty_default_knowledge_base
 from app.api.knowledge_bases import _knowledge_base_stats
 from app.db.database import get_session
+from app.dispatch.service import DISPATCH_KIND
 from app.api.oa_assistant import OA_ASSISTANT_APP_KEY
 from app.db.models import (
     AgentProfile,
@@ -144,12 +145,16 @@ def _scored_items(db: Session, tenant_id: str, user: Any) -> list[HotItem]:
         )
 
     # 数字员工：published_to_gallery + active，与非整体、可见性同口径
+    # 注意：多智能体（kind=dispatcher）也挂在 agent_profiles 上，走「员工小队」口径，
+    # 不进「数字员工」热门榜 —— 否则同一入口会在两个榜里各出现一次。
     for row in db.exec(
         select(AgentProfile)
         .where(AgentProfile.tenant_id == tenant_id)
         .order_by(AgentProfile.updated_at.desc())  # type: ignore[attr-defined]
     ).all():
         if row.is_overall or _agent_hidden_from_staffdeck(row):
+            continue
+        if (row.kind or "standard") == DISPATCH_KIND:
             continue
         if not (is_admin_user(user) or _agent_visible_to_user(row, user)):
             continue

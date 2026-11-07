@@ -23,6 +23,11 @@ import {
   CHAT_ATTACHMENT_LIST_CLASS,
   CHAT_ATTACHMENT_META_CLASS,
   CHAT_ATTACHMENT_NAME_CLASS,
+  CHAT_DISPATCH_NOTICE_CLASS,
+  CHAT_DISPATCH_NOTICE_INTENT_CLASS,
+  CHAT_DISPATCH_NOTICE_ROUTE_BADGE_CLASS,
+  CHAT_DISPATCH_NOTICE_ROW_CLASS,
+  CHAT_DISPATCH_NOTICE_TARGET_CLASS,
   CHAT_FEEDBACK_BTN_ACTIVE_CLASS,
   CHAT_FEEDBACK_BTN_CLASS,
   CHAT_FEEDBACK_BTN_DISLIKE_ACTIVE_CLASS,
@@ -40,8 +45,6 @@ import {
   CHAT_QUEUED_BUBBLE_CLASS,
   CHAT_QUEUED_DELETE_BTN_CLASS,
   CHAT_QUEUED_MESSAGE_ITEM_CLASS,
-  CHAT_QUEUED_STATUS_CLASS,
-  CHAT_QUEUED_STATUS_ROW_CLASS,
   CHAT_TRACE_FLOW_TEXT_CLASS,
   CHAT_TRACE_TOTAL_DURATION_CLASS,
   chatBubbleClass,
@@ -51,7 +54,9 @@ import {
   MarkdownMessage,
   attachmentTypeLabel,
   canRateMessage,
+  dispatchNoticeInfo,
   formatTraceDuration,
+  isDispatchNotice,
 } from '../chatHelpers';
 import type { TraceLine } from '../chatTypes';
 import type { A2UIForm } from '../chatTypes';
@@ -87,7 +92,33 @@ export type MessageRender = {
   traceTiming?: TurnTraceTiming;
   /** A2UI：缺槽询问附带的表单（只有最新一条助手消息才挂，避免过期表单被重复提交）。 */
   slotForm?: A2UIForm | null;
+  /** 调度入口：这条答案是哪位同事答的（`metadata.dispatch`）。 */
+  dispatchInfo?: DispatchAnswerInfo | null;
 };
+
+/** 答案归属：调度入口透传回来的成员信息，用于在气泡上方标「由 小王 回答」。 */
+export type DispatchAnswerInfo = {
+  memberName: string;
+  memberAgentId?: string;
+  intent?: string | null;
+  confidence?: number | null;
+};
+
+/** 从消息 metadata 里取调度归属。没有就是普通员工自己答的，不显示 chip。 */
+export function dispatchAnswerInfo(item: ChatMessage): DispatchAnswerInfo | null {
+  const raw = item.metadata?.dispatch;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const memberName = typeof record.member_name === 'string' ? record.member_name.trim() : '';
+  if (!memberName) return null;
+  return {
+    memberName,
+    memberAgentId:
+      typeof record.member_agent_id === 'string' ? record.member_agent_id : undefined,
+    intent: typeof record.intent === 'string' ? record.intent : null,
+    confidence: typeof record.confidence === 'number' ? record.confidence : null,
+  };
+}
 
 type MessageBubbleProps = {
   chat: UseChatSession;
@@ -159,8 +190,15 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     statusOnly,
     traceTiming,
     slotForm,
+    dispatchInfo,
   } = render;
   const queuedMessage = item.role === 'user' && item.metadata?.queued === true;
+  // 调度入口的「转接通知」：由路由自己说「已转交给 X」，成员答案在它后面一条。
+  // 它不是答案，所以不参与点赞、不显示 trace、也不走普通答案气泡的排版。
+  const noticeInfo = item.role === 'assistant' && isDispatchNotice(item)
+    ? dispatchNoticeInfo(item)
+    : null;
+  const isDispatchNoticeMessage = item.role === 'assistant' && isDispatchNotice(item);
   const sentSlashCommand = item.role === 'user'
     ? slashCommandMessage(visibleContent, chat.slashCommands)
     : null;
@@ -169,6 +207,34 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     ? employeeDisplayName(chat.displayedAgent)
     : '项目领导';
   const teamProgress = item.role === 'assistant' ? activeTeamProgress(item) : null;
+
+  // 转接通知单独成一块：只显示「路由 → 转给了谁（+ 判定意图）」，
+  // 不渲染 trace、点赞、引用卡片——它不是答案，成员答案在紧跟的下一条气泡里。
+  if (isDispatchNoticeMessage) {
+    return (
+      <div className={CHAT_MESSAGE_ITEM_CLASS}>
+        <div className={CHAT_DISPATCH_NOTICE_ROW_CLASS}>
+          <div className={CHAT_DISPATCH_NOTICE_CLASS} role="status">
+            <span className={CHAT_DISPATCH_NOTICE_ROUTE_BADGE_CLASS}>
+              <StaffdeckIcon name="branch" size={11} />
+              路由
+            </span>
+            <span data-i18n-ignore>
+              已转交给
+              <span className={CHAT_DISPATCH_NOTICE_TARGET_CLASS}>
+                {noticeInfo?.memberName || '对应同事'}
+              </span>
+            </span>
+            {noticeInfo?.intent && (
+              <span className={CHAT_DISPATCH_NOTICE_INTENT_CLASS} data-i18n-ignore>
+                {noticeInfo.intent}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={cn(CHAT_MESSAGE_ITEM_CLASS, queuedMessage && CHAT_QUEUED_MESSAGE_ITEM_CLASS)}>
@@ -204,6 +270,24 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
             >
               <StaffdeckIcon name="trash" size={14} />
             </button>
+          )}
+          {/* 调度入口的答案来自某位同事：明确标出来，否则用户会以为入口自己在答。
+              放在正文上方而不是下面——读者要先知道「谁在说话」。
+              **这个归属 chip 是保留项**：用户明确认为它是对的，即使前面已经有
+              「路由 · 已转交给 X」的气泡也不要去掉（转接气泡说的是「派给谁」，
+              chip 说的是「这段内容是谁写的」，两者不重复）。 */}
+          {item.role === 'assistant' && dispatchInfo && !statusOnly && (
+            <div className="mb-[7px] flex flex-wrap items-center gap-[5px] text-[11.5px]">
+              <span className="inline-flex items-center gap-[4px] rounded-[6px] bg-[#e1f1ed] px-[6px] py-[2px] text-[#0f7268]">
+                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M3 8h10M9 4l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                由 {dispatchInfo.memberName} 回答
+              </span>
+              {dispatchInfo.intent && (
+                <span className="truncate text-[#9aa1b1]">{dispatchInfo.intent}</span>
+              )}
+            </div>
           )}
           {statusOnly ? (
             <div className="text-[13px] text-[#858b9c]">{visibleContent}</div>
@@ -342,14 +426,10 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
           </div>
         </div>
       </div>
-      {queuedMessage && (
-        <div className={CHAT_QUEUED_STATUS_ROW_CLASS}>
-          <span className={CHAT_QUEUED_STATUS_CLASS} role="status">
-            <StaffdeckIcon name="clock" size={12} />
-            排队中
-          </span>
-        </div>
-      )}
+      {/* 排队态**不再显示「排队中」文案**（用户明确要求）：上一条答案还在流式
+          输出时，界面本身就在动，用户知道还没轮到这条；挂一行「排队中」只会在
+          队列卡住时误导用户以为在正常等待。虚线边框 + 删除按钮已经足够表达
+          「这条还没发出去」。 */}
     </div>
   );
 }

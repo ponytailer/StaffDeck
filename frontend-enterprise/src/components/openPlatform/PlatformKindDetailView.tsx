@@ -16,6 +16,7 @@ import IconSearch from '../../assets/icons/search.svg?react';
 import plazaKnowledgeIcon from '../../assets/icons/plaza-knowledge.svg';
 import plazaSkillIcon from '../../assets/icons/plaza-skill.svg';
 import plazaSopIcon from '../../assets/icons/plaza-sop.svg';
+import plazaSquadIcon from '../../assets/icons/plaza-squad.svg';
 import plazaToolIcon from '../../assets/icons/plaza-tool.svg';
 import EmployeeAvatar from '../EmployeeAvatar';
 import type { AgentProfileRead } from '../../types';
@@ -30,6 +31,7 @@ export type PlatformDetailKind =
   | 'knowledge'
   | 'general-skills'
   | 'skills'
+  | 'squads'
   | 'tools';
 
 export type PlatformDetailItem = {
@@ -45,6 +47,7 @@ const PLATFORM_RESOURCE_ICON: Partial<Record<PlatformDetailKind, string>> = {
   knowledge: plazaKnowledgeIcon,
   'general-skills': plazaSkillIcon,
   skills: plazaSopIcon,
+  squads: plazaSquadIcon,
   tools: plazaToolIcon,
 };
 
@@ -52,6 +55,7 @@ const PLATFORM_ACCENT: Partial<Record<PlatformDetailKind, PlatformResourceAccent
   knowledge: 'green',
   'general-skills': 'indigo',
   skills: 'blue',
+  squads: 'teal',
   tools: 'orange',
 };
 

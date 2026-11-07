@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -15,10 +16,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import and_, or_, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from app.agents.branching import visible_published_skills
+from app.agents.usage import bump_agent_usage
 from app.agents.free_model import (
     FREE_MODEL_DAILY_LIMIT,
     FREE_MODEL_QUOTA_EXHAUSTED_CODE,
@@ -33,6 +36,9 @@ from app.core.engine.session import harness_task_workspace_path
 from app.core.engine.session import HarnessTurnStore
 from app.core.plan.slash import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
+from app.dispatch.service import is_dispatcher as _is_dispatcher_agent
+from app.dispatch.service import ACTIVE_DISPATCH_KEY, DISPATCH_CANCEL_KEY
+from app.dispatch.stream import DispatchTurnRunner as _DispatchTurnRunner
 from app.db.models import (
     AgentEvent,
     AgentProfile,
@@ -1275,6 +1281,25 @@ def chat_stream(
                             request.agent_id,
                         )
                         return
+
+                # ── 调度入口（Dispatcher）分支 ────────────────────────
+                # 必须在 AgentLoop 之前：调度入口本身不跑 harness（它不配知识库/技能/工具，
+                # 也没有可执行的东西），只做「识别 + 选人」，然后把问题交给子员工的独立会话。
+                dispatch_session = _resolve_dispatch_session(worker_db, request)
+                if dispatch_session is not None:
+                    _run_dispatch_stream(
+                        worker_db,
+                        request,
+                        dispatch_session,
+                        emit=lambda event_name, payload: _persist_relay_only_event(
+                            worker_db, request.tenant_id, dispatch_session.id, event_name, payload
+                        ),
+                        set_source_session=set_source_session,
+                        worker_terminal=worker_terminal,
+                        span_turn_id=span_turn_id,
+                    )
+                    return
+
                 for item in AgentLoop(worker_db).handle_turn_stream(request):
                     event_name = str(item["event"])
                     data = item["data"] if isinstance(item.get("data"), dict) else {}
@@ -1537,7 +1562,50 @@ def cancel_chat_turn_endpoint(
     # this process compared with a fresh worker.
     if persisted:
         cancel_chat_turn(session_id, request.turn_id)
+    # 调度联动：父会话的取消必须能把正在跑的子 turn 一起停掉，
+    # 并且覆盖「路由还没出结果」那 1~2 秒的窗口（那时还没有子 turn 可取消）。
+    _propagate_dispatch_cancel(db, request.tenant_id, chat_session)
     return {"ok": True}
+
+
+def _propagate_dispatch_cancel(
+    db: Session, tenant_id: str, chat_session: ChatSession
+) -> None:
+    """把取消动作同步到调度链路。
+
+    两件事：
+    1. 已有 ``active_dispatch``（子 turn 正在跑）→ 直接取消子会话的那一轮。
+    2. 无论有没有，都往父会话置 ``dispatch_cancel_requested`` 标记：
+       路由窗口期内用户点了取消，``DispatchTurnRunner`` 会在起子 turn 之前
+       看到这个标记并直接收尾，不会白跑一次 LLM。
+
+    **只对调度入口的会话生效**：普通会话没有子 turn 也没有路由窗口，
+    给它塞标记只是往 context_state_json 里留垃圾（还会被下一轮的
+    dispatcher 分支误读）。
+    """
+    agent = db.get(AgentProfile, chat_session.agent_id or "")
+    if not _is_dispatcher_agent(agent):
+        return
+    metadata = dict(chat_session.context_state_json or {})
+    active = metadata.get(ACTIVE_DISPATCH_KEY)
+    if isinstance(active, dict):
+        child_session_id = str(active.get("child_session_id") or "").strip()
+        child_turn_id = str(active.get("child_turn_id") or "").strip()
+        if child_session_id and child_turn_id:
+            try:
+                cancel_chat_turn(child_session_id, child_turn_id)
+            except Exception:
+                logger.warning("cancel dispatch child turn failed", exc_info=True)
+
+    metadata[DISPATCH_CANCEL_KEY] = True
+    chat_session.context_state_json = metadata
+    chat_session.updated_at = utc_now()
+    db.add(chat_session)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("persist dispatch cancel flag failed", exc_info=True)
 
 
 def _persist_chat_turn_cancelled(
@@ -4566,3 +4634,225 @@ def _finish_trace_if_needed(trace: dict, fallback_time) -> None:
     if not trace.get("completed_at") and fallback_time:
         trace["completed_at"] = fallback_time.isoformat()
     _complete_trace_lines(trace["lines"])
+
+
+# ══════════════════════════════════════════════════════════════
+# 调度入口（Dispatcher）：一轮对话 = 一次路由 + 一次子 turn
+# ══════════════════════════════════════════════════════════════
+
+
+def _resolve_dispatch_session(db: Session, request: ChatTurnRequest) -> ChatSession | None:
+    """本轮是否走调度分支；是则返回**父会话**（调度入口自己的会话）。
+
+    判据只有一条：会话绑的 agent 是 ``kind == "dispatcher"``。
+    非 dispatcher 一律返回 None，主流程完全不受影响。
+    """
+    if not request.agent_id:
+        return None
+    agent = db.get(AgentProfile, request.agent_id)
+    if not _is_dispatcher_agent(agent):
+        return None
+    if agent.tenant_id != request.tenant_id or agent.status != "active":
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not request.session_id:
+        # 调度入口同样支持「首轮不带 session_id」：复用确定性首轮会话推导，
+        # 并发撞车时回读已提交那行（与 harness 的 _with_recoverable_first_session 同源）
+        request = _with_dispatch_first_session(request, db)
+    session = db.get(ChatSession, request.session_id or "")
+    if session is None:
+        session = ChatSession(
+            id=request.session_id or new_id("session"),
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            agent_id=agent.id,
+            channel=request.channel if request.channel in {"skill_test"} else None,
+        )
+        db.add(session)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            session = db.get(ChatSession, request.session_id or "")
+            if session is None:
+                raise
+        else:
+            # 与 _get_or_create_session 对齐：新建会话给员工 usage_count +1。
+            # 调度入口没走 harness，不在这里补就永远不会有使用量。
+            bump_agent_usage(db, agent.id)
+            db.commit()
+    db.refresh(session)
+    if session.agent_id and session.agent_id != agent.id:
+        raise HTTPException(status_code=409, detail="Session is bound to another agent")
+    if not session.agent_id:
+        session.agent_id = agent.id
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+    return session
+
+
+def _with_dispatch_first_session(request: ChatTurnRequest, db: Session) -> ChatTurnRequest:
+    """首轮无 session_id：按 (tenant, user, client_turn_id) 确定性推导会话 id。
+
+    与 ``_with_recoverable_first_session`` 同一套思路，避免同一轮被重发时
+    在库里堆出多个空会话。
+    """
+    if request.session_id or not str(request.client_turn_id or "").strip():
+        # 没有 client_turn_id 无法确定性推导，交给上层随机生成
+        return request.model_copy(update={"session_id": new_id("session")})
+    identity = "\x1f".join(
+        (
+            request.tenant_id.strip(),
+            str(request.user_id or "").strip(),
+            str(request.client_turn_id or "").strip(),
+        )
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return request.model_copy(update={"session_id": f"session_{digest[:16]}"})
+
+
+def _run_dispatch_stream(
+    db: Session,
+    request: ChatTurnRequest,
+    parent: ChatSession,
+    *,
+    emit: Callable[[str, dict[str, object]], None],
+    set_source_session: Callable[[str], None],
+    worker_terminal: dict[str, bool],
+    span_turn_id: dict[str, str],
+) -> None:
+    """跑完一轮调度，并把 relay 事件的顺序对齐前端预期：
+
+    ``session_created``（仅新建会话）→ ``user_message_received`` →
+    ``stream_status(dispatched)`` → ``stream_delta*`` → ``stream_end`` → ``complete``
+    """
+    from app.core.engine.facade_runtime import _TurnRuntimeMixin
+
+    set_source_session(parent.id)
+    created_session = parent.created_at is None or _is_fresh_session(db, parent)
+
+    if created_session:
+        emit(
+            "session_created",
+            {
+                "sessionId": parent.id,
+                "turn_id": request.client_turn_id,
+                "client_turn_id": request.client_turn_id,
+                "execution_engine": "dispatcher",
+            },
+        )
+
+    # 父会话落 user 消息 + user_message_received（与 harness 语义保持一致）
+    # **client_turn_id 必须写进 metadata**：前端刷新后要靠它把本地 `turn_xxx`
+    # 和服务端 `msg_xxx` 认成同一轮（buildTurnAliasMap 读 metadata.client_turn_id）。
+    # 缺了它，`hasAssistantMessageForTurn` 永远判定「这一轮没有答案」，
+    # loadTraces 就会把**已经结束的上一轮**当成僵尸轮次复活 → stream.loading
+    # 永久卡在 true → 之后每条消息都被误判为「会话忙碌」塞进本地队列，
+    # 界面上一直显示「排队中」且永远不发出（真实踩过）。
+    # 与 harness 的 app/api/chat.py::_user_message_metadata 保持同一口径。
+    user_metadata: dict[str, object] = {"channel": request.channel}
+    if request.client_turn_id:
+        user_metadata["client_turn_id"] = request.client_turn_id
+    user_message = Message(
+        tenant_id=request.tenant_id,
+        session_id=parent.id,
+        role="user",
+        content=request.message,
+        metadata_json=user_metadata,
+    )
+    db.add(user_message)
+    parent.updated_at = utc_now()
+    db.add(parent)
+    db.commit()
+    db.refresh(user_message)
+    span_turn_id["value"] = user_message.id
+    emit(
+        "user_message_received",
+        {
+            "sessionId": parent.id,
+            "message_id": user_message.id,
+            "turn_id": user_message.id,
+            "user_message_id": user_message.id,
+            "client_turn_id": request.client_turn_id,
+            "message": request.message,
+            "channel": request.channel,
+            "user_id": request.user_id,
+            "execution_engine": "dispatcher",
+        },
+    )
+
+    agent = db.get(AgentProfile, parent.agent_id or "")
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    runner = _DispatchTurnRunner(emit=emit)
+    try:
+        # parent_turn_id 一定要传：父会话的 assistant 消息靠它落 turn_id，
+        # 否则前端按轮去重失败，答案会渲染成两个气泡。
+        result = runner.run(db, request, parent, agent, parent_turn_id=user_message.id)
+    except Exception:
+        logger.exception("dispatch turn failed")
+        # run() 内部已经把可预期错误转成文本了；能到这里说明是意外异常
+        emit(
+            "stream_interrupted",
+            {
+                "sessionId": parent.id,
+                "text": "调度处理中断，请重试。",
+                "client_turn_id": request.client_turn_id,
+            },
+        )
+        worker_terminal["seen"] = True
+        return
+
+    turn_payload = {
+        "turn_id": user_message.id,
+        "user_message_id": user_message.id,
+        "client_turn_id": request.client_turn_id,
+    }
+
+    if result.get("cancelled"):
+        emit("stream_cancelled", {"sessionId": parent.id, **turn_payload})
+        worker_terminal["seen"] = True
+        return
+
+    reply = str(result.get("reply") or "")
+    # **只在镜像没送出去任何文本时才整段回放**。
+    # 子 turn 的真增量已由 `_stream_child_turn` 的 event_sink 实时镜像到本会话
+    # （见 app/dispatch/stream.py）。以前这里无条件再回放一遍，等于答案发两遍：
+    # 实测 total_chars 恰好是 reply 长度 ×2，前端末尾还会重复追加一段。
+    # 保留回放是为了兜底「子 turn 一条增量都没发出」的极端情况（例如成员只调了
+    # 工具、或模型不支持流式），否则用户会看到一个空气泡直接跳到完成。
+    if runner.mirrored_text_count <= 0:
+        for chunk in _reply_chunks(reply):
+            emit("stream_delta", {"sessionId": parent.id, "content": chunk, **turn_payload})
+    emit("stream_end", {"sessionId": parent.id, **turn_payload})
+
+    # 首轮标题兜底：不调 LLM，直接取首条用户消息（与 harness 的 fallback 同源）
+    if not parent.title:
+        parent.title = _TurnRuntimeMixin._fallback_session_title_from_message(request.message)
+        parent.updated_at = utc_now()
+        db.add(parent)
+        db.commit()
+
+    emit(
+        "complete",
+        {
+            "reply": reply,
+            "session_id": parent.id,
+            "sessionId": parent.id,
+            "dispatch": result.get("dispatch"),
+            **turn_payload,
+        },
+    )
+    worker_terminal["seen"] = True
+
+
+def _is_fresh_session(db: Session, session: ChatSession) -> bool:
+    """这个会话是不是本轮刚建的（用来决定要不要发 session_created）。"""
+    existing = db.exec(
+        select(Message.id).where(
+            Message.tenant_id == session.tenant_id,
+            Message.session_id == session.id,
+        ).limit(2)
+    ).all()
+    return len(existing) <= 1

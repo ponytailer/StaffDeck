@@ -24,8 +24,10 @@ import { teamIdFromScope, toTeamScope } from '@/lib/agent-scope-storage';
 import EmployeeAvatar from './EmployeeAvatar';
 import BrandLogo from './BrandLogo';
 import StaffdeckIcon from './StaffdeckIcon';
+import DispatcherGlyph from './dispatcher/DispatcherGlyph';
 import { employeeDisplayNameWithCreator, employeeProfile, staffdeckDisplayText } from '../employee';
 import { EnterpriseRoute } from '../enums/routes';
+import { MAX_DISPATCH_MEMBERS, dispatchFallbackLabel, type DispatcherRead } from '../lib/dispatcher';
 import type { AgentProfileRead, ChatSession, TeamRead } from '../types';
 import IconPlatform from '../assets/icons/nav-platform.svg?react';
 import IconAgents from '../assets/icons/nav-agents.svg?react';
@@ -63,7 +65,18 @@ type NavItem = {
   hot?: boolean;
   /** 仅管理员可见（页面路由也会挡一层，这里只管入口展示）。 */
   adminOnly?: boolean;
+  /**
+   * 同路由下的页面内 tab 深链（如 `/enterprise/agents#dispatchers`）。
+   * 多智能体独立成页内 tab 后，「成员与路由规则」若只跳 /agents 会落到数字员工列表，
+   * 名不副实 —— 带上 hash 让 AgentsPage 直接切到目标 tab。
+   */
+  hash?: string;
 };
+
+/** 带 tab 深链的导航目标：`/enterprise/agents#dispatchers`。 */
+function navTarget(item: NavItem): string {
+  return item.hash ? `${item.route}#${item.hash}` : item.route;
+}
 
 // 主菜单分组：组间以细分隔线区隔（与系统组的分隔样式一致）
 const WORKSPACE_NAV: NavItem[] = [
@@ -93,6 +106,24 @@ const CAPABILITY_NAV: NavItem[] = [
   { route: EnterpriseRoute.GeneralSkills, label: '技能', Icon: IconMagicWand },
   { route: EnterpriseRoute.Skills, label: 'SOP', Icon: IconClipboard },
   { route: EnterpriseRoute.Tools, label: '工具', Icon: IconBriefcase },
+];
+
+/**
+ * 多智能体作用域下的左下块（2026-11-07）。
+ *
+ * 它不配知识库/技能/SOP/工具，那四项目录对它永远为空 —— 挂着只会让人以为「配置丢了」。
+ * 换成它真正成立的三个落点：档案（成员/规则/兜底/模型）、对话日志、定时任务。
+ * 注意这里没有新增路由：三者都复用 DashboardPage 的不同 tab。
+ */
+const DISPATCHER_PROFILE_NAV: NavItem[] = [
+  { route: EnterpriseRoute.Dashboard, label: '多智能体档案', Icon: IconFile },
+  { route: EnterpriseRoute.ScheduledTasks, label: '定时任务', Icon: IconAlarm },
+  { route: EnterpriseRoute.Feedback, label: '对话日志', Icon: IconCalendar },
+];
+
+/** 多智能体的成员/模型配置都落在「我的数字员工」页的多智能体 tab 里，没有独立路由。 */
+const DISPATCHER_STRUCTURE_NAV: NavItem[] = [
+  { route: EnterpriseRoute.Agents, label: '成员与路由规则', Icon: IconAgents, hash: 'dispatchers' },
 ];
 
 const SYSTEM_NAV: NavItem[] = [
@@ -168,12 +199,30 @@ export type AppSidebarManagementProps = {
   onNavigate: (route: string) => void;
   isAdmin: boolean;
   sidebarAgent?: AgentProfileRead;
+  /**
+   * 当前作用域是多智能体时，它的详情（含 members / config / model_name）。
+   *
+   * 为什么不是 AgentProfileRead：`/api/enterprise/agents` 按设计排除 dispatcher
+   * （混进花名册会把员工总数算多，也会冒出一张没有知识库/SOP 的空卡），
+   * 所以侧栏拿不到它，只能由 App 从 `/api/enterprise/dispatchers` 单独喂进来。
+   */
+  sidebarDispatcher?: DispatcherRead | null;
+  /**
+   * 可切换的多智能体清单（当前用户可用的）。与 `scopeAgents` 分开是因为
+   * 后端 `/api/enterprise/agents` 按设计排除 dispatcher，两者不是同一份数据。
+   */
+  scopeDispatchers?: DispatcherRead[];
   scopeAgents: AgentProfileRead[];
   scopeTeams?: TeamRead[];
   selectedAgentId: string;
   onSelectAgent: (agentId: string) => void;
   onOpenChat: () => void;
   modelSetupAttention?: boolean;
+  /**
+   * 花名册是否还在加载。加载完成前 `sidebarAgent` / `sidebarDispatcher` 必然都是空，
+   * 那时显示「未选择 / -」是误报（整页刷新到多智能体作用域时会闪一下）。
+   */
+  scopeLoading?: boolean;
 };
 
 export type ChatSessionFilterOption = { value: string; label: string };
@@ -230,7 +279,7 @@ function PrimaryNavButton({
         data-guide-target={`route-${item.route}`}
         tooltip={item.label}
         isActive={selected === item.route}
-        onClick={() => onNavigate(item.route)}
+        onClick={() => onNavigate(navTarget(item))}
         className={cn(
           'h-[34px] gap-[10px] rounded-[12px] px-[20px] py-[6px] text-[13px] text-[#5b6274]',
           'hover:bg-sidebar-accent hover:text-[#18181a]',
@@ -267,7 +316,7 @@ function CardNavButton({
         data-guide-target={`route-${item.route}`}
         tooltip={item.label}
         isActive={selected === item.route}
-        onClick={() => onNavigate(item.route)}
+        onClick={() => onNavigate(navTarget(item))}
         className={cn(
           'h-[32px] gap-[8px] rounded-[10px] px-[12px] py-[4px] text-[12px] text-[#757f9c]',
           'hover:bg-sidebar-accent hover:text-[#18181a]',
@@ -328,23 +377,49 @@ function TeamScopeItems({
 
 function AgentSwitcher({
   sidebarAgent,
+  sidebarDispatcher,
   scopeAgents,
+  scopeDispatchers = [],
   scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
-}: Pick<AppSidebarManagementProps, 'sidebarAgent' | 'scopeAgents' | 'scopeTeams' | 'selectedAgentId' | 'onSelectAgent'>) {
+  scopeLoading = false,
+}: Pick<
+  AppSidebarManagementProps,
+  | 'sidebarAgent'
+  | 'sidebarDispatcher'
+  | 'scopeAgents'
+  | 'scopeDispatchers'
+  | 'scopeTeams'
+  | 'selectedAgentId'
+  | 'onSelectAgent'
+  | 'scopeLoading'
+>) {
   const employeeAgents = scopeAgents.filter((agent) => !agent.is_overall);
   const currentAgent = sidebarAgent && !sidebarAgent.is_overall ? sidebarAgent : undefined;
+  const currentDispatcher = sidebarDispatcher || undefined;
   const selectedTeamId = teamIdFromScope(selectedAgentId);
   const currentTeam = selectedTeamId
     ? scopeTeams.find((team) => team.id === selectedTeamId)
     : undefined;
-  const caption = selectedTeamId ? '当前团队' : currentAgent ? '当前员工' : '未选择';
+  const caption = selectedTeamId
+    ? '当前团队'
+    : currentDispatcher
+      ? '多智能体'
+      : currentAgent
+        ? '当前员工'
+        : scopeLoading
+          ? '加载中'
+          : '未选择';
   const nameLabel = selectedTeamId
     ? currentTeam?.name || '团队'
-    : currentAgent
-      ? employeeDisplayNameWithCreator(currentAgent)
-      : '-';
+    : currentDispatcher
+      ? currentDispatcher.name
+      : currentAgent
+        ? employeeDisplayNameWithCreator(currentAgent)
+        : scopeLoading
+          ? '…'
+          : '-';
 
   return (
     <DropdownMenu>
@@ -356,7 +431,15 @@ function AgentSwitcher({
             'group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:py-0',
           )}
         >
-          {currentAgent ? (
+          {currentDispatcher ? (
+            <div className="w-[60px] h-[30px] relative">
+              <div className="absolute inset-0 flex items-end justify-center">
+                <span className="flex h-[71px] w-[60px] items-center justify-center rounded-[10px] border-[0.5px] border-[#cfe3de] bg-[#e1f1ed] text-[#0f7268]">
+                  <DispatcherGlyph className="size-[26px]" />
+                </span>
+              </div>
+            </div>
+          ) : currentAgent ? (
             <div className="w-[60px] h-[30px] relative">
               <div className="absolute inset-0 flex items-end justify-center">
                 <EmployeeAvatar agent={currentAgent} width={60} height={71} />
@@ -372,7 +455,7 @@ function AgentSwitcher({
             </div>
           )}
           <span className="flex min-w-0 flex-1 flex-col gap-[4px] group-data-[collapsible=icon]:hidden">
-            <span className="text-[10px] leading-none text-[#757f9c]">{caption}</span>
+            <span className="truncate text-[10px] leading-none text-[#757f9c]">{caption}</span>
             <span className="block truncate text-[12px] font-medium leading-none text-[#464c5e]">
               {nameLabel}
             </span>
@@ -402,6 +485,11 @@ function AgentSwitcher({
             </span>
           </DropdownMenuItem>
         ))}
+        <DispatcherScopeItems
+          scopeDispatchers={scopeDispatchers}
+          selectedAgentId={selectedAgentId}
+          onSelectAgent={onSelectAgent}
+        />
         <TeamScopeItems
           scopeTeams={scopeTeams}
           selectedAgentId={selectedAgentId}
@@ -409,6 +497,47 @@ function AgentSwitcher({
         />
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * 切换器下拉里的「多智能体」分组。
+ *
+ * 与员工项的区别是刻意的：副标题写「N 位同事」而不是岗位名（`employeeProfile()` 对
+ * dispatcher 只会返回「待补充岗位」，因为它的 metadata 里没有岗位字段）。
+ */
+function DispatcherScopeItems({
+  scopeDispatchers,
+  selectedAgentId,
+  onSelectAgent,
+}: Pick<AppSidebarManagementProps, 'selectedAgentId' | 'onSelectAgent'> & {
+  scopeDispatchers: DispatcherRead[];
+}) {
+  if (scopeDispatchers.length === 0) return null;
+  return (
+    <>
+      <DropdownMenuLabel className="px-[8px] pt-[6px] pb-[2px] text-[10px] leading-none text-[#464c5e]">
+        多智能体
+      </DropdownMenuLabel>
+      {scopeDispatchers.map((dispatcher) => (
+        <DropdownMenuItem
+          key={dispatcher.id}
+          data-active={dispatcher.id === selectedAgentId}
+          onSelect={() => onSelectAgent(dispatcher.id)}
+          className="shrink-0 gap-2 rounded-[14px] cursor-pointer focus:bg-[#F6F6F6] focus:[&_strong]:text-foreground! focus:[&_small]:text-muted-foreground! data-[active=true]:bg-[#F6F6F6] data-[active=true]:[&_strong]:text-foreground!"
+        >
+          <span className="grid size-[28px] shrink-0 place-items-center rounded-[8px] border-[0.5px] border-[#cfe3de] bg-[#e1f1ed] text-[#0f7268]">
+            <DispatcherGlyph className="size-[16px]" />
+          </span>
+          <span className="flex min-w-0 flex-col">
+            <strong className="truncate text-[12px] font-medium">{dispatcher.name}</strong>
+            <small className="truncate text-[10px] text-muted-foreground">
+              {dispatcher.members.length}/{MAX_DISPATCH_MEMBERS} 位同事
+            </small>
+          </span>
+        </DropdownMenuItem>
+      ))}
+    </>
   );
 }
 
@@ -476,7 +605,7 @@ function CollapsedNavButton({
         <button
           type="button"
           aria-label={item.label}
-          onClick={() => onNavigate(item.route)}
+          onClick={() => onNavigate(navTarget(item))}
           className={cn(
             'relative flex size-[32px] shrink-0 items-center justify-center text-sidebar-foreground transition-colors',
             'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
@@ -501,16 +630,30 @@ function CollapsedNavButton({
 
 function CollapsedAgentSwitcher({
   sidebarAgent,
+  sidebarDispatcher,
   scopeAgents,
+  scopeDispatchers = [],
   scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   nameLabel,
-}: Pick<AppSidebarManagementProps, 'sidebarAgent' | 'scopeAgents' | 'scopeTeams' | 'selectedAgentId' | 'onSelectAgent'> & {
+  scopeLoading = false,
+}: Pick<
+  AppSidebarManagementProps,
+  | 'sidebarAgent'
+  | 'sidebarDispatcher'
+  | 'scopeAgents'
+  | 'scopeDispatchers'
+  | 'scopeTeams'
+  | 'selectedAgentId'
+  | 'onSelectAgent'
+  | 'scopeLoading'
+> & {
   nameLabel: string;
 }) {
   const employeeAgents = scopeAgents.filter((agent) => !agent.is_overall);
   const currentAgent = sidebarAgent && !sidebarAgent.is_overall ? sidebarAgent : undefined;
+  const currentDispatcher = sidebarDispatcher || undefined;
   const selectedTeamId = teamIdFromScope(selectedAgentId);
   return (
     <DropdownMenu>
@@ -520,7 +663,11 @@ function CollapsedAgentSwitcher({
           aria-label="切换当前员工"
           className="flex flex-col items-center gap-[2px] pt-[8px]"
         >
-          {currentAgent ? (
+          {currentDispatcher ? (
+            <span className="grid h-[38px] w-[32px] place-items-center rounded-[8px] border-[0.5px] border-[#cfe3de] bg-[#e1f1ed] text-[#0f7268]">
+              <DispatcherGlyph className="size-[18px]" />
+            </span>
+          ) : currentAgent ? (
             <EmployeeAvatar agent={currentAgent} width={32} height={38} radius={8} />
           ) : (
             <span className="flex h-[38px] w-[32px] items-center justify-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-sidebar-foreground">
@@ -551,6 +698,11 @@ function CollapsedAgentSwitcher({
             </span>
           </DropdownMenuItem>
         ))}
+        <DispatcherScopeItems
+          scopeDispatchers={scopeDispatchers}
+          selectedAgentId={selectedAgentId}
+          onSelectAgent={onSelectAgent}
+        />
         <TeamScopeItems
           scopeTeams={scopeTeams}
           selectedAgentId={selectedAgentId}
@@ -566,16 +718,31 @@ function CollapsedSidebar({
   onNavigate,
   isAdmin,
   sidebarAgent,
+  sidebarDispatcher,
   scopeAgents,
+  scopeDispatchers = [],
   scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   onOpenChat,
   onToggle,
   modelSetupAttention,
+  scopeLoading = false,
 }: Pick<
   AppSidebarManagementProps,
-  'selected' | 'onNavigate' | 'isAdmin' | 'sidebarAgent' | 'scopeAgents' | 'scopeTeams' | 'selectedAgentId' | 'onSelectAgent' | 'onOpenChat' | 'modelSetupAttention'
+  | 'selected'
+  | 'onNavigate'
+  | 'isAdmin'
+  | 'sidebarAgent'
+  | 'sidebarDispatcher'
+  | 'scopeAgents'
+  | 'scopeDispatchers'
+  | 'scopeTeams'
+  | 'selectedAgentId'
+  | 'onSelectAgent'
+  | 'onOpenChat'
+  | 'modelSetupAttention'
+  | 'scopeLoading'
 > & { onToggle: () => void }) {
   const selectedTeamId = teamIdFromScope(selectedAgentId);
   const selectedTeam = selectedTeamId
@@ -583,11 +750,18 @@ function CollapsedSidebar({
     : undefined;
   const nameLabel = selectedTeamId
     ? selectedTeam?.name || '团队'
-    : sidebarAgent
-      ? sidebarAgent.is_overall
-        ? '未选择'
-        : employeeDisplayNameWithCreator(sidebarAgent)
-      : '未选择';
+    : sidebarDispatcher
+      ? sidebarDispatcher.name
+      : sidebarAgent
+        ? sidebarAgent.is_overall
+          ? '未选择'
+          : employeeDisplayNameWithCreator(sidebarAgent)
+        : scopeLoading
+          ? '…'
+          : '未选择';
+  // 多智能体没有知识库/技能/SOP/工具，底部这组换成对它成立的入口
+  const profileNav = sidebarDispatcher ? DISPATCHER_PROFILE_NAV : PROFILE_NAV;
+  const capabilityNav = sidebarDispatcher ? DISPATCHER_STRUCTURE_NAV : CAPABILITY_NAV;
   const groups = navGroups(isAdmin);
 
   return (
@@ -643,18 +817,21 @@ function CollapsedSidebar({
         <div className="flex w-[38px] flex-col items-center gap-[8px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[2px] pt-[6px] pb-[8px]">
           <CollapsedAgentSwitcher
             sidebarAgent={sidebarAgent}
+            sidebarDispatcher={sidebarDispatcher}
             scopeAgents={scopeAgents}
+            scopeDispatchers={scopeDispatchers}
             scopeTeams={scopeTeams}
             selectedAgentId={selectedAgentId}
             onSelectAgent={onSelectAgent}
             nameLabel={nameLabel}
+            scopeLoading={scopeLoading}
           />
 
           <div className="h-px w-[28px] bg-sidebar-border" />
 
           <div className="flex flex-col items-center gap-[4px]">
             <CollapsedGroupLabel>资料</CollapsedGroupLabel>
-            {PROFILE_NAV.map((item) => (
+            {profileNav.map((item) => (
               <CollapsedNavButton
                 key={item.route}
                 item={item}
@@ -667,8 +844,8 @@ function CollapsedSidebar({
 
             <div className="my-[6px] h-px w-[28px] bg-sidebar-border" />
 
-            <CollapsedGroupLabel>能力</CollapsedGroupLabel>
-            {CAPABILITY_NAV.map((item) => (
+            <CollapsedGroupLabel>{sidebarDispatcher ? '配置' : '能力'}</CollapsedGroupLabel>
+            {capabilityNav.map((item) => (
               <CollapsedNavButton
                 key={item.route}
                 item={item}
@@ -708,16 +885,22 @@ function ManagementSidebar({
   onNavigate,
   isAdmin,
   sidebarAgent,
+  sidebarDispatcher,
   scopeAgents,
+  scopeDispatchers = [],
   scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   onOpenChat,
   modelSetupAttention,
+  scopeLoading = false,
 }: AppSidebarManagementProps) {
   const { toggleSidebar, state } = useSidebar();
   const brandCollapsed = useMemo(() => state === 'collapsed', [state]);
   const navGroupList = useMemo(() => navGroups(isAdmin), [isAdmin]);
+  // 多智能体没有知识库/技能/SOP/工具：那组导航对它永远空，换成成员/路由规则与日志
+  const profileNav = sidebarDispatcher ? DISPATCHER_PROFILE_NAV : PROFILE_NAV;
+  const capabilityNav = sidebarDispatcher ? DISPATCHER_STRUCTURE_NAV : CAPABILITY_NAV;
 
   if (brandCollapsed) {
     return (
@@ -727,13 +910,16 @@ function ManagementSidebar({
           onNavigate={onNavigate}
           isAdmin={isAdmin}
           sidebarAgent={sidebarAgent}
+          sidebarDispatcher={sidebarDispatcher}
           scopeAgents={scopeAgents}
+          scopeDispatchers={scopeDispatchers}
           scopeTeams={scopeTeams}
           selectedAgentId={selectedAgentId}
           onSelectAgent={onSelectAgent}
           onOpenChat={onOpenChat}
           onToggle={toggleSidebar}
           modelSetupAttention={modelSetupAttention}
+          scopeLoading={scopeLoading}
         />
       </Sidebar>
     );
@@ -796,26 +982,29 @@ function ManagementSidebar({
         >
           <AgentSwitcher
             sidebarAgent={sidebarAgent}
+            sidebarDispatcher={sidebarDispatcher}
             scopeAgents={scopeAgents}
+            scopeDispatchers={scopeDispatchers}
             scopeTeams={scopeTeams}
             selectedAgentId={selectedAgentId}
             onSelectAgent={onSelectAgent}
+            scopeLoading={scopeLoading}
           />
           <div className="mx-[8px] h-px bg-sidebar-border group-data-[collapsible=icon]:hidden" />
 
           <div className="flex flex-col gap-[2px] px-[10px] group-data-[collapsible=icon]:px-0">
-            <GroupLabel>基本资料</GroupLabel>
+            <GroupLabel>{sidebarDispatcher ? '运营记录' : '基本资料'}</GroupLabel>
             <SidebarMenu className="gap-[2px]">
-              {PROFILE_NAV.map((item) => (
+              {profileNav.map((item) => (
                 <CardNavButton key={item.route} item={item} selected={selected} onNavigate={onNavigate} />
               ))}
             </SidebarMenu>
 
             <div className="mx-[2px] my-[8px] h-px bg-sidebar-border group-data-[collapsible=icon]:hidden" />
 
-            <GroupLabel>员工能力</GroupLabel>
+            <GroupLabel>{sidebarDispatcher ? '成员与规则' : '员工能力'}</GroupLabel>
             <SidebarMenu className="gap-[2px]">
-              {CAPABILITY_NAV.map((item) => (
+              {capabilityNav.map((item) => (
                 <CardNavButton key={item.route} item={item} selected={selected} onNavigate={onNavigate} />
               ))}
             </SidebarMenu>

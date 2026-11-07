@@ -1,0 +1,22 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="plaza_squad_tile" x1="3" y1="4" x2="29" y2="29" gradientUnits="userSpaceOnUse">
+<stop stop-color="#8FE3D6"/>
+<stop offset="0.55" stop-color="#3FC0AC"/>
+<stop offset="1" stop-color="#0F7268"/>
+</linearGradient>
+<linearGradient id="plaza_squad_core" x1="13" y1="12" x2="19" y2="19" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FFFFFF"/>
+<stop offset="1" stop-color="#DDF4F0"/>
+</linearGradient>
+</defs>
+<rect x="2" y="4.4" width="28" height="24" rx="8" fill="url(#plaza_squad_tile)"/>
+<rect x="2.35" y="4.75" width="27.3" height="23.3" rx="7.65" stroke="#FFFFFF" stroke-opacity="0.42" stroke-width="0.7"/>
+<path d="M16 16.6 9.4 22.6M16 16.6l6.6 6" stroke="#FFFFFF" stroke-opacity="0.85" stroke-width="1.15" stroke-linecap="round"/>
+<circle cx="16" cy="15.2" r="4.1" fill="url(#plaza_squad_core)"/>
+<circle cx="16" cy="15.2" r="1.55" fill="#0F7268"/>
+<circle cx="8.6" cy="23.2" r="2.5" fill="#FFFFFF" fill-opacity="0.95"/>
+<circle cx="8.6" cy="23.2" r="0.95" fill="#0F7268"/>
+<circle cx="23.4" cy="23.2" r="2.5" fill="#FFFFFF" fill-opacity="0.95"/>
+<circle cx="23.4" cy="23.2" r="0.95" fill="#0F7268"/>
+</svg>

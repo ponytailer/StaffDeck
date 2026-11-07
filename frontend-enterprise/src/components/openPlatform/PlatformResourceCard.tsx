@@ -6,7 +6,7 @@ import { usePointerFx } from '@/lib/motion';
 import IconFolder from '../../assets/icons/cap-folder.svg?react';
 
 /** Per-module accent used for the meta line and tag pills (SD1 232:4634 family). */
-export type PlatformResourceAccent = 'green' | 'blue' | 'indigo' | 'orange' | 'violet';
+export type PlatformResourceAccent = 'green' | 'blue' | 'indigo' | 'orange' | 'violet' | 'teal';
 
 /**
  * 每个模块一套强调色：`meta`/`tag` 是文字与胶囊样式，`glow` 是卡片 hover 时
@@ -19,6 +19,8 @@ const ACCENT_STYLES: Record<PlatformResourceAccent, { meta: string; tag: string;
   orange: { meta: 'text-[#ff7f00]', tag: 'bg-[#fff2e5] text-[#ff7f00]', glow: 'rgba(255, 127, 0, 0.22)' },
   // Agent 广场：与其它模块区分开的紫罗兰色（同一 232:4634 色阶体系内新增）
   violet: { meta: 'text-[#6d3fd4]', tag: 'bg-[#f1eaff] text-[#6d3fd4]', glow: 'rgba(109, 63, 212, 0.22)' },
+  // 员工小队（多智能体）：沿用入口本身的品牌青，和 Agent 广场的紫、员工的默认白拉开
+  teal: { meta: 'text-[#0f7268]', tag: 'bg-[#e1f1ed] text-[#0f7268]', glow: 'rgba(15, 114, 104, 0.22)' },
 };
 
 export const platformResourceAccentStyles = ACCENT_STYLES;

@@ -83,6 +83,11 @@ def init_db() -> None:
     # 每个函数自身幂等（先查 PRAGMA/inspector，列已存在直接返回），
     # 可重复执行。新增「已有表加列」时必须登记到这里，否则线上会
     # 报 no such column（历史教训见 docs/config-flags-audit.md）。
+    #
+    # ⚠️ 顺序有讲究：任何**用 ORM 读**该表的迁移，都必须排在补列之后 ——
+    # ORM 的 SELECT 会把模型里所有列都列出来，列还没加就会
+    # `column ... does not exist`。所以纯 DDL 补列的迁移统一放最前面。
+    _migrate_agent_kind()
     _migrate_free_model_schema()
     _migrate_ui_config_knowledge_citations()
     _migrate_mcp_server_timeout()
@@ -2712,6 +2717,26 @@ def _migrate_general_skill_download_count() -> None:
         conn.execute(
             text("ALTER TABLE general_skills ADD COLUMN download_count INTEGER NOT NULL DEFAULT 0")
         )
+
+
+def _migrate_agent_kind() -> None:
+    """agent_profiles 补 kind：区分普通数字员工（standard）与调度入口（dispatcher）。
+
+    新表 dispatcher_members 由 create_all 直接建；这里只给**已存在**的
+    agent_profiles 补 kind 列。带 server_default，老行自动补齐为 standard，
+    不需要额外数据回填。
+    """
+    inspector = inspect(engine)
+    if "agent_profiles" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("agent_profiles")}
+    if "kind" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE agent_profiles ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'standard'")
+        )
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_profiles_kind ON agent_profiles (kind)"))
 
 
 def get_session() -> Generator[Session, None, None]:

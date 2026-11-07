@@ -31,6 +31,11 @@ import {
   teamIdFromScope,
   toTeamScope,
 } from '@/lib/agent-scope-storage';
+import {
+  getDispatcher,
+  dispatchFallbackShortLabel,
+  type DispatcherRead,
+} from '@/lib/dispatcher';
 import { getClientTimeZone } from '@/lib/timezone';
 import {
   agentResourceCount,
@@ -350,6 +355,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [teams, setTeams] = useState<TeamRead[]>([]);
   const [teamEmptyStats, setTeamEmptyStats] = useState<{ tasks: number; blackboard: number }>({ tasks: 0, blackboard: 0 });
+  /**
+   * 多智能体（kind=dispatcher）的详情：/api/chat/agents 只回普通员工口径的
+   * AgentProfileRead，**不含 members / config**，而对话端空状态要展示「成员有谁」
+   * 与「无法匹配时怎么办」，所以按需单独拉一次详情。
+   */
+  const [displayedDispatcher, setDisplayedDispatcher] = useState<DispatcherRead | null>(null);
+  /** 详情请求是否已结束（成功或失败都算）：空状态据此区分「加载中」与「真的没成员」。 */
+  const [displayedDispatcherLoaded, setDisplayedDispatcherLoaded] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || '');
   const [sessionAgentFilter, setSessionAgentFilter] = useState(() => (
     window.localStorage.getItem(sessionFilterStorageKey(userId))
@@ -444,6 +457,25 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const storeRef = useRef(new Map<string, SessionSlot>());
   const streamRef = useRef(new Map<string, StreamSlot>());
   const turnTraceRef = useRef(new Map<string, TurnTrace>());
+  /**
+   * 按轮次记「这一轮由哪个成员答的」，供 `updateStreaming` 给**流式气泡**补
+   * `metadata.dispatch`。
+   *
+   * 为什么必须单独存一份：服务端只把 dispatch 归属写进**最终答案消息**的
+   * metadata，而流式期间的前端草稿气泡（`updateStreaming` 里那个
+   * `draftStreamingMessage`）原本不带任何 metadata —— 于是「由 X 回答」chip
+   * 只在刷新后才出现，流式那 30s 里页面和普通员工不一致（用户明确要求一致）。
+   *
+   * 写入时机只认 `dispatch_notice`（它在成员真正开跑**之后**才发）：不认提前的
+   * `dispatch_decision`，否则成员跑挂/走了 clarify 兜底时，chip 会错误地挂上
+   * 「由 X 回答」。
+   */
+  const turnDispatchRef = useRef(new Map<string, {
+    member_agent_id?: string;
+    member_name: string;
+    intent?: string | null;
+    confidence?: number | null;
+  }>());
   const locallyCancelledSessionIdsRef = useRef(new Set<string>());
   const scheduledEventIdsRef = useRef(new Set<string>());
   // 已本地判定为僵尸并收尾的 turnId：避免事件恢复轮询反复将其重新标记为运行中。
@@ -597,6 +629,33 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     : null;
   const displayedAgent = invalidDraftAgentId || draftAgentLoading ? null : (sessionAgent || draftAgent || defaultAgent);
   const displayedProfile = displayedAgent ? employeeProfile(displayedAgent) : null;
+  // 多智能体在花名册里也是 AgentProfileRead，只多了 kind —— 但 members/config
+  // 只有 /api/enterprise/dispatchers/{id} 才回，所以这里单独补一次详情。
+  const displayedAgentIsDispatcher = (displayedAgent?.kind || 'standard') === 'dispatcher';
+  const displayedAgentId = displayedAgent?.id || '';
+  useEffect(() => {
+    if (!displayedAgentIsDispatcher || !displayedAgentId) {
+      setDisplayedDispatcher(null);
+      setDisplayedDispatcherLoaded(false);
+      return;
+    }
+    let cancelled = false;
+    setDisplayedDispatcherLoaded(false);
+    getDispatcher(displayedAgentId, tenantId)
+      .then((row) => {
+        if (!cancelled) setDisplayedDispatcher(row);
+      })
+      .catch(() => {
+        // 读不到详情就退回「没有成员数据」的降级版式，不要在对话页弹错误
+        if (!cancelled) setDisplayedDispatcher(null);
+      })
+      .finally(() => {
+        if (!cancelled) setDisplayedDispatcherLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [displayedAgentId, displayedAgentIsDispatcher, tenantId]);
   const emptyProfileTags = displayedProfile?.workStyles.length
     ? displayedProfile.workStyles.slice(0, 3)
     : ['结构化整理', '可追溯', '可追溯'];
@@ -614,6 +673,24 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       { label: '技能', value: 0 },
       { label: 'SOP', value: 0 },
     ];
+  /*
+   * 多智能体空状态：完全不套「#角色 / 资料 / 技能 / SOP」这套员工话术。
+   * 它不配知识库/技能/工具，角色字段对它没有意义；用户在表单里真正填过的是
+   * 「入口说明」（description）+「成员与路由规则」，所以这里就展示这两样。
+   */
+  const dispatcherMembers = displayedDispatcher?.members || [];
+  const emptyDispatcherSummary = displayedAgentIsDispatcher
+    ? (displayedDispatcher?.description || '').trim()
+      // 说明没填时给一句能自解释的话，不要留空块
+      || `我是 ${displayedAgent ? employeeDisplayName(displayedAgent) : '多智能体'}，先说需求，我来判断交给谁。`
+    : '';
+  const emptyDispatcherStats = displayedAgentIsDispatcher
+    ? [
+      { label: '同事', value: dispatcherMembers.length },
+      { label: '无法匹配', value: dispatchFallbackShortLabel(displayedDispatcher?.config?.fallback_mode) },
+      { label: '模型', value: displayedDispatcher?.model_name || '未配置' },
+    ]
+    : [];
   const sessionFilterOptions = useMemo(() => {
     return buildSessionFilterOptions(availableAgents, sessions, activeDraftAgentId);
   }, [activeDraftAgentId, availableAgents, sessions]);
@@ -1140,6 +1217,13 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       target.completedAt = target.completedAt || source.completedAt;
     }
     turnTraceRef.current.delete(fromTurnId);
+    // 轮次 id 被改写（服务端 session_created / user message id 回填）时，
+    // 归属表跟着搬，否则改写后流式气泡取不到 dispatch、chip 会闪一下就没。
+    const dispatchInfo = turnDispatchRef.current.get(fromTurnId);
+    if (dispatchInfo && !turnDispatchRef.current.has(toTurnId)) {
+      turnDispatchRef.current.set(toTurnId, dispatchInfo);
+    }
+    turnDispatchRef.current.delete(fromTurnId);
     setExpandedTraceIds((current) => {
       if (!current.includes(fromTurnId)) return current;
       const next = current.filter((item) => item !== fromTurnId);
@@ -1707,6 +1791,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     const stream = getStreamSlot(id);
     const activeTurnId = turnId || stream.turnId || undefined;
     const streamId = streamingMessageId(id, activeTurnId);
+    // 流式气泡也带「由 X 回答」的归属，否则转接后那几十秒与普通员工表现不一致
+    // （服务端只在最终答案消息里写 metadata.dispatch，草稿气泡得自己补）。
+    const dispatchInfo = activeTurnId ? turnDispatchRef.current.get(activeTurnId) : undefined;
     const draftStreamingMessage: ChatMessage = {
       id: streamId,
       turnId: activeTurnId,
@@ -1714,6 +1801,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       content: text,
       created_at: timestampAfterMessage(latestUserMessageForTurn(slot, activeTurnId)),
       isStreaming: true,
+      ...(dispatchInfo ? { metadata: { dispatch: { ...dispatchInfo } } } : {}),
     };
     const aliasMap = buildTurnAliasMap([...slot.serverMessages, ...slot.realtimeMessages, draftStreamingMessage]);
     const activeCanonicalTurnId = canonicalTurnIdForValue(activeTurnId, aliasMap);
@@ -1822,11 +1910,21 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       const streamMessage = slot.realtimeMessages[index];
       const streamTurnId = effectiveMessageTurnId(streamMessage);
       const streamMessageId = streamMessage.id;
-      if (streamTurnId && hasServerMessageForTurn(streamMessage, slot.serverMessages)) {
-        slot.realtimeMessages = slot.realtimeMessages.filter((item) => item.id !== streamMessageId);
-      } else if (!normalizeMessageText(streamMessage.content)) {
+      if (!normalizeMessageText(streamMessage.content)) {
+        // 没有可见正文（只有 trace 占位 / 空草稿）：直接删掉，别留空气泡。
         slot.realtimeMessages = slot.realtimeMessages.filter((item) => item.id !== streamMessageId);
       } else {
+        // 有正文：**一律转成非流式 final 继续展示，不要因为「服务端已有同轮答案」
+        // 就立刻删除**。
+        //
+        // 服务端答案确实可能已经落库了（多智能体路径下子 turn 收尾时就写了），
+        // 但前端 `serverMessages` 要等 stream_end 分支里 `setTimeout(...,250)` 的
+        // `loadMessages` 回来才更新（远程库单程 ~10ms、还要串几次请求）。立刻删
+        // 就产生一段「答案瞬间消失 → 两三秒后又出现」的空窗（真实踩过）。
+        //
+        // 转 final 后无需担心重复：等 `serverMessages` 到位，
+        // `shouldKeepRealtimeMessage` 里的 `hasServerMessageForTurn` 会自然把这条
+        // 过滤掉，等于原子替换，全程无空窗。
         const finalMessage: ChatMessage = {
           ...streamMessage,
           id: streamTurnId ? `__final_${id}_${streamTurnId}` : `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -2215,6 +2313,97 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       upsertVisibleTraceLine(routerDecisionTraceLine(item.data));
       return;
     }
+    if (item.event === 'dispatch_decision') {
+      // 路由结论：把「准备转给谁」提前可视化，避免子 turn 那 20~30s 里界面一片空白。
+      const action = typeof item.data.action === 'string' ? item.data.action : '';
+      if (action === 'route') {
+        const memberName = typeof item.data.member_name === 'string' ? item.data.member_name : '';
+        const intent = typeof item.data.intent === 'string' ? item.data.intent : '';
+        upsertVisibleTraceLine({
+          id: 'dispatch_decision',
+          kind: 'decision',
+          text: memberName ? `转给 ${memberName}` : '转给对应同事',
+          detail: intent || undefined,
+          state: 'completed',
+          icon: 'judge',
+        });
+      } else if (action === 'clarify' || action === 'reply') {
+        upsertVisibleTraceLine({
+          id: 'dispatch_decision',
+          kind: 'decision',
+          text: '没有匹配的同事，按兜底策略回答',
+          state: 'completed',
+          icon: 'judge',
+        });
+      }
+      return;
+    }
+    if (item.event === 'dispatch_notice') {
+      // 路由说完「已转交给 X」，成员答案随后才到。这里只落**一条独立气泡**，
+      // 不带 isStreaming、也不带 dispatch（那是答案气泡的归属 chip 用的），
+      // 所以它不会被当成「这一轮的答案」。刷新后由服务端消息的
+      // metadata.dispatch_notice 还原成同一条（前端按 id 去重）。
+      const memberName = typeof item.data.member_name === 'string' ? item.data.member_name : '';
+      if (memberName && traceTurnId) {
+        // 登记这一轮的归属：`updateStreaming` 造流式草稿气泡时靠它补
+        // metadata.dispatch，让「由 X 回答」chip 在流式期间就可见。
+        const dispatchEntry = {
+          member_agent_id: typeof item.data.member_agent_id === 'string' ? item.data.member_agent_id : undefined,
+          member_name: memberName,
+          intent: typeof item.data.intent === 'string' ? item.data.intent : null,
+          confidence: typeof item.data.confidence === 'number' ? item.data.confidence : null,
+        };
+        turnDispatchRef.current.set(traceTurnId, dispatchEntry);
+        // 流式槽的 turnId 有时还是本地 `turn_xxx`（服务端 id 尚未回填），
+        // 两个键都登记一份，免得 chip 在 id 切换的空档里丢掉。
+        const clientTurnId = typeof item.data.client_turn_id === 'string' ? item.data.client_turn_id : '';
+        if (clientTurnId && clientTurnId !== traceTurnId) {
+          turnDispatchRef.current.set(clientTurnId, dispatchEntry);
+        }
+        const slot = getSlot(eventSessionId);
+        // 实时这条和服务端那条 id 不同（服务端是 msg_xxx），所以不能用 id 去重。
+        // 判重口径：同一轮里已有转接通知就不再追加——否则刷新/回放会叠出两条。
+        const duplicate = slot.realtimeMessages.some((messageItem) => (
+          messageItem.role === 'assistant'
+          && messageItem.turnId === traceTurnId
+          && Boolean(messageItem.metadata?.dispatch_notice)
+        )) || slot.serverMessages.some((messageItem) => (
+          messageItem.role === 'assistant'
+          && Boolean(messageItem.metadata?.dispatch_notice)
+          && Boolean(messageItem.metadata?.client_turn_id)
+          && messageItem.metadata?.client_turn_id === traceTurnId
+        ));
+        if (!duplicate) {
+          appendRealtime(eventSessionId, {
+            id: `notice_${traceTurnId}`,
+            turnId: traceTurnId,
+            role: 'assistant',
+            content: `已转交给 ${memberName}`,
+            created_at: new Date().toISOString(),
+            metadata: {
+              dispatch_notice: {
+                member_agent_id: item.data.member_agent_id,
+                member_name: memberName,
+                intent: item.data.intent,
+                confidence: item.data.confidence,
+              },
+            },
+          });
+        }
+      }
+      return;
+    }
+    if (item.event === 'dispatch_failed') {
+      upsertVisibleTraceLine({
+        id: 'dispatch_failed',
+        kind: 'decision',
+        text: '转交后未能拿到答案',
+        detail: typeof item.data.error_type === 'string' ? item.data.error_type : undefined,
+        state: 'failed',
+        icon: 'judge',
+      });
+      return;
+    }
     if (item.event === 'step_result') {
       upsertVisibleTraceLine(stepResultTraceLine(item.data));
       return;
@@ -2389,6 +2578,22 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         upsertVisibleTraceLine({ id: `tool_${toolCallId}`, kind: 'tool', text: `正在调用 ${item.data.tool_name}`, state: 'running', icon: 'tool' });
       } else if (phase === 'routing') {
         upsertVisibleTraceLine({ id: 'decision_router', kind: 'decision', text: '判断意图', state: 'running', icon: 'judge' });
+      } else if (phase === 'dispatched') {
+        // 调度入口：路由已完成、子 turn 已启动。显示「已转交 某同事」而不是
+        // 笼统的「正在思考」，用户才知道后面这段等待是谁在处理。
+        const memberName = typeof item.data.member_name === 'string'
+          ? item.data.member_name
+          : '';
+        upsertVisibleTraceLine({
+          id: 'dispatch_handoff',
+          kind: 'decision',
+          text: memberName ? `已转交 ${memberName}` : '已转交对应同事',
+          detail: typeof item.data.intent === 'string' && item.data.intent
+            ? item.data.intent
+            : undefined,
+          state: 'running',
+          icon: 'judge',
+        });
       } else if (isKnowledgeTracePhase(phase)) {
         upsertVisibleTraceLine({
           id: knowledgeTraceLineId(item.data),
@@ -3834,6 +4039,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     emptyProfileTags,
     emptyRoleSummary,
     emptyStats,
+    // 多智能体专用的空状态数据（displayedAgentIsDispatcher 为 false 时不用）
+    displayedAgentIsDispatcher,
+    displayedDispatcher,
+    displayedDispatcherLoaded,
+    emptyDispatcherSummary,
+    emptyDispatcherStats,
     // messages / trace
     displayedMessages,
     turnTraceRef,

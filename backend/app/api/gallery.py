@@ -3,7 +3,8 @@
 广场页需要一个「各模块有多少条可见资源」的轻量接口：判定可见性要走
 `is_open_gallery_resource` / overall 绑定过滤，与完整列表接口同口径，但首页角标只需要数字，
 不投影业务字段。计数口径必须对齐前端 OpenPlatformPage 的二次过滤：
-- agents: 非整体、status == "active"、metadata.published_to_gallery is True；
+- agents: 非整体、status == "active"、metadata.published_to_gallery is True、kind != dispatcher；
+- squads: kind == "dispatcher"、status == "active"、metadata.published_to_gallery is True；
 - knowledge: overall 绑定可见 + status == "active" + 排除空的默认知识库；
 - general-skills / skills: overall 绑定可见 + status == "published"；
 - tools: overall 绑定可见 + enabled（与列表 include_inactive=True 时一致，不校验运行态）。
@@ -25,6 +26,7 @@ from app.agents.branching import (
 from app.api.agents import _agent_hidden_from_staffdeck, _agent_visible_to_user
 from app.api.knowledge_bases import _knowledge_base_stats
 from app.db import get_session
+from app.dispatch.service import DISPATCH_KIND
 from app.db.models import (
     AgentProfile,
     AgentResourceBinding,
@@ -46,6 +48,8 @@ class GalleryCountsRead(BaseModel):
     general_skills: int = 0
     skills: int = 0
     tools: int = 0
+    # 员工小队 = kind == "dispatcher" 且已发布到广场的入口
+    squads: int = 0
 
 
 def _tenant_bindings(db: Session, tenant_id: str) -> list[AgentResourceBinding]:
@@ -90,7 +94,12 @@ def gallery_counts(
             continue
         metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
         if row.status == "active" and metadata.get("published_to_gallery") is True:
-            counts.agents += 1
+            # 员工小队也挂在 agent_profiles 上（kind=dispatcher），必须在这里排除，
+            # 否则会同时进「数字员工」和「员工小队」两个 tab，总数重复计算。
+            if (row.kind or "standard") == DISPATCH_KIND:
+                counts.squads += 1
+            else:
+                counts.agents += 1
 
     # knowledge：overall 绑定可见 + status == "active" + 排除空的默认知识库。
     kb_stats = _knowledge_base_stats(db, tenant_id)

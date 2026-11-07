@@ -14,7 +14,7 @@ from app.api.chat import list_chat_sessions
 from app.db.models import AgentProfile, ChatSession, Tenant, User
 from app.security.auth import hash_password
 from app.security.permissions import ADMIN_ROLE
-from app.session.origin import PUBLIC_API_SESSION_CHANNEL
+from app.session.origin import DISPATCH_CHILD_CHANNEL, PUBLIC_API_SESSION_CHANNEL
 
 TENANT = "tenant_demo"
 ADMIN_ID = "user_admin"
@@ -81,3 +81,30 @@ def test_public_api_session_is_still_readable_by_id() -> None:
     row = db.get(ChatSession, "session_1")
     assert row is not None
     assert row.channel == PUBLIC_API_SESSION_CHANNEL
+
+
+def test_dispatch_child_sessions_are_not_listed() -> None:
+    """调度入口的子会话是「员工自己的工作区」，不该混进侧边栏。
+
+    子会话按 (父会话 × 成员) 确定性生成、会长期存在，一旦冒到侧边栏
+    用户列表里就会多出一堆自己没见过的会话。
+    """
+    db = _session()
+    admin = _seed(db)
+    db.add(
+        ChatSession(
+            id="session_child",
+            tenant_id=TENANT,
+            user_id=ADMIN_ID,
+            agent_id=AGENT_ID,
+            title="子员工的工作区",
+            channel=DISPATCH_CHILD_CHANNEL,
+        )
+    )
+    db.commit()
+
+    rows = list_chat_sessions(tenant_id=TENANT, current_user=admin, db=db)
+
+    assert [row.id for row in rows] == ["session_0"]
+    # 但按 id 仍然读得到（取消联动、答案回溯都依赖它）
+    assert db.get(ChatSession, "session_child") is not None

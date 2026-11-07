@@ -735,6 +735,13 @@ function timestampAfterMessage(messageItem?: ChatMessage): string {
 }
 
 function hasServerMessageForTurn(messageItem: ChatMessage, serverMessages: ChatMessage[]): boolean {
+  // 转接通知（"已转交给 X"）不算「这一轮服务端已经有同角色消息」。
+  // 它和答案共享同一轮、同为 assistant 角色，但只是一句路由说明。若把它算进去，
+  // 多智能体路径下 stream_end 时刚流式出来的答案会被判定为「服务端已有」而直接
+  // 从 realtimeMessages 里删掉 → 答案瞬间消失，等 250ms 后 loadMessages 回来才重新
+  // 出现（真实踩过：答案消失 2~3s 又冒出来）。hasAssistantMessageForTurn 早就排除了
+  // 它，这里的口径必须一致。
+  if (isDispatchNotice(messageItem)) return false;
   const messages = [...serverMessages, messageItem];
   const aliasMap = buildTurnAliasMap(messages);
   const messageTurnId = canonicalMessageTurnId(messageItem, aliasMap);
@@ -743,6 +750,7 @@ function hasServerMessageForTurn(messageItem: ChatMessage, serverMessages: ChatM
     (serverMessage) => (
       canonicalMessageTurnId(serverMessage, aliasMap) === messageTurnId
       && serverMessage.role === messageItem.role
+      && !isDispatchNotice(serverMessage)
     ),
   );
 }
@@ -754,6 +762,37 @@ export function sameRoleTurn(left: ChatMessage, right: ChatMessage): boolean {
   return Boolean(leftTurnId && rightTurnId && leftTurnId === rightTurnId && left.role === right.role);
 }
 
+/**
+ * 调度入口的「转接通知」气泡：由路由自己说出「已转交给 X」，成员答案紧跟在后面。
+ *
+ * 它和答案**共享同一个 turn**（否则排不到答案前面），所以任何「这一轮是不是
+ * 已经有答案」的判定都必须把它排除——它只是一句转接说明，不是答案本身。
+ */
+export function isDispatchNotice(messageItem: ChatMessage): boolean {
+  const raw = messageItem.metadata?.dispatch_notice;
+  return Boolean(raw && typeof raw === 'object' && !Array.isArray(raw));
+}
+
+/** 转接通知的目标成员，用于渲染「路由」身份的气泡。 */
+export function dispatchNoticeInfo(messageItem: ChatMessage): {
+  memberName: string;
+  memberAgentId?: string;
+  intent?: string | null;
+  confidence?: number | null;
+} | null {
+  const raw = messageItem.metadata?.dispatch_notice;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const memberName = typeof record.member_name === 'string' ? record.member_name.trim() : '';
+  if (!memberName) return null;
+  return {
+    memberName,
+    memberAgentId: typeof record.member_agent_id === 'string' ? record.member_agent_id : undefined,
+    intent: typeof record.intent === 'string' ? record.intent : null,
+    confidence: typeof record.confidence === 'number' ? record.confidence : null,
+  };
+}
+
 export function hasAssistantMessageForTurn(slot: SessionSlot, turnId: string): boolean {
   if (!turnId) return false;
   const messages = [...slot.serverMessages, ...slot.realtimeMessages];
@@ -762,6 +801,7 @@ export function hasAssistantMessageForTurn(slot: SessionSlot, turnId: string): b
   return messages.some((messageItem) => (
     messageItem.role === 'assistant'
     && !messageItem.isStreaming
+    && !isDispatchNotice(messageItem)
     && canonicalMessageTurnId(messageItem, aliasMap) === canonicalTurnId
     && Boolean(normalizeMessageText(messageItem.content))
   ));
@@ -775,6 +815,7 @@ export function hasAssistantCarrierForTurn(slot: SessionSlot, turnId: string): b
   return messages.some((messageItem) => (
     messageItem.role === 'assistant'
     && !messageItem.isStreaming
+    && !isDispatchNotice(messageItem)
     && canonicalMessageTurnId(messageItem, aliasMap) === canonicalTurnId
     && (
       Boolean(normalizeMessageText(messageItem.content))
@@ -1047,6 +1088,16 @@ export function computeMergedMessages(slot: SessionSlot, activeTurnId?: string |
       const leftSortTime = leftTurnStart ?? parseMessageTime(left.messageItem.created_at);
       const rightSortTime = rightTurnStart ?? parseMessageTime(right.messageItem.created_at);
       if (leftSortTime !== rightSortTime) return leftSortTime - rightSortTime;
+      // 同一轮内：转接通知（路由说的「已转交给 X」）永远排在成员的答案之前。
+      // 不能只靠时间戳——实时流里答案的 created_at 锚在用户消息上，比通知更早，
+      // 靠时间排会把答案顶到通知前面（真实踩过）。
+      // **只在两条都是 assistant 时才生效**：否则「通知 vs 用户消息」也会命中
+      // 这条规则，把通知顶到用户消息前面（真实踩过）。
+      if (left.messageItem.role === 'assistant' && right.messageItem.role === 'assistant') {
+        const leftNotice = isDispatchNotice(left.messageItem);
+        const rightNotice = isDispatchNotice(right.messageItem);
+        if (leftNotice !== rightNotice) return leftNotice ? -1 : 1;
+      }
       if (leftTurnId && leftTurnId === rightTurnId && left.messageItem.role !== right.messageItem.role) {
         return (roleOrder[left.messageItem.role] ?? 3) - (roleOrder[right.messageItem.role] ?? 3);
       }
@@ -1068,6 +1119,9 @@ export function computeMergedMessages(slot: SessionSlot, activeTurnId?: string |
   };
   sorted.forEach((entry) => {
     if (entry.messageItem.role !== 'assistant') return;
+    // 转接通知和答案共享同一轮，但它是**独立气泡**（路由说的话），
+    // 绝不能进「同一轮只保留一条 assistant」的竞争，否则会被答案挤掉。
+    if (isDispatchNotice(entry.messageItem)) return;
     const turnId = canonicalMessageTurnId(entry.messageItem, aliasMap);
     if (!turnId) return;
     const previous = selectedAssistantByTurn.get(turnId);
@@ -1079,6 +1133,9 @@ export function computeMergedMessages(slot: SessionSlot, activeTurnId?: string |
   return sorted
     .filter((entry) => {
       if (entry.messageItem.role !== 'assistant') return true;
+      // 转接通知不参与上面的「一条 assistant」选举，所以这里也必须放行，
+      // 否则它会被当作落选者剔除，只剩答案一条（真实踩过）。
+      if (isDispatchNotice(entry.messageItem)) return true;
       const turnId = canonicalMessageTurnId(entry.messageItem, aliasMap);
       if (!turnId) return true;
       return selectedAssistantByTurn.get(turnId)?.messageItem === entry.messageItem;

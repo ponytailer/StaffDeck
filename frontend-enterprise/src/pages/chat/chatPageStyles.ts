@@ -83,9 +83,21 @@ export const CHAT_SLASH_COMMAND_REQUEST_CLASS =
   'min-w-0 whitespace-pre-wrap text-[14px] leading-[1.7] text-[#18181a]';
 export const CHAT_MESSAGE_MODE_CHIP_CLASS =
   'inline-flex items-center gap-[4px] rounded-full bg-[#eef0f4] px-[9px] py-[2px] text-[11px] font-medium text-[#464c5e]';
-export const CHAT_QUEUED_STATUS_ROW_CLASS = 'mt-[5px] flex justify-end pr-[2px]';
-export const CHAT_QUEUED_STATUS_CLASS =
-  'inline-flex items-center gap-[4px] text-[11px] font-medium leading-[1.4] text-[#858b9c]';
+// 排队态只靠虚线边框 + 删除按钮表达，不再有「排队中」文案行
+// （用户明确要求；原 CHAT_QUEUED_STATUS_* 两个常量已随文案一起下线）。
+
+// ---------------------------------------------------------------------------
+// 调度入口「转接通知」：由路由自己说「已转交给 X」，成员答案在它后面一条。
+// 视觉上刻意比答案轻：淡青底 + 无阴影，读起来像一句旁白，不像一份结论。
+// ---------------------------------------------------------------------------
+export const CHAT_DISPATCH_NOTICE_ROW_CLASS = 'flex justify-start';
+export const CHAT_DISPATCH_NOTICE_CLASS =
+  'inline-flex max-w-[min(680px,92%)] flex-wrap items-center gap-[7px] rounded-[12px] border-[0.5px] border-[#d8ece7] bg-[#f2faf8] px-[13px] py-[9px] text-[13px] leading-[1.6] text-[#40615b]';
+export const CHAT_DISPATCH_NOTICE_ROUTE_BADGE_CLASS =
+  'inline-flex shrink-0 items-center gap-[4px] rounded-[6px] bg-[#e1f1ed] px-[6px] py-[1px] text-[11px] font-medium leading-[1.5] text-[#0f7268]';
+export const CHAT_DISPATCH_NOTICE_TARGET_CLASS = 'font-medium text-[#0f7268]';
+export const CHAT_DISPATCH_NOTICE_INTENT_CLASS =
+  'min-w-0 truncate text-[11.5px] leading-[1.5] text-[#8b9c98]';
 // ---------------------------------------------------------------------------
 // Markdown answer (styled via child selectors, code delegates to CodeBlock)
 // ---------------------------------------------------------------------------

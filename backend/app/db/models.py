@@ -954,6 +954,12 @@ class AgentProfile(SQLModel, table=True):
     persona_prompt: Optional[str] = None
     is_overall: bool = Field(default=False, index=True)
     status: str = Field(default="active", index=True)
+    # Agent 类型:standard = 普通数字员工;dispatcher = 调度入口(纯路由,不配知识库/技能/工具)。
+    # 有 server_default,老行自动补齐为 standard,不需要数据回填。
+    kind: str = Field(
+        default="standard",
+        sa_column=Column(String, nullable=False, server_default="standard", index=True),
+    )
     harness_max_actions: int = Field(default=32)
     # 被使用次数:每新建一个会话 +1(站内与分享链接访客都计入),员工广场卡片展示。
     # 冗余计数列而非实时 count(sessions) —— 广场列表逐行 count 在远程 PG 上会退化成 N+1。
@@ -998,6 +1004,38 @@ class AgentModelBinding(SQLModel, table=True):
     agent_id: str = Field(index=True)
     role: str = Field(default="default", index=True)
     model_config_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class DispatcherMember(SQLModel, table=True):
+    """调度入口 → 下属数字员工 的绑定关系。
+
+    一个调度入口(AgentProfile.kind="dispatcher")最多挂 3 个成员;一个员工可以被多个入口引用
+    (所以是独立表 + 只锁 (dispatcher_agent_id, member_agent_id) 这一对)。
+    **禁止成员本身是 dispatcher** —— 天然封死嵌套与成环,见 dispatch/service.py 的校验。
+
+    routing_rule 是路由准确率的全部来源:什么情况转给他、什么情况「不要转给他」,
+    创建/编辑时由用户填,不在对话时让用户选。
+    """
+
+    __tablename__ = "dispatcher_members"
+    __table_args__ = (
+        UniqueConstraint("dispatcher_agent_id", "member_agent_id", name="uq_dispatcher_member"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("dmember"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    # 调度入口自身(AgentProfile.kind == "dispatcher")
+    dispatcher_agent_id: str = Field(index=True)
+    # 被路由到的数字员工(AgentProfile.kind == "standard")
+    member_agent_id: str = Field(index=True)
+    # 什么情况转给他;支持多行,支持「不要转给他」这类负向约束
+    routing_rule: str = Field(default="", sa_column=Column(String, nullable=False, server_default=""))
+    # 示例问法,帮路由模型对齐口径
+    example_queries_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    sort_order: int = Field(default=0)
+    status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

@@ -171,12 +171,18 @@ class _TurnRuntimeMixin:
         agent_id: str | None = None,
         role: str = "default",
         user_id: str | None = None,
+        *,
+        allow_free_model: bool = True,
     ) -> ModelConfig | None:
         # 免费链路:员工被管理员标记 + 用户在该角色上没有自己的模型 → 用租户的全局免费模型
         # (配额在发送入口 chat_stream 已校验并消耗;这里只做解析,所有角色统一落到免费模型)。
-        free_candidate = resolve_turn_default_model(self.db, tenant_id, agent_id, user_id, role)
-        if free_candidate is not None:
-            return resolve_model_config_for_runtime(self.db, tenant_id, free_candidate.id)
+        #
+        # allow_free_model=False 供调度委派使用:子 turn 明确「用谁的模型就走到底」,
+        # 不能被免费链路截胡(方案 §3)。route 决策与子 turn 都不许落免费模型。
+        if allow_free_model:
+            free_candidate = resolve_turn_default_model(self.db, tenant_id, agent_id, user_id, role)
+            if free_candidate is not None:
+                return resolve_model_config_for_runtime(self.db, tenant_id, free_candidate.id)
         return model_for_agent(self.db, tenant_id, agent_id, role, user_id=user_id)
 
     def _get_persona_prompt(self, tenant_id: str, agent_id: str | None = None) -> str | None:

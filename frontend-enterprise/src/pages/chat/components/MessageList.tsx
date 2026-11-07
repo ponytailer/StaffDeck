@@ -22,7 +22,7 @@ import {
 import { staffdeckDisplayText } from '@/employee';
 import type { UseChatSession } from '../useChatSession';
 import ChatEmptyState from './ChatEmptyState';
-import MessageBubble, { type MessageRender } from './MessageBubble';
+import MessageBubble, { dispatchAnswerInfo, type MessageRender } from './MessageBubble';
 import ScheduledDraftCard from './ScheduledDraftCard';
 import TeamCollaborationPanel, {
   mergeTeamChatTimeline,
@@ -197,6 +197,7 @@ export default function MessageList({
             harnessArtifacts,
             statusOnly,
             slotForm,
+            dispatchInfo: item.role === 'assistant' ? dispatchAnswerInfo(item) : null,
             traceTiming: item.role === 'assistant' && trace
               ? {
                 startedAt: trace.startedAt,
