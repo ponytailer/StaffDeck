@@ -17,7 +17,6 @@ import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import { RevealGroup } from '../components/RevealGroup';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
-import MyStaticAssetsPanel from '../components/MyStaticAssetsPanel';
 import TeamCard, { teamLeader } from '../components/TeamCard';
 import {
   canManageEmployeeAgent,
@@ -362,7 +361,6 @@ export default function EmployeeGalleryPage({
         <>
           <section aria-label="我的数字员工">{employeeGrid}</section>
           <MyCreatedSkillsPanel agents={agents} searchTerm={searchTerm} />
-          <MyStaticAssetsPanel searchTerm={searchTerm} />
         </>
       ) : (
         employeeGrid

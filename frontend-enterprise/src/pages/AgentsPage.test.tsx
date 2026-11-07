@@ -188,7 +188,7 @@ describe('AgentsPage 页面级 tab', () => {
     expect(await screen.findByText('小艾')).toBeTruthy();
   });
 
-  it('tab 顺序为 数字员工 / 技能管理 / 知识库 / 工具管理', async () => {
+  it('tab 顺序为 数字员工 / 技能管理 / 知识库 / 工具管理 / 静态资源', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
@@ -199,7 +199,7 @@ describe('AgentsPage 页面级 tab', () => {
     await screen.findByText('小艾');
     const labels = screen.getAllByRole('tab').map((tab) => tab.textContent?.trim());
     // 页面级 tab 在前，员工筛选 tab 紧随其后
-    expect(labels.slice(0, 4)).toEqual(['数字员工', '技能管理', '知识库', '工具管理']);
+    expect(labels.slice(0, 5)).toEqual(['数字员工', '技能管理', '知识库', '工具管理', '静态资源']);
     const importTabIndex = labels.indexOf('知识库');
     expect(importTabIndex).toBeLessThan(labels.indexOf('工具管理'));
   });
@@ -237,6 +237,90 @@ describe('AgentsPage 页面级 tab', () => {
     expect(await screen.findByText('我创建的技能')).toBeTruthy();
     // hash 路径默认在技能 tab，数字员工区不渲染
     expect(screen.queryByText('小艾')).toBeNull();
+    window.location.hash = '';
+  });
+});
+
+describe('AgentsPage 静态资源', () => {
+  function renderPage() {
+    return render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentsPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it('切到「静态资源」tab 才渲染面板，并请求 mine=1', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      if (url.includes('/api/enterprise/static-assets')) {
+        return jsonResponse({
+          items: [
+            {
+              id: 'sasset_1',
+              filename: '报销说明.txt',
+              content_type: 'text/plain',
+              size: 60,
+              sha256: 'a'.repeat(64),
+              status: 'active',
+              download_count: 2,
+              created_at: '2026-10-01T00:00:00Z',
+              path: '/f/tok123/%E6%8A%A5%E9%94%80%E8%AF%B4%E6%98%8E.txt',
+            },
+          ],
+          used_bytes: 60,
+          user_quota_bytes: 200 * 1024 * 1024,
+          max_file_bytes: 20 * 1024 * 1024,
+        });
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    // 默认在数字员工 tab：不该提前请求静态资源
+    expect((await screen.findByText('小艾')).textContent).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some((call) => String(call[0]).includes('/api/enterprise/static-assets')),
+    ).toBe(false);
+
+    await userEvent.click(screen.getByRole('tab', { name: '静态资源' }));
+
+    expect((await screen.findAllByText('报销说明.txt')).length).toBeGreaterThan(0);
+    const assetCalls = fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.includes('/api/enterprise/static-assets'));
+    expect(assetCalls.some((url) => url.includes('mine=1'))).toBe(true);
+  });
+
+  it('hash 带 #assets 时直接落在静态资源 tab', async () => {
+    window.location.hash = '#assets';
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([]);
+      if (url.includes('/api/enterprise/static-assets')) {
+        return jsonResponse({
+          items: [],
+          used_bytes: 0,
+          user_quota_bytes: 200 * 1024 * 1024,
+          max_file_bytes: 20 * 1024 * 1024,
+        });
+      }
+      return jsonResponse([]);
+    }));
+
+    renderPage();
+
+    expect(await screen.findByText('还没有上传过文件')).toBeTruthy();
+    // 不在数字员工 tab：员工统计区不渲染
+    expect(screen.queryByText('员工总数')).toBeNull();
     window.location.hash = '';
   });
 });

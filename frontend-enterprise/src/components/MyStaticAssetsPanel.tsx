@@ -83,7 +83,14 @@ function formatBytes(bytes: number): string {
  * 下载地址是公开的（免登录），所以必须在上传区显式提示不要放敏感文件 ——
  * 拿到链接的人都能下载，这是这个功能的固有代价，不是缺陷。
  */
-export default function MyStaticAssetsPanel({ searchTerm = '' }: { searchTerm?: string }) {
+export default function MyStaticAssetsPanel({
+  searchTerm = '',
+  embedded = false,
+}: {
+  searchTerm?: string;
+  /** 作为独立 tab 内容渲染时置 true：去掉顶部间距，由外层容器决定留白。 */
+  embedded?: boolean;
+}) {
   const [rows, setRows] = useState<StaticAssetRead[]>([]);
   const [usage, setUsage] = useState({ used: 0, quota: 0, maxFile: 0 });
   const [loading, setLoading] = useState(false);
@@ -276,7 +283,7 @@ export default function MyStaticAssetsPanel({ searchTerm = '' }: { searchTerm?: 
   }
 
   return (
-    <section aria-label="我的静态资源" className="mt-[40px]">
+    <section aria-label="我的静态资源" className={embedded ? undefined : 'mt-[40px]'}>
       <div className="mb-[14px] flex flex-wrap items-baseline gap-[8px]">
         <h2 className="text-[16px] font-semibold leading-[22px] text-[#18181a]">我的静态资源</h2>
         <span className="text-[12px] text-[#858b9c]">{rows.length} 个</span>
