@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -165,5 +166,115 @@ describe('DashboardPage hero metrics', () => {
 
     expect((await screen.findByText('小艾')).textContent).toBeTruthy();
     await waitFor(() => expect(heroMetricText('工具')).toBe('1工具'));
+  });
+});
+
+describe('DashboardPage dispatcher profile tabs', () => {
+  /**
+   * 真实反馈：「他的档案页面没法查看对话日志和定时任务」。
+   *
+   * 根因是 DispatcherProfileView 之前**没有页内 tab**，只按路由传进来的
+   * profileTab 决定渲染什么 —— 停在 /enterprise/dashboard 时恒为 work，
+   * 页面上没有任何入口能切到另外两块。这条测试把「页内 tab 存在且可切换」钉住。
+   */
+  const dispatcher = {
+    id: 'agent_disp',
+    tenant_id: 'tenant_demo',
+    name: '测试Multi',
+    description: '我是智能工作台，将问题转接给对应的专家',
+    kind: 'dispatcher',
+    status: 'active',
+    model_config_id: 'model-1',
+    model_name: 'deepseek-v4-flash',
+    usage_count: 3,
+    published_to_gallery: false,
+    members: [
+      {
+        member_agent_id: 'agent-1',
+        routing_rule: '安全、健康、环境相关的问题',
+        example_queries: [],
+        sort_order: 0,
+        status: 'active',
+        agent_name: '小安',
+        agent_status: 'active',
+        free_model_enabled: false,
+        has_own_model: false,
+      },
+    ],
+    config: {
+      fallback_mode: 'reply',
+      fallback_reply: '换个说法再试一次？',
+      default_member_agent_id: null,
+      offer_candidates: true,
+      min_confidence: 0.5,
+    },
+  };
+
+  function renderDispatcherProfile() {
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, dispatcher.id);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([dispatcher]);
+        if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+        // knowledge-bases 是分页包，页面读的是 `.items`；回落成裸数组会让
+        // `knowledgeBases.filter` 抛错、整棵树被卸载（tab 也跟着没了）。
+        if (url.includes('/api/enterprise/knowledge-bases')) {
+          return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
+        }
+        if (url.includes('/api/enterprise/feedback/summary')) {
+          return jsonResponse({ total_feedback: 0, up_count: 0, down_count: 0, bucket_counts: [] });
+        }
+        return jsonResponse([]);
+      }),
+    );
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <DashboardPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+              isAdmin
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it('档案页提供页内 tab，可切到定时任务与对话日志', async () => {
+    renderDispatcherProfile();
+
+    // 三个 tab 都在：档案总览 / 定时任务 / 对话日志
+    const tablist = await screen.findByLabelText('多智能体档案分区');
+    expect(tablist.textContent).toContain('档案总览');
+    expect(tablist.textContent).toContain('定时任务');
+    expect(tablist.textContent).toContain('对话日志');
+
+    // 多智能体不该出现它根本不配的四块
+    expect(tablist.textContent).not.toContain('知识库');
+    expect(tablist.textContent).not.toContain('SOP');
+    expect(tablist.textContent).not.toContain('记忆');
+
+    // 默认落在档案总览：成员与路由规则可见
+    expect(await screen.findByText(/成员与路由规则/)).toBeTruthy();
+    expect(screen.getByText('小安')).toBeTruthy();
+
+    // 点「定时任务」→ 真的渲染任务面板（不再是档案总览）。
+    // Radix Tabs 的 Trigger 靠 mousedown 激活，fireEvent.click 不够，必须 userEvent。
+    const user = userEvent.setup();
+    await user.click(within(tablist).getByText('定时任务'));
+    // 空任务表 → 用空态文案断言（桌面表格 + 移动卡片各渲染一份，用 findAll）
+    expect((await screen.findAllByText('暂无定时任务')).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.queryByText(/成员与路由规则/)).toBeNull());
+
+    // 点「对话日志」→ 渲染对话日志面板
+    await user.click(within(tablist).getByText('对话日志'));
+    expect(await screen.findByText('对话用户')).toBeTruthy();
+
+    // 切回档案总览仍然可用
+    await user.click(within(tablist).getByText('档案总览'));
+    expect(await screen.findByText(/成员与路由规则/)).toBeTruthy();
   });
 });

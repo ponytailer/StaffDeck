@@ -45,16 +45,18 @@ export default function DispatcherCard({
         <span className="grid size-[38px] shrink-0 place-items-center rounded-[12px] bg-[#e1f1ed] text-[#0f7268]">
           <DispatcherGlyph className="size-[20px]" />
         </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-[6px]">
-            <span className="truncate text-[14px] font-semibold text-[#18181a]">
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* 名称与徽标同行：名称可截断（min-w-0 + truncate），徽标 flex-none 不许被压。
+              反过来写（徽标也参与收缩）时，长名字会把「路由/广场」挤成两行。 */}
+          <div className="flex min-w-0 items-center gap-[6px]">
+            <span className="min-w-0 truncate text-[14px] font-semibold text-[#18181a]">
               {dispatcher.name}
             </span>
-            <span className="shrink-0 rounded-[5px] bg-[#f0f1f4] px-[5px] py-[1px] text-[10px] text-[#757f9c]">
+            <span className="flex-none rounded-[5px] bg-[#f0f1f4] px-[5px] py-[1px] text-[10px] text-[#757f9c]">
               路由
             </span>
             {published && (
-              <span className="shrink-0 rounded-[5px] bg-[#e1f1ed] px-[5px] py-[1px] text-[10px] text-[#0f7268]">
+              <span className="flex-none rounded-[5px] bg-[#e1f1ed] px-[5px] py-[1px] text-[10px] text-[#0f7268]">
                 广场
               </span>
             )}
@@ -96,7 +98,7 @@ export default function DispatcherCard({
                 </span>
                 <span
                   className={cn(
-                    'shrink-0 text-[10px]',
+                    'shrink-0 whitespace-nowrap text-[10px]',
                     noRule ? 'text-[#c08a3e]' : 'text-[#c3c9d6]',
                   )}
                 >
@@ -127,44 +129,50 @@ export default function DispatcherCard({
         )}
       </div>
 
-      <div className="mt-auto flex items-center gap-[6px] pt-[12px]">
+      {/* 按钮分两行：主行动「去对话」独占一行，管理动作在下一行。
+          原先四个按钮挤在一行，卡片落到 3 列以下宽度时「去对话」被压成竖排
+          并溢出卡片、「从广场下架」折成两行 —— 真实反馈「有些文字溢出边框」。
+          两行后每个按钮都有确定的宽度，窄屏也不会变形，顺带把主次分清了。 */}
+      <div className="mt-auto flex flex-col gap-[6px] pt-[12px]">
         <button
           type="button"
           disabled={busy}
           onClick={onChat}
-          className="h-[30px] flex-1 rounded-[8px] bg-[#18181a] text-[12px] text-white transition-colors hover:bg-[#303030] disabled:opacity-50"
+          className="h-[32px] w-full whitespace-nowrap rounded-[8px] bg-[#18181a] text-[12px] text-white transition-colors hover:bg-[#303030] disabled:opacity-50"
         >
           {busy ? '打开中…' : '去对话'}
         </button>
-        <button
-          type="button"
-          disabled={publishing || (!published && !canPublish)}
-          onClick={() => onGallery(!published)}
-          title={!published && !canPublish ? '先添加同事才能发布到广场' : undefined}
-          className={cn(
-            'h-[30px] rounded-[8px] border px-[10px] text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-45',
-            published
-              ? 'border-[#cfe3de] bg-[#f2f9f7] text-[#0f7268] hover:border-[#b3d5cd]'
-              : 'border-[#e3e7f1] text-[#757f9c] hover:border-[#cbd3e6] hover:text-[#18181a]',
-          )}
-        >
-          {publishing ? '处理中…' : published ? '从广场下架' : '发布到广场'}
-        </button>
-        <button
-          type="button"
-          onClick={onEdit}
-          className="h-[30px] rounded-[8px] border border-[#e3e7f1] px-[10px] text-[12px] text-[#757f9c] transition-colors hover:border-[#cbd3e6] hover:text-[#18181a]"
-        >
-          配置
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          aria-label={`删除 ${dispatcher.name}`}
-          className="h-[30px] rounded-[8px] border border-transparent px-[8px] text-[12px] text-[#c3c9d6] transition-colors hover:border-[#f5d5d5] hover:text-[#dc2626]"
-        >
-          删除
-        </button>
+        <div className="flex items-center gap-[6px]">
+          <button
+            type="button"
+            disabled={publishing || (!published && !canPublish)}
+            onClick={() => onGallery(!published)}
+            title={!published && !canPublish ? '先添加同事才能发布到广场' : undefined}
+            className={cn(
+              'h-[30px] flex-1 whitespace-nowrap rounded-[8px] border px-[8px] text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-45',
+              published
+                ? 'border-[#cfe3de] bg-[#f2f9f7] text-[#0f7268] hover:border-[#b3d5cd]'
+                : 'border-[#e3e7f1] text-[#757f9c] hover:border-[#cbd3e6] hover:text-[#18181a]',
+            )}
+          >
+            {publishing ? '处理中…' : published ? '从广场下架' : '发布到广场'}
+          </button>
+          <button
+            type="button"
+            onClick={onEdit}
+            className="h-[30px] shrink-0 whitespace-nowrap rounded-[8px] border border-[#e3e7f1] px-[10px] text-[12px] text-[#757f9c] transition-colors hover:border-[#cbd3e6] hover:text-[#18181a]"
+          >
+            配置
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            aria-label={`删除 ${dispatcher.name}`}
+            className="h-[30px] shrink-0 whitespace-nowrap rounded-[8px] border border-transparent px-[8px] text-[12px] text-[#c3c9d6] transition-colors hover:border-[#f5d5d5] hover:text-[#dc2626]"
+          >
+            删除
+          </button>
+        </div>
       </div>
     </div>
   );

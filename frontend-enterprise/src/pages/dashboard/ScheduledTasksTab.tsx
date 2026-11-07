@@ -212,6 +212,10 @@ export default function ScheduledTasksTab() {
     {
       key: 'title',
       title: '定时任务',
+      // 必须给宽度：DataTable 只在「所有列都有 width」时才把 minWidth 接到 table 上。
+      // 首列缺宽度 + 其余列合计 820px，在 1280 宽下 table-fixed 会把首列算成 0，
+      // 而表头是 whitespace-nowrap，于是「定时任务」直接压在「计划」上（真实截图确认）。
+      width: 240,
       className: 'whitespace-normal',
       render: (row) => (
         <div className="flex min-w-0 flex-col gap-[4px]">
@@ -273,6 +277,8 @@ export default function ScheduledTasksTab() {
     {
       key: 'result',
       title: '结果',
+      // 缺宽度的列会让 DataTable 整表 minWidth 失效，窄屏时列被压扁 → 表头叠字。
+      width: 200,
       className: 'whitespace-normal',
       render: (row) => (
         <span className="wrap-break-word">{row.result_summary || row.error || '暂无'}</span>
@@ -324,6 +330,8 @@ export default function ScheduledTasksTab() {
     {
       key: 'result',
       title: '结果',
+      // 同上：缺宽度的列会让 DataTable 整表 minWidth 失效 → 窄屏表头叠字。
+      width: 200,
       className: 'whitespace-normal',
       render: (row) => (
         <span className="wrap-break-word">{row.result_summary || row.error || '暂无'}</span>

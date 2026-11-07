@@ -523,24 +523,17 @@ function DispatcherProfileView({
   const members = dispatcher.members;
   const sessionCount = sessions.filter((item) => item.agent_id === dispatcher.id).length;
   const missingRule = members.filter((item) => !item.routing_rule.trim()).length;
-  // 侧栏「对话日志 / 定时任务」对多智能体是成立的；只有 knowledge/sop/skills/tools
-  // 这四个它根本不配的分区才需要落回档案说明。
-  if (profileTab === 'logs') {
-    return (
-      <div className="min-h-full w-full min-w-0 max-w-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
-        <AppHeader onLogout={onLogout} userName={userName} left={<DispatcherHeaderTitle dispatcher={dispatcher} />} />
-        <ConversationLogsTab />
-      </div>
-    );
-  }
-  if (profileTab === 'scheduled') {
-    return (
-      <div className="min-h-full w-full min-w-0 max-w-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
-        <AppHeader onLogout={onLogout} userName={userName} left={<DispatcherHeaderTitle dispatcher={dispatcher} />} />
-        <ScheduledTasksTab />
-      </div>
-    );
-  }
+
+  // 多智能体只有这三块成立：总览 / 定时任务 / 对话日志。
+  // 之前这里**没有页内 tab**，只按路由传进来的 profileTab 决定渲染什么 ——
+  // 停在 /enterprise/dashboard 时 profileTab 恒为 work，页面上没有任何入口能切到
+  // 另外两块（真实反馈「档案页面没法查看对话日志和定时任务」）。
+  const [activeTab, setActiveTab] = useState<DispatcherTabKey>(() =>
+    isDispatcherTab(profileTab) ? profileTab : 'work',
+  );
+  useEffect(() => {
+    if (isDispatcherTab(profileTab)) setActiveTab(profileTab);
+  }, [profileTab]);
 
   return (
     <div className="min-h-full w-full min-w-0 max-w-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
@@ -574,11 +567,11 @@ function DispatcherProfileView({
             </div>
 
             <div className="flex min-w-[280px] flex-1 flex-col gap-2">
-              <div className="flex items-end gap-2">
+              <div className="flex flex-wrap items-end gap-2">
                 <h2 className="m-0 text-[22px] leading-none font-semibold text-[#18181a]">
                   {dispatcher.name}
                 </h2>
-                <span className="rounded-[5px] bg-[#e1f1ed] px-[6px] py-[2px] text-[11px] leading-none text-[#0f7268]">
+                <span className="whitespace-nowrap rounded-[5px] bg-[#e1f1ed] px-[6px] py-[2px] text-[11px] leading-none text-[#0f7268]">
                   多智能体 · 纯路由
                 </span>
               </div>
@@ -600,7 +593,7 @@ function DispatcherProfileView({
                   累计转接：{dispatcher.usage_count} 次
                 </span>
                 {missingRule > 0 && (
-                  <span className="rounded-[5px] bg-[#fdf6ec] px-[6px] py-[2px] text-[11px] text-[#8a5a12]">
+                  <span className="whitespace-nowrap rounded-[5px] bg-[#fdf6ec] px-[6px] py-[2px] text-[11px] text-[#8a5a12]">
                     {missingRule} 位缺路由规则
                   </span>
                 )}
@@ -620,73 +613,118 @@ function DispatcherProfileView({
           </div>
         )}
       />
-      <div className="mt-[20px] grid gap-[12px] pl-[226px] max-[900px]:pl-1">
-        <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] font-medium text-[#18181a]">
-              成员与路由规则 · {members.length}/{MAX_DISPATCH_MEMBERS}
-            </span>
-            <button
-              type="button"
-              onClick={onConfigure}
-              className="text-[12px] text-[#0f7268] hover:underline"
-            >
-              去配置
-            </button>
-          </div>
-          <div className="mt-[12px] flex flex-col gap-[10px]">
-            {members.length === 0 && (
-              <span className="text-[12.5px] text-[#8a5a12]">
-                还没有成员，所有问题都会走兜底。至少添加 {MAX_DISPATCH_MEMBERS > 1 ? 2 : 1} 位同事才有路由意义。
+
+      <DispatcherProfileTabs value={activeTab} onChange={setActiveTab} />
+
+      {activeTab === 'work' && (
+        // 不再用 pl-[226px] 对齐头像列：窄屏时 hero 会换成竖排，那个固定缩进
+        // 把卡片整体推向右侧、左边留一大片空白（真实截图确认过）。
+        <div className="mt-[20px] grid gap-[12px]">
+          <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
+            <div className="flex items-center justify-between gap-[12px]">
+              <span className="min-w-0 truncate text-[13px] font-medium text-[#18181a]">
+                成员与路由规则 · {members.length}/{MAX_DISPATCH_MEMBERS}
               </span>
-            )}
-            {members.map((member, index) => (
-              <div key={member.member_agent_id} className="flex items-start gap-[10px]">
-                <span className="mt-[1px] grid size-[20px] shrink-0 place-items-center rounded-[6px] bg-[#f0f1f4] text-[10.5px] font-medium text-[#9aa1b1]">
-                  {index + 1}
+              <button
+                type="button"
+                onClick={onConfigure}
+                className="shrink-0 whitespace-nowrap text-[12px] text-[#0f7268] hover:underline"
+              >
+                去配置
+              </button>
+            </div>
+            <div className="mt-[12px] flex flex-col gap-[10px]">
+              {members.length === 0 && (
+                <span className="text-[12.5px] leading-[1.6] text-[#8a5a12]">
+                  还没有成员，所有问题都会走兜底。至少添加 {MAX_DISPATCH_MEMBERS > 1 ? 2 : 1} 位同事才有路由意义。
                 </span>
-                <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                  <span className="flex items-center gap-[6px] text-[13px] text-[#18181a]">
-                    {member.agent_name}
-                    {member.has_own_model && (
-                      <span className="rounded-[4px] bg-[#f2f9f7] px-[4px] py-[1px] text-[10px] text-[#0f7268]">
-                        自有模型
-                      </span>
-                    )}
+              )}
+              {members.map((member, index) => (
+                <div key={member.member_agent_id} className="flex items-start gap-[10px]">
+                  <span className="mt-[1px] grid size-[20px] shrink-0 place-items-center rounded-[6px] bg-[#f0f1f4] text-[10.5px] font-medium text-[#9aa1b1]">
+                    {index + 1}
                   </span>
-                  <span className="text-[12px] leading-[1.5] text-[#757f9c]">
-                    {member.routing_rule.trim() || '还没写「什么情况交给他」，这一位基本选不中。'}
-                  </span>
+                  <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                    <span className="flex min-w-0 flex-wrap items-center gap-[6px] text-[13px] text-[#18181a]">
+                      <span className="min-w-0 truncate">{member.agent_name}</span>
+                      {member.has_own_model && (
+                        <span className="shrink-0 whitespace-nowrap rounded-[4px] bg-[#f2f9f7] px-[4px] py-[1px] text-[10px] text-[#0f7268]">
+                          自有模型
+                        </span>
+                      )}
+                    </span>
+                    <span className="min-w-0 break-words text-[12px] leading-[1.5] text-[#757f9c]">
+                      {member.routing_rule.trim() || '还没写「什么情况交给他」，这一位基本选不中。'}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+          </div>
+          <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
+            <span className="text-[13px] font-medium text-[#18181a]">模型</span>
+            <p className="mt-[8px] m-0 break-words text-[12.5px] leading-[1.7] text-[#757f9c]">
+              路由判断用 {dispatcher.model_name || '（未配置）'}；成员自己配了模型就走自己的，
+              没配才用入口这个。多智能体不参与免费额度。
+            </p>
           </div>
         </div>
-        <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
-          <span className="text-[13px] font-medium text-[#18181a]">模型</span>
-          <p className="mt-[8px] m-0 text-[12.5px] leading-[1.7] text-[#757f9c]">
-            路由判断用 {dispatcher.model_name || '（未配置）'}；成员自己配了模型就走自己的，
-            没配才用入口这个。多智能体不参与免费额度。
-          </p>
+      )}
+      {activeTab === 'scheduled' && (
+        <div className="mt-[20px]">
+          <ScheduledTasksTab />
         </div>
-      </div>
+      )}
+      {activeTab === 'logs' && (
+        <div className="mt-[20px]">
+          <ConversationLogsTab />
+        </div>
+      )}
     </div>
   );
 }
 
-function DispatcherHeaderTitle({ dispatcher }: { dispatcher: DispatcherRead }) {
+/** 多智能体能成立的分区（其余部分它本来就不配，不该出现在 tab 里）。 */
+type DispatcherTabKey = 'work' | 'scheduled' | 'logs';
+
+const DISPATCHER_TABS: { key: DispatcherTabKey; label: string; Icon: ComponentType<SVGProps<SVGSVGElement>> }[] = [
+  { key: 'work', label: '档案总览', Icon: IconProfileFile },
+  { key: 'scheduled', label: '定时任务', Icon: IconProfileAlarm },
+  { key: 'logs', label: '对话日志', Icon: IconProfileCalendar },
+];
+
+function isDispatcherTab(key: ProfileTabKey): key is DispatcherTabKey {
+  return key === 'work' || key === 'scheduled' || key === 'logs';
+}
+
+const PROFILE_TAB_TRIGGER_CLASS =
+  'h-[35px] flex-none gap-[6px] rounded-t-lg rounded-b-none border-0 px-[18px] text-[12px] font-bold whitespace-nowrap text-[#8b94aa] hover:text-[#202226] data-[state=active]:bg-white data-[state=active]:text-[#202226] data-[state=active]:shadow-[0_-12px_28px_rgba(21,26,38,0.04)] in-data-[theme=dark]:text-[#8f98aa] in-data-[theme=dark]:hover:text-[#f0f2f6] in-data-[theme=dark]:data-[state=active]:bg-[#202126] in-data-[theme=dark]:data-[state=active]:text-[#c5ccd8] in-data-[theme=dark]:data-[state=active]:shadow-none';
+
+function DispatcherProfileTabs({
+  value,
+  onChange,
+}: {
+  value: DispatcherTabKey;
+  onChange: (value: DispatcherTabKey) => void;
+}) {
   return (
-    <div className="flex items-center gap-[10px] pt-1 pl-1">
-      <span className="grid size-[34px] place-items-center rounded-[10px] bg-[#e1f1ed] text-[#0f7268]">
-        <DispatcherGlyph className="size-[18px]" />
-      </span>
-      <div className="flex flex-col gap-[2px]">
-        <h2 className="m-0 text-[18px] leading-none font-semibold text-[#18181a]">{dispatcher.name}</h2>
-        <span className="text-[11px] leading-none text-[#757f9c]">
-          多智能体 · {dispatcher.members.length}/{MAX_DISPATCH_MEMBERS} 位同事
-        </span>
-      </div>
-    </div>
+    <Tabs
+      value={value}
+      onValueChange={(next) => onChange(next as DispatcherTabKey)}
+      className="flex w-full flex-col items-start"
+    >
+      <TabsList
+        aria-label="多智能体档案分区"
+        className="h-[35px]! max-w-full gap-1 overflow-x-auto rounded-none bg-transparent p-0 scrollbar-hide"
+      >
+        {DISPATCHER_TABS.map(({ key, label, Icon }) => (
+          <TabsTrigger key={key} value={key} className={PROFILE_TAB_TRIGGER_CLASS}>
+            <Icon />
+            {label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   );
 }
 
@@ -758,11 +796,7 @@ function EmployeeProfileTabs({ value, onChange }: { value: ProfileTabKey; onChan
         className="h-[35px]! max-w-full gap-1 overflow-x-auto rounded-none bg-transparent p-0 scrollbar-hide"
       >
         {PROFILE_TABS.map(({ key, label, Icon }) => (
-          <TabsTrigger
-            key={key}
-            value={key}
-            className="h-[35px] flex-none gap-[6px] rounded-t-lg rounded-b-none border-0 px-[18px] text-[12px] font-bold whitespace-nowrap text-[#8b94aa] hover:text-[#202226] data-[state=active]:bg-white data-[state=active]:text-[#202226] data-[state=active]:shadow-[0_-12px_28px_rgba(21,26,38,0.04)] in-data-[theme=dark]:text-[#8f98aa] in-data-[theme=dark]:hover:text-[#f0f2f6] in-data-[theme=dark]:data-[state=active]:bg-[#202126] in-data-[theme=dark]:data-[state=active]:text-[#c5ccd8] in-data-[theme=dark]:data-[state=active]:shadow-none"
-          >
+          <TabsTrigger key={key} value={key} className={PROFILE_TAB_TRIGGER_CLASS}>
             <Icon />
             {label}
           </TabsTrigger>
