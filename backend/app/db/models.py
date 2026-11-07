@@ -2026,3 +2026,36 @@ class UserNotification(SQLModel, table=True):
     read_at: Optional[datetime] = None
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class StaticAsset(SQLModel, table=True):
+    """个人静态资源：上传后得到一个稳定的公开下载地址。
+
+    与知识库的区别：知识库把文件拆成段落喂给模型读；这里是把原文件原样给用户下载。
+    因此正文不进检索，只提供地址。
+
+    token 是对外的唯一定位符（不可枚举、12 字符），``status=deleted`` 后下载端点
+    返回 410 而不是 404 —— 便于区分「被删了」与「从来没存在过」。
+    """
+
+    __tablename__ = "static_assets"
+    __table_args__ = (
+        Index("ix_static_assets_tenant_owner", "tenant_id", "owner_user_id"),
+        Index("ix_static_assets_tenant_sha", "tenant_id", "sha256"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("sasset"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    owner_user_id: str = Field(index=True)
+    token: str = Field(sa_column=Column(String, nullable=False, unique=True))
+    filename: str
+    content_type: str = Field(default="application/octet-stream")
+    size: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    sha256: str = Field(index=True)
+    status: str = Field(default="active", index=True)
+    download_count: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default="0")
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    deleted_at: Optional[datetime] = None

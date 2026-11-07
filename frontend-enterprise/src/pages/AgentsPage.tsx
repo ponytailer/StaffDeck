@@ -23,6 +23,7 @@ import DispatcherCard from '../components/dispatcher/DispatcherCard';
 import DispatcherEditorDialog from '../components/dispatcher/DispatcherEditorDialog';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import MyCreatedToolsPanel from '../components/MyCreatedToolsPanel';
+import MyStaticAssetsPanel from '../components/MyStaticAssetsPanel';
 import KnowledgeManagePage from './KnowledgePage';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import { RevealGroup } from '../components/RevealGroup';
@@ -87,16 +88,17 @@ export default function AgentsPage({
   const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline'>('all');
-  // 页面级 tab：数字员工 / 多智能体 / 技能管理 / 知识库 / 工具管理。
+  // 页面级 tab：数字员工 / 多智能体 / 技能管理 / 知识库 / 工具管理 / 静态资源。
   // 多智能体是与员工并列的一等对象（不是员工的一种），所以给它独立 tab，
-  // 顺序紧跟数字员工、排在技能管理之前。
+  // 顺序紧跟数字员工、排在技能管理之前；静态资源与技能/工具面板同构，排最后。
   const [pageTab, setPageTab] = useState<
-    'employees' | 'dispatchers' | 'skills' | 'knowledge' | 'tools'
+    'employees' | 'dispatchers' | 'skills' | 'knowledge' | 'tools' | 'assets'
   >(() => {
     if (window.location.hash.includes('dispatchers')) return 'dispatchers';
     if (window.location.hash.includes('knowledge')) return 'knowledge';
     if (window.location.hash.includes('skills')) return 'skills';
     if (window.location.hash.includes('tools')) return 'tools';
+    if (window.location.hash.includes('assets')) return 'assets';
     return 'employees';
   });
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
@@ -113,6 +115,7 @@ export default function AgentsPage({
     if (hash.startsWith('dispatchers')) setPageTab('dispatchers');
     else if (hash.startsWith('skills')) setPageTab('skills');
     else if (hash.startsWith('knowledge')) setPageTab('knowledge');
+    else if (hash.startsWith('assets')) setPageTab('assets');
     else if (hash.startsWith('tools')) setPageTab('tools');
   }, [location.hash]);
 
@@ -388,6 +391,7 @@ export default function AgentsPage({
           { value: 'skills', label: '技能管理' },
           { value: 'knowledge', label: '知识库' },
           { value: 'tools', label: '工具管理' },
+          { value: 'assets', label: '静态资源' },
         ]}
       />
 
@@ -547,7 +551,7 @@ export default function AgentsPage({
           {/* 知识库不再跟绑数字员工：个人空间在页内直接复用完整知识库页（表、图谱、检索调试）。 */}
           <KnowledgeManagePage embedded mode="personal" currentUser={currentUser} onLogout={onLogout} />
         </div>
-      ) : (
+      ) : pageTab === 'tools' ? (
         <div className="mt-[24px]">
           <div className="flex flex-wrap items-center justify-end gap-[10px] mb-[16px]">
             <UIButton
@@ -569,6 +573,11 @@ export default function AgentsPage({
           </div>
           {/* 我创建的工具：跨作用域汇总（广场工具 + 挂在员工下的工具）。 */}
           <MyCreatedToolsPanel agents={agents} />
+        </div>
+      ) : (
+        <div className="mt-[24px]">
+          {/* 静态资源：上传即得一个固定下载地址，可粘进知识库让员工把链接回给用户。 */}
+          <MyStaticAssetsPanel embedded />
         </div>
       )}
       <EmployeeAvatarEditor

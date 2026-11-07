@@ -34,6 +34,7 @@ from app.api import (
     scheduled_tasks,
     sessions,
     skills,
+    static_assets,
     teams,
     tool_access,
     tools,
@@ -178,6 +179,8 @@ app.include_router(general_skill_shares.public_router)
 app.include_router(knowledge_bases.router)
 app.include_router(knowledge.router)
 app.include_router(skills.router)
+app.include_router(static_assets.router)
+app.include_router(static_assets.public_router)
 app.include_router(model_configs.router)
 app.include_router(plaza_news.router)
 app.include_router(plaza_hot.router)
