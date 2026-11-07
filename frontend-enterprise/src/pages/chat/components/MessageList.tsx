@@ -6,8 +6,11 @@ import {
 import {
   CHAT_TRACE_RECOVERY_WINDOW_MS,
   a2uiFormForMessage,
+  buildTurnAliasMap,
+  canonicalMessageTurnId,
   createdScheduledTaskForMessage,
   harnessWorkspaceArtifacts,
+  isDispatchNotice,
   isScheduledTaskPrompt,
   knowledgeCitations,
   messageAttachments,
@@ -59,6 +62,27 @@ export default function MessageList({
     hideKnowledgeCitations = false,
   } = chat;
   const renderMessages = placeQueuedMessagesLast(displayedMessages);
+  // 同一轮里已经出现过「路由 · 已转交给 X」气泡时，答案气泡不再重复挂
+  // 「由 X 回答」chip —— 两者表达的是同一件事（谁、为什么），并存会让用户
+  // 误读成「有两条转接记录」（用户截图反馈）。
+  // 只在**同轮**抑制：没有转接气泡的轮次（历史会话、普通员工）chip 依旧保留。
+  // 注意必须走 alias 映射：SSE 那条可能是本地 `turn_xxx`，回放那条是服务端
+  // `msg_xxx`，直接比 id 认不出同一轮。
+  const aliasMap = buildTurnAliasMap(renderMessages);
+  const turnsWithDispatchNotice = new Set<string>();
+  renderMessages.forEach((messageItem) => {
+    if (!isDispatchNotice(messageItem)) return;
+    const turnId = canonicalMessageTurnId(messageItem, aliasMap);
+    if (turnId) turnsWithDispatchNotice.add(turnId);
+  });
+  const dispatchInfoFor = (messageItem: (typeof renderMessages)[number]) => {
+    if (messageItem.role !== 'assistant') return null;
+    if (turnsWithDispatchNotice.size > 0) {
+      const turnId = canonicalMessageTurnId(messageItem, aliasMap);
+      if (turnId && turnsWithDispatchNotice.has(turnId)) return null;
+    }
+    return dispatchAnswerInfo(messageItem);
+  };
   const teamCollaborations = useTeamCollaborations(chat.displayedTeam);
   const timelineEntries = mergeTeamChatTimeline(renderMessages, teamCollaborations);
 
@@ -197,7 +221,7 @@ export default function MessageList({
             harnessArtifacts,
             statusOnly,
             slotForm,
-            dispatchInfo: item.role === 'assistant' ? dispatchAnswerInfo(item) : null,
+            dispatchInfo: dispatchInfoFor(item),
             traceTiming: item.role === 'assistant' && trace
               ? {
                 startedAt: trace.startedAt,

@@ -273,9 +273,9 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
           )}
           {/* 调度入口的答案来自某位同事：明确标出来，否则用户会以为入口自己在答。
               放在正文上方而不是下面——读者要先知道「谁在说话」。
-              **这个归属 chip 是保留项**：用户明确认为它是对的，即使前面已经有
-              「路由 · 已转交给 X」的气泡也不要去掉（转接气泡说的是「派给谁」，
-              chip 说的是「这段内容是谁写的」，两者不重复）。 */}
+              **同轮去重由 MessageList 负责**：一轮里已经渲染过「路由 · 已转交给 X」
+              气泡时，MessageList 会把 dispatchInfo 置空、不再挂这个 chip（用户反馈：
+              两者并存看起来像「有两段转接记录」）。本组件只负责渲染，不做跨组件判断。 */}
           {item.role === 'assistant' && dispatchInfo && !statusOnly && (
             <div className="mb-[7px] flex flex-wrap items-center gap-[5px] text-[11.5px]">
               <span className="inline-flex items-center gap-[4px] rounded-[6px] bg-[#e1f1ed] px-[6px] py-[2px] text-[#0f7268]">

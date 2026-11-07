@@ -835,32 +835,53 @@ export function isStreamingMessageId(messageId: string, sessionId: string): bool
   return messageId === prefix || messageId.startsWith(`${prefix}_`);
 }
 
+/**
+ * 确保这一轮有一个流式气泡「载体」（用来挂 trace / 耗时）。
+ *
+ * **绝不能用空正文覆盖已有正文**（真实踩过）：`loadTraces` 每次刷新只要发现
+ * 本轮有可见 trace 就会调这里，而它以前无条件写 `content: ''`。转接路径下
+ * 子 turn 的增量早已把正文流进来（`stream.accumulated`），于是每轮 trace 轮询
+ * 都会把答案正文清空一次、下一次 delta 又补回来 —— 用户看到的就是
+ * 「答案流式输出完突然消失，几秒后又出现」（每 ~1.5s 闪一次）。
+ *
+ * 正确语义：只在没有气泡时新建一个空载体；已有气泡时**保留它的正文**，
+ * 只补齐 id / turnId / isStreaming 这些结构字段。
+ */
 export function upsertStreamingTracePlaceholder(slot: SessionSlot, sessionId: string, turnId: string): boolean {
   if (!turnId) return false;
   const streamId = streamingMessageId(sessionId, turnId);
-  const streamingMessage: ChatMessage = {
-    id: streamId,
-    turnId,
-    role: 'assistant',
-    content: '',
-    created_at: timestampAfterMessage(latestUserMessageForTurn(slot, turnId)),
-    isStreaming: true,
-  };
   const index = slot.realtimeMessages.findIndex((item) => item.id === streamId);
   if (index >= 0) {
     const current = slot.realtimeMessages[index];
-    if (
-      current.turnId === streamingMessage.turnId
-      && current.isStreaming
-      && current.content === streamingMessage.content
-    ) {
+    // 已有正文时是「有内容的流式气泡」，不是占位符：什么都不用改。
+    if (current.turnId === turnId && current.isStreaming && normalizeMessageText(current.content)) {
       return false;
     }
+    if (current.turnId === turnId && current.isStreaming) return false;
+    const patched: ChatMessage = {
+      ...current,
+      id: streamId,
+      turnId,
+      // **关键：保留已有正文**，不要把 content 置空。
+      content: current.content || '',
+      created_at: current.created_at || timestampAfterMessage(latestUserMessageForTurn(slot, turnId)),
+      isStreaming: true,
+    };
     slot.realtimeMessages = [...slot.realtimeMessages];
-    slot.realtimeMessages[index] = { ...current, ...streamingMessage, created_at: current.created_at || streamingMessage.created_at };
+    slot.realtimeMessages[index] = patched;
     return true;
   }
-  slot.realtimeMessages = [...slot.realtimeMessages, streamingMessage];
+  slot.realtimeMessages = [
+    ...slot.realtimeMessages,
+    {
+      id: streamId,
+      turnId,
+      role: 'assistant',
+      content: '',
+      created_at: timestampAfterMessage(latestUserMessageForTurn(slot, turnId)),
+      isStreaming: true,
+    },
+  ];
   return true;
 }
 
@@ -1130,12 +1151,27 @@ export function computeMergedMessages(slot: SessionSlot, activeTurnId?: string |
     }
   });
 
+  // 同一轮只保留**一条**「已转交给 X」气泡。上游已经按 id / alias 判重，但
+  // notice 会从三条路进来（SSE 实时、会话事件回放、刷新后服务端消息池），
+  // 任一条路径漏判就会在同一轮叠出两条，用户看到就是「有两段转接记录」。
+  // 这里做渲染层兜底：按 canonical turn id 归组，每组只放第一条通过。
+  const seenNoticeTurns = new Set<string>();
   return sorted
     .filter((entry) => {
       if (entry.messageItem.role !== 'assistant') return true;
       // 转接通知不参与上面的「一条 assistant」选举，所以这里也必须放行，
       // 否则它会被当作落选者剔除，只剩答案一条（真实踩过）。
-      if (isDispatchNotice(entry.messageItem)) return true;
+      if (isDispatchNotice(entry.messageItem)) {
+        const noticeTurnId = canonicalMessageTurnId(entry.messageItem, aliasMap)
+          || entry.messageItem.turnId
+          || metadataString(entry.messageItem, 'client_turn_id')
+          || '';
+        // 认不出轮次时不抑制（宁可多显示也不能把唯一的通知吞掉）。
+        if (!noticeTurnId) return true;
+        if (seenNoticeTurns.has(noticeTurnId)) return false;
+        seenNoticeTurns.add(noticeTurnId);
+        return true;
+      }
       const turnId = canonicalMessageTurnId(entry.messageItem, aliasMap);
       if (!turnId) return true;
       return selectedAssistantByTurn.get(turnId)?.messageItem === entry.messageItem;

@@ -1286,6 +1286,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       item.metadata?.queued !== true
       && item.metadata?.message_visibility !== 'internal'
     ));
+    // 注意：同轮「转接气泡 + 由 X 回答 chip」的去重**不在这里做**，
+    // 而是在 MessageList 的 `dispatchInfoFor()` 里——那里才拿得到最终渲染顺序
+    // 与完整的 alias 映射（本轮要先知道哪些轮次有转接气泡，才能决定是否挂 chip）。
     const queued = queuedTurnsRef.current
       .filter((turn) => turn.conversationId === activeConversationId)
       .map(queuedTurnPreview);
@@ -2363,24 +2366,62 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         const slot = getSlot(eventSessionId);
         // 实时这条和服务端那条 id 不同（服务端是 msg_xxx），所以不能用 id 去重。
         // 判重口径：同一轮里已有转接通知就不再追加——否则刷新/回放会叠出两条。
+        //
+        // **必须走 alias 归一**（真实踩过）：`dispatch_notice` 会从两条路各来一次
+        // （SSE 实时 + pollScheduledSessionEvents 回放），而两次拿到的 turn id
+        // 可能一个是本地 `turn_xxx`、一个是服务端 `msg_xxx`。以前直接用
+        // `turnId === traceTurnId` 比较 → 认不出同一轮 → 叠出两条「已转交给 X」
+        // 气泡（截图确认）。这里改成 canonical turn id 比较，并同时匹配
+        // client_turn_id（两个 id 之间的桥梁就是它）。
+        const dupAliasMap = buildTurnAliasMap([
+          ...slot.serverMessages,
+          ...slot.realtimeMessages,
+          { id: `notice_probe_${traceTurnId}`, turnId: traceTurnId, role: 'assistant', content: '', created_at: new Date().toISOString() } as ChatMessage,
+        ]);
+        const canonicalTraceTurnId = canonicalTurnIdForValue(traceTurnId, dupAliasMap);
+        // 判重必须**四路都认**：原始 turnId、client_turn_id、双方互指的 client_turn_id、
+        // 以及 alias 归一后的 canonical id。只认 canonical 不够——第一条 notice 自己
+        // 就可能是本地 `turn_xxx`（服务端 id 还没回填），它身上没有 client_turn_id
+        // 时 alias map 无法把它和 `msg_xxx` 并到一起，于是第二条照样叠上来。
+        const sameTurn = (candidateTurnId: string | undefined, candidateClientTurnId: unknown) => (
+          Boolean(candidateTurnId)
+          && (
+            candidateTurnId === traceTurnId
+            || (Boolean(clientTurnId) && candidateTurnId === clientTurnId)
+            || (
+              typeof candidateClientTurnId === 'string'
+              && Boolean(candidateClientTurnId)
+              && (candidateClientTurnId === traceTurnId || candidateClientTurnId === clientTurnId)
+            )
+          )
+        );
         const duplicate = slot.realtimeMessages.some((messageItem) => (
           messageItem.role === 'assistant'
-          && messageItem.turnId === traceTurnId
           && Boolean(messageItem.metadata?.dispatch_notice)
+          && (
+            sameTurn(messageItem.turnId, messageItem.metadata?.client_turn_id)
+            || canonicalMessageTurnId(messageItem, dupAliasMap) === canonicalTraceTurnId
+          )
         )) || slot.serverMessages.some((messageItem) => (
           messageItem.role === 'assistant'
           && Boolean(messageItem.metadata?.dispatch_notice)
-          && Boolean(messageItem.metadata?.client_turn_id)
-          && messageItem.metadata?.client_turn_id === traceTurnId
+          && (
+            sameTurn(messageItem.turnId, messageItem.metadata?.client_turn_id)
+            || canonicalMessageTurnId(messageItem, dupAliasMap) === canonicalTraceTurnId
+          )
         ));
         if (!duplicate) {
           appendRealtime(eventSessionId, {
-            id: `notice_${traceTurnId}`,
+            id: `notice_${canonicalTraceTurnId || traceTurnId}`,
             turnId: traceTurnId,
             role: 'assistant',
             content: `已转交给 ${memberName}`,
             created_at: new Date().toISOString(),
             metadata: {
+              // 把 client_turn_id 一并存下：后续 alias 归一靠它把
+              // 本地 `turn_xxx` 与服务端 `msg_xxx` 认成同一轮，
+              // 否则下一次 notice 回放会重复追加（真实踩过 7 秒两条）。
+              client_turn_id: clientTurnId || traceTurnId,
               dispatch_notice: {
                 member_agent_id: item.data.member_agent_id,
                 member_name: memberName,
