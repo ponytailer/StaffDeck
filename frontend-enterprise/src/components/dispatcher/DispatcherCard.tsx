@@ -9,6 +9,14 @@
  */
 
 import { cn } from '@/lib/utils';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import StaffdeckIcon from '@/components/StaffdeckIcon';
 import type { DispatcherRead } from '../../lib/dispatcher';
 import { MAX_DISPATCH_MEMBERS, dispatchFallbackLabel } from '../../lib/dispatcher';
 import DispatcherGlyph from './DispatcherGlyph';
@@ -65,6 +73,33 @@ export default function DispatcherCard({
             员工小队 · {members.length}/{MAX_DISPATCH_MEMBERS} 位同事
           </div>
         </div>
+        {/* 低频管理动作收进右上角「···」：发布/下架与删除。底部只留「去对话 + 配置」，
+            按钮不再挤成两行，窄屏也不会把文字压变形。 */}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            aria-label={`更多操作 ${dispatcher.name}`}
+            className="-mr-[4px] -mt-[2px] grid size-[26px] shrink-0 place-items-center rounded-[8px] text-[#b4bac8] transition-colors hover:bg-[#f2f3f6] hover:text-[#5b6274] data-[state=open]:bg-[#f2f3f6] data-[state=open]:text-[#5b6274]"
+          >
+            <StaffdeckIcon name="more" size={15} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-[148px] rounded-[10px] p-[4px]">
+            <DropdownMenuItem
+              disabled={publishing || (!published && !canPublish)}
+              onSelect={() => onGallery(!published)}
+              title={!published && !canPublish ? '先添加同事才能发布到广场' : undefined}
+              className="rounded-[7px] px-[8px] py-[6px] text-[12px] text-[#5b6274] data-[highlighted]:bg-[#f6f6f6]"
+            >
+              {publishing ? '处理中…' : published ? '从广场下架' : '发布到广场'}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="my-[3px]" />
+            <DropdownMenuItem
+              onSelect={onDelete}
+              className="rounded-[7px] px-[8px] py-[6px] text-[12px] text-[#dc2626] data-[highlighted]:bg-[#fdf2f2] data-[highlighted]:text-[#dc2626]"
+            >
+              删除
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {dispatcher.description && (
@@ -129,50 +164,25 @@ export default function DispatcherCard({
         )}
       </div>
 
-      {/* 按钮分两行：主行动「去对话」独占一行，管理动作在下一行。
-          原先四个按钮挤在一行，卡片落到 3 列以下宽度时「去对话」被压成竖排
-          并溢出卡片、「从广场下架」折成两行 —— 真实反馈「有些文字溢出边框」。
-          两行后每个按钮都有确定的宽度，窄屏也不会变形，顺带把主次分清了。 */}
-      <div className="mt-auto flex flex-col gap-[6px] pt-[12px]">
+      {/* 底部只留一行：「去对话」占主宽度 + 「配置」固定宽。
+          发布/下架与删除已收进右上角「···」下拉 —— 原先四个按钮两行排布，
+          窄卡片下仍是「从广场下架」一行字占满、主次不清（真实反馈）。 */}
+      <div className="mt-auto flex items-center gap-[8px] pt-[12px]">
         <button
           type="button"
           disabled={busy}
           onClick={onChat}
-          className="h-[32px] w-full whitespace-nowrap rounded-[8px] bg-[#18181a] text-[12px] text-white transition-colors hover:bg-[#303030] disabled:opacity-50"
+          className="h-[32px] min-w-0 flex-1 whitespace-nowrap rounded-[8px] bg-[#18181a] text-[12px] text-white transition-colors hover:bg-[#303030] disabled:opacity-50"
         >
           {busy ? '打开中…' : '去对话'}
         </button>
-        <div className="flex items-center gap-[6px]">
-          <button
-            type="button"
-            disabled={publishing || (!published && !canPublish)}
-            onClick={() => onGallery(!published)}
-            title={!published && !canPublish ? '先添加同事才能发布到广场' : undefined}
-            className={cn(
-              'h-[30px] flex-1 whitespace-nowrap rounded-[8px] border px-[8px] text-[12px] transition-colors disabled:cursor-not-allowed disabled:opacity-45',
-              published
-                ? 'border-[#cfe3de] bg-[#f2f9f7] text-[#0f7268] hover:border-[#b3d5cd]'
-                : 'border-[#e3e7f1] text-[#757f9c] hover:border-[#cbd3e6] hover:text-[#18181a]',
-            )}
-          >
-            {publishing ? '处理中…' : published ? '从广场下架' : '发布到广场'}
-          </button>
-          <button
-            type="button"
-            onClick={onEdit}
-            className="h-[30px] shrink-0 whitespace-nowrap rounded-[8px] border border-[#e3e7f1] px-[10px] text-[12px] text-[#757f9c] transition-colors hover:border-[#cbd3e6] hover:text-[#18181a]"
-          >
-            配置
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            aria-label={`删除 ${dispatcher.name}`}
-            className="h-[30px] shrink-0 whitespace-nowrap rounded-[8px] border border-transparent px-[8px] text-[12px] text-[#c3c9d6] transition-colors hover:border-[#f5d5d5] hover:text-[#dc2626]"
-          >
-            删除
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onEdit}
+          className="h-[32px] shrink-0 whitespace-nowrap rounded-[8px] border border-[#e3e7f1] px-[14px] text-[12px] text-[#757f9c] transition-colors hover:border-[#cbd3e6] hover:text-[#18181a]"
+        >
+          配置
+        </button>
       </div>
     </div>
   );
