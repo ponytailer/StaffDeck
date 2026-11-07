@@ -21,6 +21,7 @@ import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import MyCreatedToolsPanel from '../components/MyCreatedToolsPanel';
+import MyStaticAssetsPanel from '../components/MyStaticAssetsPanel';
 import KnowledgeManagePage from './KnowledgePage';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import { RevealGroup } from '../components/RevealGroup';
@@ -66,10 +67,11 @@ export default function AgentsPage({
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline'>('all');
   // 页面级 tab：数字员工 / 技能管理 / 知识库 / 工具管理。
-  const [pageTab, setPageTab] = useState<'employees' | 'skills' | 'knowledge' | 'tools'>(() => {
+  const [pageTab, setPageTab] = useState<'employees' | 'skills' | 'knowledge' | 'tools' | 'assets'>(() => {
     if (window.location.hash.includes('knowledge')) return 'knowledge';
     if (window.location.hash.includes('skills')) return 'skills';
     if (window.location.hash.includes('tools')) return 'tools';
+    if (window.location.hash.includes('assets')) return 'assets';
     return 'employees';
   });
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
@@ -261,6 +263,7 @@ export default function AgentsPage({
           { value: 'skills', label: '技能管理' },
           { value: 'knowledge', label: '知识库' },
           { value: 'tools', label: '工具管理' },
+          { value: 'assets', label: '静态资源' },
         ]}
       />
 
@@ -365,7 +368,7 @@ export default function AgentsPage({
           {/* 知识库不再跟绑数字员工：个人空间在页内直接复用完整知识库页（表、图谱、检索调试）。 */}
           <KnowledgeManagePage embedded mode="personal" currentUser={currentUser} onLogout={onLogout} />
         </div>
-      ) : (
+      ) : pageTab === 'tools' ? (
         <div className="mt-[24px]">
           <div className="flex flex-wrap items-center justify-end gap-[10px] mb-[16px]">
             <UIButton
@@ -387,6 +390,11 @@ export default function AgentsPage({
           </div>
           {/* 我创建的工具：跨作用域汇总（广场工具 + 挂在员工下的工具）。 */}
           <MyCreatedToolsPanel agents={agents} />
+        </div>
+      ) : (
+        <div className="mt-[24px]">
+          {/* 静态资源：上传即得一个固定下载地址，可粘进知识库让员工把链接回给用户。 */}
+          <MyStaticAssetsPanel embedded />
         </div>
       )}
       <EmployeeAvatarEditor
