@@ -541,85 +541,100 @@ function DispatcherProfileView({
         onLogout={onLogout}
         userName={userName}
         left={(
-          <div className="flex flex-wrap items-center gap-x-9 gap-y-6 pt-1 pl-1">
-            <div className="flex shrink-0 flex-col items-center">
-              <span className="grid h-[160px] w-[136px] place-items-center rounded-[18px] bg-[#e1f1ed] text-[#0f7268]">
-                <DispatcherGlyph className="size-[62px]" />
-              </span>
-              <div className="mt-[4px] flex flex-wrap items-center gap-4">
-                <UiButton
-                  variant="default"
-                  className="inline-flex h-[40px] items-center justify-center gap-[7px] rounded-[12px] border-0 bg-[#0f7268] px-[20px] text-[13.5px] font-semibold text-white shadow-[0_10px_22px_-10px_rgba(15,114,104,0.85)] transition-all hover:-translate-y-[1px] hover:bg-[#0c6158]"
-                  onClick={onOpenChat}
-                >
-                  <IconChat className="size-[16px]" />
-                  去对话
-                </UiButton>
-                <UiButton
-                  variant="outline"
-                  className="inline-flex items-center justify-center gap-[4px] rounded-[14px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] py-[8px] text-[12px] text-[#858b9c] shadow-[0px_6px_6px_rgba(0,0,0,0.05)] hover:bg-[#f6f6f6]"
-                  onClick={onConfigure}
-                >
-                  <IconEdit className="size-[14px]" />
-                  配置成员与规则
-                </UiButton>
-              </div>
-            </div>
+          /* 两列：左=标识块（只放拓扑图标，不再塞按钮），右=信息区（标题 → 状态行 →
+             简介 → 指标），操作按钮落在信息区最后一行。
+             旧版把「去对话 / 配置成员与规则」塞在头像正下方，两个按钮不等宽、也都比
+             136px 的头像窄，且左列比右侧信息区高出 70px，整个 hero 看着歪；
+             按钮底边又紧贴 tab 栏（实测只剩 4px）。改后左右两列高度接近，操作按钮与
+             指标行同宽，也没有贴边问题。 */
+          <div className="flex flex-wrap items-start gap-x-[28px] gap-y-[18px] pt-1 pl-1">
+            <span className="grid size-[112px] shrink-0 place-items-center rounded-[16px] bg-[#e1f1ed] text-[#0f7268]">
+              <DispatcherGlyph className="size-[52px]" />
+            </span>
 
-            <div className="flex min-w-[280px] flex-1 flex-col gap-2">
-              <div className="flex flex-wrap items-end gap-2">
+            <div className="flex min-w-[280px] flex-1 flex-col gap-[10px]">
+              <div className="flex flex-wrap items-center gap-x-[8px] gap-y-[6px]">
                 <h2 className="m-0 text-[22px] leading-none font-semibold text-[#18181a]">
                   {dispatcher.name}
                 </h2>
                 <span className="whitespace-nowrap rounded-[5px] bg-[#e1f1ed] px-[6px] py-[2px] text-[11px] leading-none text-[#0f7268]">
                   员工小队 · 纯路由
                 </span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-4">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f6f6f6] px-2.5 py-0.5">
-                  <span
-                    className="size-1.5 rounded-full ring-[1.5px] ring-white"
-                    style={{ background: dispatcher.status === 'active' ? '#22c55e' : '#c4c9d4' }}
-                  />
-                  <span className="text-[12px] text-[#757f9c]">
-                    {dispatcher.status === 'active' ? '在线' : '下线'}
-                  </span>
-                </span>
-                <span className="text-[12px] text-[#757f9c]">
-                  无法匹配：{dispatchFallbackLabel(dispatcher.config.fallback_mode)}
-                </span>
-                <span className="text-[12px] text-[#757f9c]">
-                  累计转接：{dispatcher.usage_count} 次
-                </span>
                 {missingRule > 0 && (
-                  <span className="whitespace-nowrap rounded-[5px] bg-[#fdf6ec] px-[6px] py-[2px] text-[11px] text-[#8a5a12]">
+                  <span className="whitespace-nowrap rounded-[5px] bg-[#fdf6ec] px-[6px] py-[2px] text-[11px] leading-none text-[#8a5a12]">
                     {missingRule} 位缺路由规则
                   </span>
                 )}
               </div>
 
+              {/* 状态行：在线 / 兜底 / 模型 / 累计转接，统一用「分隔点」串起来，
+                  不再是一个个散落的灰色文本。模型名从原来那张独立卡片挪到这里。 */}
+              <div className="flex flex-wrap items-center gap-x-[10px] gap-y-[6px] text-[12px] text-[#757f9c]">
+                <span className="inline-flex items-center gap-[6px]">
+                  <span
+                    className="size-[6px] rounded-full"
+                    style={{ background: dispatcher.status === 'active' ? '#22c55e' : '#c4c9d4' }}
+                  />
+                  {dispatcher.status === 'active' ? '在线' : '下线'}
+                </span>
+                <span aria-hidden className="text-[#d5d9e3]">·</span>
+                <span>无法匹配：{dispatchFallbackLabel(dispatcher.config.fallback_mode)}</span>
+                <span aria-hidden className="text-[#d5d9e3]">·</span>
+                <span className="inline-flex min-w-0 items-center gap-[5px]">
+                  <span className="shrink-0">路由模型</span>
+                  <span className="min-w-0 truncate rounded-[5px] bg-[#f2f3f6] px-[6px] py-[1px] text-[11.5px] text-[#464c5e]">
+                    {dispatcher.model_name || '未配置'}
+                  </span>
+                </span>
+                <span aria-hidden className="text-[#d5d9e3]">·</span>
+                <span>累计转接 {dispatcher.usage_count} 次</span>
+              </div>
+
               <p className="m-0 line-clamp-2 max-w-[720px] text-[14px] leading-[22px] text-[#757f9c]">
                 {dispatcher.description
-                  || '我是员工小队：先说需求，我来判断这一轮该交给谁，把问题转给最合适的同事。'}
+                  || '我是员工小队：先说需求，我来判断本轮该交给谁，再把问题转给最合适的同事。'}
               </p>
 
-              <div className="flex w-full max-w-[640px] gap-3">
-                <HeroMetric value={members.length} label="成员" />
-                <HeroMetric value={sessionCount} label="对话" />
-                <HeroMetric value={feedbackSummary?.total_feedback || 0} label="反馈" />
+              {/* 指标块 + 操作按钮同一行；窄屏（<1100）换行时按钮独占一行并靠左对齐，
+                  避免「一行只剩两个按钮、还飘在中间」的突兀感。 */}
+              <div className="mt-[2px] flex flex-wrap items-center gap-[10px] max-[1100px]:flex-col max-[1100px]:items-stretch">
+                <div className="flex min-w-[240px] flex-1 gap-[10px]">
+                  <HeroMetric value={members.length} label="成员" />
+                  <HeroMetric value={sessionCount} label="对话" />
+                  <HeroMetric value={feedbackSummary?.total_feedback || 0} label="反馈" />
+                </div>
+                <div className="ml-auto flex shrink-0 items-center gap-[8px] max-[1100px]:ml-0">
+                  <UiButton
+                    variant="default"
+                    className="inline-flex h-[36px] items-center justify-center gap-[6px] rounded-[10px] border-0 bg-[#0f7268] px-[16px] text-[13px] font-semibold text-white shadow-[0_8px_18px_-10px_rgba(15,114,104,0.8)] transition-colors hover:bg-[#0c6158]"
+                    onClick={onOpenChat}
+                  >
+                    <IconChat className="size-[15px]" />
+                    去对话
+                  </UiButton>
+                  <UiButton
+                    variant="outline"
+                    className="inline-flex h-[36px] items-center justify-center gap-[5px] rounded-[10px] border border-[#e3e7f1] bg-white px-[14px] text-[12.5px] text-[#5b6274] transition-colors hover:border-[#cbd3e6] hover:text-[#18181a]"
+                    onClick={onConfigure}
+                  >
+                    <IconEdit className="size-[13px]" />
+                    配置成员与规则
+                  </UiButton>
+                </div>
               </div>
             </div>
           </div>
         )}
       />
 
-      <DispatcherProfileTabs value={activeTab} onChange={setActiveTab} />
+      <div className="mt-[18px]">
+        <DispatcherProfileTabs value={activeTab} onChange={setActiveTab} />
+      </div>
 
       {activeTab === 'work' && (
         // 不再用 pl-[226px] 对齐头像列：窄屏时 hero 会换成竖排，那个固定缩进
         // 把卡片整体推向右侧、左边留一大片空白（真实截图确认过）。
-        <div className="mt-[20px] grid gap-[12px]">
+        <div className="mt-[18px] grid gap-[12px]">
           <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
             <div className="flex items-center justify-between gap-[12px]">
               <span className="min-w-0 truncate text-[13px] font-medium text-[#18181a]">
@@ -660,13 +675,6 @@ function DispatcherProfileView({
                 </div>
               ))}
             </div>
-          </div>
-          <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
-            <span className="text-[13px] font-medium text-[#18181a]">模型</span>
-            <p className="mt-[8px] m-0 break-words text-[12.5px] leading-[1.7] text-[#757f9c]">
-              路由判断用 {dispatcher.model_name || '（未配置）'}；成员自己配了模型就走自己的，
-              没配才用入口这个。员工小队不参与免费额度。
-            </p>
           </div>
         </div>
       )}

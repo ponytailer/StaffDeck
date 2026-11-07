@@ -277,4 +277,44 @@ describe('DashboardPage dispatcher profile tabs', () => {
     await user.click(within(tablist).getByText('档案总览'));
     expect(await screen.findByText(/成员与路由规则/)).toBeTruthy();
   });
+
+  /**
+   * hero 布局口径（用户截图反馈「上方圈起来的地方拥挤得很」后重设计）。
+   *
+   * 两条不能回退的口径：
+   * ① 模型说明不再占一张独立卡片 —— 模型名并进 hero 状态行，总览区只剩「成员与路由规则」一张卡；
+   * ② 「去对话 / 配置成员与规则」从头像正下方挪到右侧信息区底部（与指标块同一行），
+   *    不再把左列撑高、也不再紧贴 tab 栏（旧版按钮底边距 tab 只剩 4px）。
+   */
+  it('模型名进状态行，不再单独占一张「模型」卡片', async () => {
+    renderDispatcherProfile();
+
+    // 模型名以状态行的形式出现（「路由模型」+ 值），且没有独立的「模型」小节标题
+    expect(await screen.findByText('路由模型')).toBeTruthy();
+    expect(screen.getByText('deepseek-v4-flash')).toBeTruthy();
+    expect(screen.queryByText(/员工小队不参与免费额度/)).toBeNull();
+
+    // 总览区只有一张卡：成员与路由规则。旧版还有第二张「模型」卡。
+    expect(screen.getByText(/成员与路由规则/)).toBeTruthy();
+    expect(screen.queryAllByText(/^模型$/)).toHaveLength(0);
+  });
+
+  it('操作按钮在信息区里，不在头像下方（两个按钮同一容器）', async () => {
+    renderDispatcherProfile();
+
+    const chat = await screen.findByRole('button', { name: /去对话/ });
+    const config = screen.getByRole('button', { name: /配置成员与规则/ });
+
+    // 两者共享同一个父容器 —— 同一行，且都位于 hero 内（不在头像列）
+    expect(chat.parentElement).toBe(config.parentElement);
+    // 头像块是个 span（只放拓扑图标），按钮不该在它里面
+    expect(chat.closest('span[class*="bg-[#e1f1ed]"]')).toBeNull();
+  });
+
+  it('状态行仍完整展示兜底方式与累计转接', async () => {
+    renderDispatcherProfile();
+
+    expect(await screen.findByText(/无法匹配：固定话术/)).toBeTruthy();
+    expect(screen.getByText(/累计转接 3 次/)).toBeTruthy();
+  });
 });
