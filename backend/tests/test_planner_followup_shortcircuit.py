@@ -45,7 +45,6 @@ def test_short_followup_short_circuits() -> None:
         HISTORY,
         None,
         "normal",
-        None,
     )
     assert plan is not None
     assert plan.decision == "answer_only"
@@ -62,7 +61,6 @@ def test_long_message_falls_back_to_llm() -> None:
         HISTORY,
         None,
         "normal",
-        None,
     )
     assert plan is None
 
@@ -75,7 +73,6 @@ def test_trigger_intent_hit_falls_back_to_llm() -> None:
         HISTORY,
         None,
         "normal",
-        None,
     )
     assert plan is None
 
@@ -88,7 +85,6 @@ def test_active_sop_falls_back_to_llm() -> None:
         HISTORY,
         None,
         "normal",
-        None,
     )
     assert plan is None
 
@@ -101,7 +97,6 @@ def test_pending_frame_falls_back_to_llm() -> None:
         HISTORY,
         [{"task_id": "task_1", "status": "queued"}],
         "normal",
-        None,
     )
     assert plan is None
 
@@ -114,7 +109,6 @@ def test_first_message_without_history_falls_back_to_llm() -> None:
         None,
         None,
         "normal",
-        None,
     )
     assert plan is None
 
@@ -127,7 +121,6 @@ def test_non_normal_mode_falls_back_to_llm() -> None:
         HISTORY,
         None,
         "scheduled_task",
-        None,
     )
     assert plan is None
 
@@ -147,6 +140,5 @@ def test_flag_disabled_falls_back_to_llm(
         HISTORY,
         None,
         "normal",
-        None,
     )
     assert plan is None

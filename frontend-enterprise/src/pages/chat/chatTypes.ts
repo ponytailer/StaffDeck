@@ -81,6 +81,8 @@ export type TurnTrace = {
   completedAt?: number;
   /** 整轮耗时（毫秒）。历史轮次来自后端事件投影。 */
   durationMs?: number;
+  /** 首 token 耗时（毫秒）：消息发出 → 第一个答案字符。后端流式调用才有。 */
+  firstTokenMs?: number;
 };
 
 export type ComposerAttachment = ChatAttachmentRead & {

@@ -15,8 +15,6 @@ from app.db.models import (
     HumanHandoffRequest,
     Message,
     ScheduledTask,
-    Team,
-    TeamMember,
     Tenant,
     User,
 )
@@ -42,21 +40,12 @@ def test_delete_agent_purges_sessions_membership_tasks_and_handoffs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """删除员工要清空其会话/工作区,并同步清理团队成员关系、定时任务与待处理转接。"""
+    """删除员工要清空其会话/工作区、定时任务与待处理转接。"""
     monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(AgentProfile(id="agent_gone", tenant_id="tenant_demo", name="已删员工"))
         db.add(AgentProfile(id="agent_keep", tenant_id="tenant_demo", name="保留员工"))
-        team = Team(
-            tenant_id="tenant_demo",
-            name="增长团队",
-            owner_user_id="user_admin",
-            status="active",
-        )
-        db.add(team)
-        db.add(TeamMember(team_id=team.id, agent_id="agent_gone", role="leader"))
-        db.add(TeamMember(team_id=team.id, agent_id="agent_keep"))
         for session_id, agent_id in (
             ("session_gone", "agent_gone"),
             ("session_team_gone", "agent_gone"),
@@ -69,7 +58,6 @@ def test_delete_agent_purges_sessions_membership_tasks_and_handoffs(
                     user_id="user_admin",
                     agent_id=agent_id,
                     title=f"会话-{session_id}",
-                    team_id=team.id if session_id == "session_team_gone" else None,
                 )
             )
             db.add(
@@ -136,9 +124,6 @@ def test_delete_agent_purges_sessions_membership_tasks_and_handoffs(
         assert db.exec(select(Message).where(Message.session_id == "session_gone")).all() == []
         assert db.get(Message, "msg_session_keep") is not None
         assert not workspace.exists()
-        assert db.exec(select(TeamMember).where(TeamMember.agent_id == "agent_gone")).all() == []
-        kept_members = db.exec(select(TeamMember)).all()
-        assert [member.agent_id for member in kept_members] == ["agent_keep"]
         paused_task = db.exec(
             select(ScheduledTask).where(ScheduledTask.agent_id == "agent_gone")
         ).one()
@@ -175,14 +160,6 @@ def test_delete_agent_keeps_already_loaded_rows_usable() -> None:
                 resource_id="skill_1",
             )
         )
-        team = Team(
-            tenant_id="tenant_demo",
-            name="增长团队",
-            owner_user_id="user_admin",
-            status="active",
-        )
-        db.add(team)
-        db.add(TeamMember(team_id=team.id, agent_id="agent_gone", role="leader"))
         db.add(
             ScheduledTask(
                 tenant_id="tenant_demo",
@@ -195,14 +172,11 @@ def test_delete_agent_keeps_already_loaded_rows_usable() -> None:
         db.commit()
 
         binding = db.exec(select(AgentResourceBinding)).one()
-        member = db.exec(select(TeamMember)).one()
         task = db.exec(select(ScheduledTask)).one()
 
         assert delete_agent("agent_gone", tenant_id="tenant_demo", db=db, current_user=_admin_user())
 
         # 对象已被摘出会话，但已加载值仍可读（不会被刷新成已删除的行）
         assert binding.resource_id == "skill_1"
-        assert member.role == "leader"
         assert task.title == "已删员工任务"
         assert db.exec(select(AgentResourceBinding)).all() == []
-        assert db.exec(select(TeamMember)).all() == []

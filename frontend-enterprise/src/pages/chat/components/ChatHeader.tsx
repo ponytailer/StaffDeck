@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, KeyRound, Share2 } from 'lucide-react';
+import { useState } from 'react';
+import { KeyRound, Share2 } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -9,15 +8,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Badge } from '@/components/ui';
-import { api, TENANT_ID } from '@/api/client';
 import {
   getEnterpriseAuthSession,
   setEnterpriseAuthSession,
 } from '@/auth';
 import { staffdeckDisplayText } from '@/employee';
-import { EnterpriseRoute } from '@/enums/routes';
 import { cn } from '@/lib/utils';
-import type { TeamRead } from '@/types';
 import IconEdit from '@/assets/icons/edit.svg?react';
 import IconChevronDown from '@/assets/icons/chevron-down.svg?react';
 import IconLogout from '@/assets/icons/logout.svg?react';
@@ -35,7 +31,6 @@ import type { UseChatSession } from '../useChatSession';
 
 export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const { auth, currentSession, openRename, logout } = chat;
-  const navigate = useNavigate();
   const teamId = currentSession?.team_id || null;
   const rawName = currentSession?.title
     ? staffdeckDisplayText(currentSession.title)
@@ -43,15 +38,14 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
   const username = auth?.user?.username || '';
   const initial = username ? username.slice(0, 1).toUpperCase() : '--';
 
-  // 团队会话徽标：read 带 team_name 直接用；缺省时用团队列表做 id→name 映射。
-  const sessionTeamName = currentSession?.team_name || null;
-  const [teamName, setTeamName] = useState<string | null>(sessionTeamName);
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [editDepartmentOpen, setEditDepartmentOpen] = useState(false);
+  // 历史团队会话的标题带「团队 xxx · TL 对话」前缀；Team 模块已移除，
+  // 但旧会话仍要能打开，这里只做标题清理，不再查团队列表。
   const name = teamId
-    ? teamName || rawName.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
+    ? rawName.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
     : rawName;
 
   const user = auth?.user;
@@ -64,33 +58,9 @@ export default function ChatHeader({ chat }: { chat: UseChatSession }) {
     ? currentSession.user_display_name
     : null;
 
-  useEffect(() => {
-    setTeamName(sessionTeamName);
-    if (!teamId || sessionTeamName) return;
-    let cancelled = false;
-    api.get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`)
-      .then((rows) => {
-        if (!cancelled) setTeamName(rows.find((team) => team.id === teamId)?.name || null);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [teamId, sessionTeamName]);
-
   return (
     <div className={CHAT_HEADER_CLASS}>
       <div className="flex min-w-0 items-center gap-[8px]">
-        {teamId && (
-          <button
-            type="button"
-            aria-label="返回团队"
-            onClick={() => navigate(`${EnterpriseRoute.Teams}/${teamId}`)}
-            className="inline-grid size-[30px] shrink-0 place-items-center rounded-[9px] border border-[#e3e7f1] text-[#464c5e] transition-colors hover:bg-[#f6f6f6]"
-          >
-            <ChevronLeft className="size-[16px]" />
-          </button>
-        )}
         <div className={CHAT_HEADER_TITLE_STACK_CLASS}>
         <span className="flex min-w-0 items-center gap-[4px]">
           <span className={CHAT_HEADER_TITLE_NAME_CLASS}>{name}</span>

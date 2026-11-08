@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '@/i18n';
 import { SidebarProvider } from '@/components/ui/sidebar';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import type { AgentProfileRead, TeamRead } from '@/types';
+import type { AgentProfileRead } from '@/types';
 import type { DispatcherRead } from '@/lib/dispatcher';
 
 import AppSidebar from './AppSidebar';
@@ -20,19 +20,6 @@ const agent: AgentProfileRead = {
   status: 'active',
   metadata: {},
   resources: [],
-  created_at: '2026-08-01T00:00:00Z',
-  updated_at: '2026-08-01T00:00:00Z',
-};
-
-const team: TeamRead = {
-  id: 'team-1',
-  tenant_id: 'tenant_demo',
-  name: '增长团队',
-  description: '',
-  owner_user_id: 'user-1',
-  config: {},
-  status: 'active',
-  members: [],
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',
 };
@@ -102,7 +89,6 @@ function stubRadixPointerApis() {
 function renderSidebar(props: {
   selectedAgentId: string;
   onSelectAgent?: (value: string) => void;
-  scopeTeams?: TeamRead[];
 }) {
   return render(
     <I18nProvider>
@@ -113,7 +99,6 @@ function renderSidebar(props: {
             onNavigate={() => {}}
             isAdmin={false}
             scopeAgents={[agent]}
-            scopeTeams={props.scopeTeams ?? [team]}
             selectedAgentId={props.selectedAgentId}
             onSelectAgent={props.onSelectAgent ?? (() => {})}
             onOpenChat={() => {}}
@@ -133,42 +118,6 @@ beforeEach(() => {
   stubRadixPointerApis();
 });
 
-describe('AppSidebar agent switcher team group', () => {
-  it('lists teams under a team group and emits the team scope value on select', async () => {
-    const user = userEvent.setup();
-    const onSelectAgent = vi.fn();
-    renderSidebar({ selectedAgentId: 'agent-1', onSelectAgent });
-
-    await user.click(screen.getByLabelText('切换当前员工'));
-    const menu = await screen.findByRole('menu');
-    // 分组标签与团队项上的 Badge 都写作「团队」。
-    expect(within(menu).getAllByText('团队').length).toBeGreaterThanOrEqual(2);
-    const teamItem = within(menu)
-      .getAllByRole('menuitem')
-      .find((item) => item.textContent?.includes('增长团队'));
-    expect(teamItem).toBeTruthy();
-
-    await user.click(teamItem!);
-    expect(onSelectAgent).toHaveBeenCalledWith('team:team-1');
-  });
-
-  it('shows the team name and team caption when a team scope is selected', () => {
-    renderSidebar({ selectedAgentId: 'team:team-1' });
-
-    const trigger = screen.getByLabelText('切换当前员工');
-    expect(within(trigger).getByText('当前团队')).toBeTruthy();
-    expect(within(trigger).getByText('增长团队')).toBeTruthy();
-  });
-
-  it('falls back to a bare team label when the selected team is unknown', () => {
-    renderSidebar({ selectedAgentId: 'team:missing', scopeTeams: [team] });
-
-    const trigger = screen.getByLabelText('切换当前员工');
-    expect(within(trigger).getByText('当前团队')).toBeTruthy();
-    expect(within(trigger).getByText('团队')).toBeTruthy();
-  });
-});
-
 describe('AppSidebar dispatcher scope', () => {
   function renderDispatcherSidebar() {
     return render(
@@ -182,7 +131,6 @@ describe('AppSidebar dispatcher scope', () => {
               sidebarDispatcher={dispatcher}
               scopeAgents={[agent]}
               scopeDispatchers={[dispatcher]}
-              scopeTeams={[team]}
               selectedAgentId="dispatcher-1"
               onSelectAgent={() => {}}
               onOpenChat={() => {}}
@@ -231,7 +179,6 @@ describe('AppSidebar dispatcher scope', () => {
               sidebarDispatcher={dispatcher}
               scopeAgents={[agent]}
               scopeDispatchers={[dispatcher]}
-              scopeTeams={[]}
               selectedAgentId="dispatcher-1"
               onSelectAgent={onSelectAgent}
               onOpenChat={() => {}}
@@ -262,7 +209,6 @@ describe('AppSidebar dispatcher scope', () => {
               isAdmin={false}
               sidebarAgent={agent}
               scopeAgents={[agent]}
-              scopeTeams={[team]}
               selectedAgentId="agent-1"
               onSelectAgent={() => {}}
               onOpenChat={() => {}}
@@ -280,30 +226,7 @@ describe('AppSidebar dispatcher scope', () => {
 
 describe('AppSidebar chat variant group conversations', () => {
   const leaderAgent: AgentProfileRead = { ...agent, id: 'agent-tl', name: '队长' };
-  const teamWithLeader: TeamRead = {
-    ...team,
-    members: [
-      {
-        id: 'member-1',
-        team_id: 'team-1',
-        agent_id: 'agent-tl',
-        role: 'leader',
-        agent_name: '队长',
-        created_at: '2026-08-01T00:00:00Z',
-      },
-      {
-        id: 'member-2',
-        team_id: 'team-1',
-        agent_id: 'agent-1',
-        role: 'member',
-        agent_name: '小艾',
-        created_at: '2026-08-01T00:00:00Z',
-      },
-    ],
-  };
-
   function renderChatSidebar(
-    scopeTeams: TeamRead[] = [teamWithLeader],
     handlers: { onOpenHome?: () => void; onOpenGallery?: () => void } = {},
   ) {
     const sessions = [
@@ -333,7 +256,6 @@ describe('AppSidebar chat variant group conversations', () => {
               variant="chat"
               sessions={sessions}
               agents={[agent, leaderAgent]}
-              scopeTeams={scopeTeams}
               sessionFilter="all"
               onSessionFilterChange={() => {}}
               sessionFilterOptions={[{ value: 'all', label: '全部员工 · 2' }]}
@@ -355,29 +277,12 @@ describe('AppSidebar chat variant group conversations', () => {
     const user = userEvent.setup();
     const onOpenHome = vi.fn();
     const onOpenGallery = vi.fn();
-    renderChatSidebar([teamWithLeader], { onOpenHome, onOpenGallery });
+    renderChatSidebar({ onOpenHome, onOpenGallery });
 
     await user.click(screen.getByLabelText('返回首页'));
 
     expect(onOpenHome).toHaveBeenCalledTimes(1);
     expect(onOpenGallery).not.toHaveBeenCalled();
-  });
-
-  it('renders employee sessions and team groups as different conversation types', () => {
-    renderChatSidebar();
-
-    expect(screen.getByLabelText('群聊')).toBeTruthy();
-    const groupRow = screen.getByText('增长团队').closest('[role="button"]');
-    expect(groupRow?.textContent).toContain('2 位成员 · 团队群聊');
-    const employeeRow = screen.getByText('写公告').closest('[role="button"]');
-    expect(employeeRow?.textContent).not.toContain('群聊');
-  });
-
-  it('keeps a group label while the team roster is still loading', () => {
-    renderChatSidebar([]);
-
-    expect(screen.getByText('增长团队')).toBeTruthy();
-    expect(screen.getByLabelText('群聊')).toBeTruthy();
   });
 
   it('shows the employee name in a styled tooltip on avatar hover', async () => {
@@ -408,7 +313,6 @@ describe('AppSidebar primary navigation', () => {
               onNavigate={onNavigate}
               isAdmin={isAdmin}
               scopeAgents={[agent]}
-              scopeTeams={[team]}
               selectedAgentId="agent-1"
               onSelectAgent={() => {}}
               onOpenChat={() => {}}
@@ -418,6 +322,12 @@ describe('AppSidebar primary navigation', () => {
       </I18nProvider>,
     );
   }
+
+  it('「我的团队」已从侧边栏移除', () => {
+    renderManagementSidebar();
+    expect(screen.queryByText('我的团队')).toBeNull();
+    expect(screen.queryByText('团队对话')).toBeNull();
+  });
 
   it('决策助手不在侧边栏：入口已移入 Agent 广场清单', () => {
     renderManagementSidebar();

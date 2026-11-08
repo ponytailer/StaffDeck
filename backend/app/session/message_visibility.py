@@ -46,7 +46,7 @@ def internal_message_turn_ids(messages: Iterable[Message]) -> set[str]:
 
 
 def visible_message_content(message: Message) -> str:
-    """Recover the original user text from team prompts stored by older builds."""
+    """Recover the original user text from legacy prompts stored by older builds."""
 
     content = message.content or ""
     metadata = message.metadata_json or {}

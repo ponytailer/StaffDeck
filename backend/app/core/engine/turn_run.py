@@ -74,7 +74,6 @@ from app.db.models import (
     HarnessTurnRecord,
     Message,
     Skill,
-    Team,
     utc_now,
 )
 from app.knowledge.citations import (
@@ -236,11 +235,6 @@ class _TurnRunMixin:
             request.forced_sop_id,
             request.forced_sop_snapshot,
         )
-        # Team TL conversations use a dedicated ChatSession, so the leader can
-        # safely execute their own SOPs without mutating a personal chat. Keep
-        # the same published/discoverable SOP boundary in every interaction
-        # mode; team orchestration remains an additional conversation concern,
-        # not a reason to hide the leader's executable workflow.
         skills, routing_skills = _turn_skill_projection(
             source_skills,
             interaction_mode=request.interaction_mode,
@@ -275,14 +269,6 @@ class _TurnRunMixin:
 
         self._renew_session_lease()
         planner_state = self.store.planner_state(session)
-        team_context = request.team_context
-        team: Team | None = None
-        if request.interaction_mode == "team_tl" and session.team_id:
-            team = self.db.get(Team, session.team_id)
-            if team is not None and team_context is None:
-                from app.teams.wakeup import build_team_planner_context
-
-                team_context = build_team_planner_context(self.db, team)
         if self.slash_command:
             if self.slash_command.kind in {"skill", "tool"}:
                 direct_manifest = self.manifests.build(
@@ -309,7 +295,6 @@ class _TurnRunMixin:
                 conversation_context,
                 memory_context,
                 planner_state,
-                team_context,
             )
             plan: TurnPlan | None = None
             if intent_cache_key:
@@ -339,7 +324,6 @@ class _TurnRunMixin:
                         memory_context,
                         planner_state,
                         interaction_mode=request.interaction_mode,
-                        team_context=team_context,
                     )
                 if intent_cache_key:
                     set_json(
@@ -399,34 +383,6 @@ class _TurnRunMixin:
                 "execution_engine": "harness_v2",
             },
         )
-        team_publish_result = None
-        remote_frames = [
-            frame for frame in plan.task_frames if frame.execution_target == "team_member"
-        ]
-        if remote_frames:
-            if request.interaction_mode != "team_tl" or team is None:
-                raise RuntimeError("团队成员 TaskFrame 缺少可信团队上下文。")
-            from app.teams.wakeup import publish_team_planner_frames
-
-            team_publish_result = publish_team_planner_frames(
-                self.db,
-                team=team,
-                session=session,
-                source_turn_id=user_message.id,
-                created_by_user_id=request.user_id,
-                frames=remote_frames,
-            )
-            if team_publish_result is None:
-                raise RuntimeError("团队成员 TaskFrame 未能持久化，已停止本轮虚假分发。")
-            plan = plan.model_copy(
-                update={
-                    "task_frames": [
-                        frame
-                        for frame in plan.task_frames
-                        if frame.execution_target != "team_member"
-                    ]
-                }
-            )
         if plan.decision == "complete_task":
             active_task_frame_id = self.store.active_task_frame_id(session)
             self.store.complete_active_frame(
@@ -687,11 +643,6 @@ class _TurnRunMixin:
         )
         self._renew_session_lease()
         reply = _single_task_reply(execution_results)
-        if team_publish_result is not None and not execution_results:
-            task_count = len(team_publish_result.task_ids)
-            reply = (
-                f"已完成 {task_count} 个团队任务的拆分与派发。"
-            )
         if reply is None:
             reply = self._synthesize_reply(
                 request,
@@ -715,15 +666,6 @@ class _TurnRunMixin:
             "execution_engine": "harness_v2",
             "task_frame_ids": [row.task_id for row in records],
         }
-        if team_publish_result is not None:
-            assistant_metadata["team_run_id"] = team_publish_result.run_id
-            assistant_metadata["team_task_ids"] = list(team_publish_result.task_ids)
-            assistant_metadata["team_progress"] = {
-                "phase": "collecting",
-                "completed_tasks": 0,
-                "total_tasks": len(team_publish_result.task_ids),
-                "status_text": "正在等待成员回复",
-            }
         if request.client_turn_id:
             assistant_metadata["client_turn_id"] = request.client_turn_id
         if request.message_visibility != "visible":

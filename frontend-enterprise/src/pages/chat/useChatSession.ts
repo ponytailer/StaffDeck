@@ -28,8 +28,6 @@ import {
   emitAgentScopeChange,
   isTeamScope,
   persistSharedAgentScope,
-  teamIdFromScope,
-  toTeamScope,
 } from '@/lib/agent-scope-storage';
 import {
   getDispatcher,
@@ -59,7 +57,6 @@ import type {
   ModelConfigRead,
   ScheduledTaskDraftRead,
   ScheduledTaskRead,
-  TeamRead,
   TurnTraceRead,
   UIConfigRead,
 } from '@/types';
@@ -324,7 +321,7 @@ export type UseChatSessionOptions = {
    * `window.location.href = '/'`.
    */
   anonymous?: boolean;
-  /** Use a concrete session outside the workspace chat route (for example a team room). */
+  /** Use a concrete session outside the workspace chat route (embedded / share). */
   sessionId?: string;
   /** Keep navigation and shared employee scope owned by the embedding page. */
   embedded?: boolean;
@@ -353,8 +350,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [sessionReadTimes, setSessionReadTimes] = useState<Record<string, string>>(() => loadSessionReadTimes(userId));
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  const [teams, setTeams] = useState<TeamRead[]>([]);
-  const [teamEmptyStats, setTeamEmptyStats] = useState<{ tasks: number; blackboard: number }>({ tasks: 0, blackboard: 0 });
   /**
    * 多智能体（kind=dispatcher）的详情：/api/chat/agents 只回普通员工口径的
    * AgentProfileRead，**不含 members / config**，而对话端空状态要展示「成员有谁」
@@ -623,10 +618,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const sessionAgent = currentSession?.agent_id
     ? agents.find((agent) => agent.id === currentSession.agent_id) || null
     : null;
-  // 团队会话（team_id 非空）时，ChatEmptyState 改渲染团队名片
-  const displayedTeam = currentSession?.team_id
-    ? teams.find((team) => team.id === currentSession.team_id) || null
-    : null;
   const displayedAgent = invalidDraftAgentId || draftAgentLoading ? null : (sessionAgent || draftAgent || defaultAgent);
   const displayedProfile = displayedAgent ? employeeProfile(displayedAgent) : null;
   // 多智能体在花名册里也是 AgentProfileRead，只多了 kind —— 但 members/config
@@ -695,13 +686,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     return buildSessionFilterOptions(availableAgents, sessions, activeDraftAgentId);
   }, [activeDraftAgentId, availableAgents, sessions]);
   const visibleSidebarSessions = useMemo(() => {
-    const filterTeamId = teamIdFromScope(sessionAgentFilter);
-    if (filterTeamId) {
-      return sessions.filter((session) => session.team_id === filterTeamId);
-    }
     return sessionAgentFilter === 'all'
       ? sessions
-      : sessions.filter((session) => !session.team_id && session.agent_id === sessionAgentFilter);
+      : sessions.filter((session) => session.agent_id === sessionAgentFilter);
   }, [sessionAgentFilter, sessions]);
   const enabledModelConfigs = useMemo(() => modelConfigs.filter((item) => item.enabled), [modelConfigs]);
   const selectedModelConfig = (
@@ -801,7 +788,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`);
       setAgents(rows);
       setSelectedAgentId((current) => {
-        // A team scope is not part of the employee roster; keep it untouched.
+        // 历史残留的 team: 作用域不属于员工花名册；保持原值。
         if (isTeamScope(current)) return current;
         // 分享访客的花名册已由后端收敛到分享的那一个员工，前端不再做成员可见性过滤
         const employeeRows = shareMode ? rows : visibleChatEmployees(rows, auth?.user);
@@ -837,49 +824,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       // 静默失败：剩余次数属附属展示信息
     }
   }, [tenantId]);
-
-  // 团队花名册：用于侧栏团队会话行标明 TL 身份
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${tenantId}`)
-      .then((rows) => {
-        if (!cancelled) setTeams(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setTeams([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tenantId]);
-
-  // 团队名片统计：任务数 + 黑板条目数，随当前会话 team_id 加载；失败静默为 0
-  const displayedTeamId = currentSession?.team_id || '';
-  useEffect(() => {
-    if (!displayedTeamId) {
-      setTeamEmptyStats({ tasks: 0, blackboard: 0 });
-      return;
-    }
-    let cancelled = false;
-    const fetchCount = async (path: string) => {
-      try {
-        const rows = await api.get<unknown[]>(`${path}?tenant_id=${tenantId}`);
-        return Array.isArray(rows) ? rows.length : 0;
-      } catch {
-        return 0;
-      }
-    };
-    void Promise.all([
-      fetchCount(`/api/enterprise/teams/${displayedTeamId}/tasks`),
-      fetchCount(`/api/enterprise/teams/${displayedTeamId}/blackboard`),
-    ]).then(([taskCount, blackboardCount]) => {
-      if (!cancelled) setTeamEmptyStats({ tasks: taskCount, blackboard: blackboardCount });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [displayedTeamId, tenantId]);
 
   useEffect(() => {
     const onAgentRefresh = () => {
@@ -926,28 +870,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, [userId]);
-
-  // 进入团队会话（如画廊团队卡片点开即聊）时，把共享作用域同步为 team:{team_id}，
-  // 让管理端导航栏的"当前员工"切换器跟随显示当前团队。
-  useEffect(() => {
-    if (embedded) return;
-    const teamId = currentSession?.team_id;
-    if (!teamId) return;
-    const scope = toTeamScope(teamId);
-    if (selectedAgentId === scope) return;
-    setSelectedAgentId(scope);
-    persistSharedAgentScope(scope, userId);
-    emitAgentScopeChange(scope);
-  }, [currentSession?.team_id, embedded, selectedAgentId, userId]);
-
-  useEffect(() => {
-    if (
-      embedded
-      || !currentSession?.team_id
-      || /TL 对话/.test(currentSession.title || '')
-    ) return;
-    navigate(`/enterprise/teams/${currentSession.team_id}`, { replace: true });
-  }, [currentSession?.team_id, currentSession?.title, embedded, navigate]);
 
   useEffect(() => {
     // 分享访客没有站内模型列表的访问权限；模型由分享锁定，后端在对话链路里强制注入
@@ -1352,7 +1274,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
 
   useEffect(() => {
     if (!agentsLoaded || sessionsLoading || !sessionsInitializedRef.current) return;
-    // 团队作用域不在员工过滤项里，但它是合法的会话过滤值，不能重置。
+    // 历史残留的 team 作用域不在员工过滤项里，但不能被重置掉。
     if (isTeamScope(sessionAgentFilter)) return;
     if (!sessionFilterOptions.some((item) => item.value === sessionAgentFilter)) {
       persistChatSessionAgentFilter('all');
@@ -1514,6 +1436,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
             startedAt: parseMessageTime(row.started_at) || Date.now(),
             completedAt: row.completed_at ? parseMessageTime(row.completed_at) : undefined,
             durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
+            firstTokenMs: typeof row.first_token_ms === 'number' ? row.first_token_ms : undefined,
           });
           const activeStreamTurn = stream.loading && stream.turnId === row.turn_id;
           const recoverableRunningTrace = (
@@ -2007,19 +1930,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [documentVisible, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
-
-  // A TL turn ends as soon as the team DAG is dispatched. The eventual synthesis is
-  // persisted asynchronously, outside that turn's SSE stream, so keep the active team
-  // conversation synchronized even while there is no locally running turn.
-  useEffect(() => {
-    if (!sessionId || !displayedTeamId || runningTurn?.sessionId === sessionId || !documentVisible) return;
-    const timer = window.setInterval(() => {
-      void loadMessages(sessionId).finally(() => {
-        void loadTraces(sessionId);
-      });
-    }, 2_000);
-    return () => window.clearInterval(timer);
-  }, [displayedTeamId, documentVisible, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -4064,7 +3974,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     sessionsLoading,
     visibleSidebarSessions,
     agents,
-    teams,
     sessionId,
     sessionReadTimes,
     sessionAgentFilter,
@@ -4074,8 +3983,6 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     activeConversationId,
     displayedAgent,
     displayedProfile,
-    displayedTeam,
-    teamEmptyStats,
     currentSession,
     emptyProfileTags,
     emptyRoleSummary,

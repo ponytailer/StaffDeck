@@ -107,8 +107,6 @@ from app.session.session_schema import (
     ChatTurnResponse,
     PlannedTaskFrame,
     SessionPublic,
-    TeamPlannerContext,
-    TeamPlannerMember,
     TurnPlan,
 )
 from app.session.attachment_store import stage_chat_attachment
@@ -135,61 +133,8 @@ def test_first_harness_turn_derives_a_recoverable_session_id() -> None:
     assert request.session_id is None
 
 
-def test_team_tl_turn_keeps_leader_sops_routable() -> None:
-    purchase = Skill(
-        id="skill-purchase-row",
-        tenant_id="tenant-demo",
-        skill_id="purchase",
-        version="1.0.0",
-        name="购买商品流程",
-        content_json={
-            "skill_id": "purchase",
-            "version": "1.0.0",
-            "name": "购买商品流程",
-            "description": "完成商品购买",
-            "business_domain": "commerce",
-            "triggers": ["购买商品"],
-            "slots": [],
-            "nodes": [
-                {
-                    "node_id": "collect_product",
-                    "name": "收集商品",
-                    "description": "确认需要购买的商品",
-                    "node_type": "collect_info",
-                    "expected_user_info": [],
-                    "allowed_actions": ["ask_user"],
-                    "entry_rules": [],
-                    "exit_rules": [],
-                    "transitions": [],
-                }
-            ],
-        },
-        status="published",
-    )
-
-    executable, routable = _turn_skill_projection(
-        [purchase],
-        interaction_mode="team_tl",
-    )
-
-    assert [skill.skill_id for skill in executable] == ["purchase"]
-    assert [skill.skill_id for skill in routable] == ["purchase"]
 
 
-def test_team_planner_receives_only_visible_user_message() -> None:
-    request = ChatTurnRequest(
-        tenant_id="tenant-demo",
-        session_id="session-team",
-        user_id="user-1",
-        message="查询请假制度和采购制度",
-        interaction_mode="team_tl",
-        context_injection="服务端团队目录与调度说明",
-    )
-
-    planner_message = _turn_planner_message(request)
-
-    assert planner_message == "查询请假制度和采购制度"
-    assert "调度说明" not in planner_message
 
 
 def test_agent_loop_has_no_legacy_runtime_switch(monkeypatch) -> None:
@@ -493,59 +438,6 @@ def test_turn_planner_forces_handoff_frame_to_standard_execution() -> None:
     assert frame.execution_mode == "standard"
 
 
-def test_turn_planner_keeps_team_delegation_as_separate_remote_frames() -> None:
-    plan = TurnPlan(
-        decision="answer_only",
-        user_intent="并行安排人事和行政查询制度",
-        task_frames=[
-            PlannedTaskFrame(
-                task_id="hr-policy",
-                kind="conversation",
-                decision="answer_only",
-                user_intent="安排人事查询请假制度",
-                requirements=["人事查询公司请假制度"],
-                execution_target="team_member",
-                assignee_agent_id="agent-hr",
-            ),
-            PlannedTaskFrame(
-                task_id="admin-policy",
-                kind="conversation",
-                decision="answer_only",
-                user_intent="安排行政查询采购制度",
-                requirements=["行政查询办公用品采购制度"],
-                execution_target="team_member",
-                assignee_agent_id="agent-admin",
-            ),
-        ],
-    )
-
-    normalized = TurnPlanner()._normalize(
-        plan,
-        "请并行安排人事和行政查询制度",
-        _chat_session(),
-        available_skills=[],
-        interaction_mode="team_tl",
-        team_context=TeamPlannerContext(
-            team_id="team-1",
-            leader_agent_id="agent-tl",
-            members=[
-                TeamPlannerMember(agent_id="agent-tl", name="负责人", role="leader"),
-                TeamPlannerMember(agent_id="agent-hr", name="人事", role="member"),
-                TeamPlannerMember(agent_id="agent-admin", name="行政", role="member"),
-            ],
-        ),
-    )
-
-    assert len(normalized.task_frames) == 2
-    assert [frame.execution_target for frame in normalized.task_frames] == [
-        "team_member",
-        "team_member",
-    ]
-    assert [frame.assignee_agent_id for frame in normalized.task_frames] == [
-        "agent-hr",
-        "agent-admin",
-    ]
-    assert all(frame.depends_on_task_ids == [] for frame in normalized.task_frames)
 
 
 def test_turn_planner_does_not_merge_normal_conversation_frames() -> None:

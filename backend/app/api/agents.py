@@ -75,7 +75,6 @@ from app.db.models import (
     ModelConfig,
     ScheduledTask,
     Skill,
-    TeamMember,
     Tool,
     ToolAccessRequest,
     utc_now,
@@ -561,7 +560,7 @@ def delete_agent(
     # 调度入口自身被删除时，它下辖的成员绑定全部作废（成员再多也不会有人引用它）。
     bulk_delete_matching(db, DispatcherMember, dispatcher_agent_id=row.id)
     # 会话级联清理:员工删除后其会话若保留,新消息会由租户默认 persona 静默接管,
-    # 与删除团队一致,直接清空其全部会话(消息/事件/反馈/Harness 记录与工作区)。
+    # 直接清空其全部会话(消息/事件/反馈/Harness 记录与工作区)。
     sessions = db.exec(
         select(ChatSession).where(
             ChatSession.tenant_id == tenant_id, ChatSession.agent_id == row.id
@@ -570,8 +569,6 @@ def delete_agent(
     workspace_keys = [(session.tenant_id, session.id) for session in sessions]
     for session in sessions:
         purge_chat_session_records(db, session)
-    # 团队成员关系同步清理,避免花名册/TL 会话悬挂在已删除员工上。
-    bulk_delete_matching(db, TeamMember, agent_id=row.id)
     # 定时任务立即暂停,而不是等到下次触发才失败。
     _changed_at = utc_now()
     expunge_matching(db, ScheduledTask, tenant_id=tenant_id, agent_id=row.id, status="active")

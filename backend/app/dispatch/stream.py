@@ -565,7 +565,7 @@ class DispatchTurnRunner:
         """在**独立 db 会话**里跑子 turn，把增量镜像到父会话的 relay 行。
 
         独立会话是必需的：子 turn 有自己的事务与锁，混用父会话的 Session
-        会把两边的事务边界搅在一起（teams/wakeup.py 的 run_agent_turn 同理）。
+        会把两边的事务边界搅在一起。
 
         **镜像走 ``event_sink``，不是生成器 yield**（真实踩过）：
         ``TurnStreamSink`` 的真实流式增量是**直接写子会话 AgentEvent 表**的

@@ -1,6 +1,5 @@
 import { Fragment, useMemo } from 'react';
 import {
-  Badge,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -20,7 +19,6 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { ComponentType, SVGProps } from 'react';
 import { cn } from '@/lib/utils';
-import { teamIdFromScope, toTeamScope } from '@/lib/agent-scope-storage';
 import EmployeeAvatar from './EmployeeAvatar';
 import BrandLogo from './BrandLogo';
 import StaffdeckIcon from './StaffdeckIcon';
@@ -28,10 +26,9 @@ import DispatcherGlyph from './dispatcher/DispatcherGlyph';
 import { employeeDisplayNameWithCreator, employeeProfile, staffdeckDisplayText } from '../employee';
 import { EnterpriseRoute } from '../enums/routes';
 import { MAX_DISPATCH_MEMBERS, dispatchFallbackLabel, type DispatcherRead } from '../lib/dispatcher';
-import type { AgentProfileRead, ChatSession, TeamRead } from '../types';
+import type { AgentProfileRead, ChatSession } from '../types';
 import IconPlatform from '../assets/icons/nav-platform.svg?react';
 import IconAgents from '../assets/icons/nav-agents.svg?react';
-import IconTeams from '../assets/icons/nav-teams.svg?react';
 import IconFile from '../assets/icons/profile-file.svg?react';
 import IconAlarm from '../assets/icons/profile-alarm.svg?react';
 import IconHistory from '../assets/icons/profile-history.svg?react';
@@ -83,7 +80,6 @@ const WORKSPACE_NAV: NavItem[] = [
   // 站点首页已下线（2026-10-13）：开放广场「全部」tab 成为默认落地（热门总览/快捷访问/新闻并入）
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform, hot: true },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
-  { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },
 ];
 
 const PLATFORM_NAV: NavItem[] = [
@@ -213,7 +209,6 @@ export type AppSidebarManagementProps = {
    */
   scopeDispatchers?: DispatcherRead[];
   scopeAgents: AgentProfileRead[];
-  scopeTeams?: TeamRead[];
   selectedAgentId: string;
   onSelectAgent: (agentId: string) => void;
   onOpenChat: () => void;
@@ -235,8 +230,6 @@ export type AppSidebarChatProps = {
   sessionsLoading?: boolean;
   /** Full agent roster, used to resolve per-session avatars/roles. */
   agents: AgentProfileRead[];
-  /** Team roster, used to mark the team leader (TL) in team session rows. */
-  scopeTeams?: TeamRead[];
   activeSessionId?: string;
   sessionFilter: string;
   onSessionFilterChange: (value: string) => void;
@@ -339,48 +332,12 @@ function GroupLabel({ children }: { children: string }) {
   );
 }
 
-function TeamScopeItems({
-  scopeTeams,
-  selectedAgentId,
-  onSelectAgent,
-}: Pick<AppSidebarManagementProps, 'selectedAgentId' | 'onSelectAgent'> & { scopeTeams: TeamRead[] }) {
-  if (scopeTeams.length === 0) return null;
-  return (
-    <>
-      <DropdownMenuLabel className="px-[8px] pt-[6px] pb-[2px] text-[10px] leading-none text-[#464c5e]">
-        团队
-      </DropdownMenuLabel>
-      {scopeTeams.map((team) => (
-        <DropdownMenuItem
-          key={team.id}
-          data-active={toTeamScope(team.id) === selectedAgentId}
-          onSelect={() => onSelectAgent(toTeamScope(team.id))}
-          className="shrink-0 gap-2 rounded-[14px] cursor-pointer focus:bg-[#F6F6F6] focus:[&_strong]:text-foreground! data-[active=true]:bg-[#F6F6F6] data-[active=true]:[&_strong]:text-foreground!"
-        >
-          <span className="grid size-[28px] shrink-0 place-items-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-sidebar-foreground">
-            <IconTeams className="size-[16px]" />
-          </span>
-          <span className="flex min-w-0 flex-1 flex-col">
-            <strong className="truncate text-[12px] font-medium">{team.name}</strong>
-          </span>
-          <Badge
-            variant="secondary"
-            className="ml-auto shrink-0 rounded-full bg-[#e8f0ff] text-[10px] font-normal text-[#1a71ff]"
-          >
-            团队
-          </Badge>
-        </DropdownMenuItem>
-      ))}
-    </>
-  );
-}
 
 function AgentSwitcher({
   sidebarAgent,
   sidebarDispatcher,
   scopeAgents,
   scopeDispatchers = [],
-  scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   scopeLoading = false,
@@ -390,7 +347,6 @@ function AgentSwitcher({
   | 'sidebarDispatcher'
   | 'scopeAgents'
   | 'scopeDispatchers'
-  | 'scopeTeams'
   | 'selectedAgentId'
   | 'onSelectAgent'
   | 'scopeLoading'
@@ -398,28 +354,20 @@ function AgentSwitcher({
   const employeeAgents = scopeAgents.filter((agent) => !agent.is_overall);
   const currentAgent = sidebarAgent && !sidebarAgent.is_overall ? sidebarAgent : undefined;
   const currentDispatcher = sidebarDispatcher || undefined;
-  const selectedTeamId = teamIdFromScope(selectedAgentId);
-  const currentTeam = selectedTeamId
-    ? scopeTeams.find((team) => team.id === selectedTeamId)
-    : undefined;
-  const caption = selectedTeamId
-    ? '当前团队'
-    : currentDispatcher
-      ? '员工小队'
-      : currentAgent
-        ? '当前员工'
-        : scopeLoading
-          ? '加载中'
-          : '未选择';
-  const nameLabel = selectedTeamId
-    ? currentTeam?.name || '团队'
-    : currentDispatcher
-      ? currentDispatcher.name
-      : currentAgent
-        ? employeeDisplayNameWithCreator(currentAgent)
-        : scopeLoading
-          ? '…'
-          : '-';
+  const caption = currentDispatcher
+    ? '员工小队'
+    : currentAgent
+      ? '当前员工'
+      : scopeLoading
+        ? '加载中'
+        : '未选择';
+  const nameLabel = currentDispatcher
+    ? currentDispatcher.name
+    : currentAgent
+      ? employeeDisplayNameWithCreator(currentAgent)
+      : scopeLoading
+        ? '…'
+        : '-';
 
   return (
     <DropdownMenu>
@@ -449,7 +397,7 @@ function AgentSwitcher({
             <div className="w-[60px] h-[30px] relative">
               <div className="absolute inset-0 flex items-end justify-center">
                 <span className="flex w-[60px] h-[71px] items-center justify-center rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white text-sidebar-foreground">
-                  {selectedTeamId ? <IconTeams className="size-[20px]" /> : <IconAdd className="size-[20px]" />}
+                  <IconAdd className="size-[20px]" />
                 </span>
               </div>
             </div>
@@ -465,7 +413,7 @@ function AgentSwitcher({
       </DropdownMenuTrigger>
       {/* 不能锁 `w-(--radix-dropdown-menu-trigger-width)`：触发块在侧栏里只有 ~163px，
           锁死后「数据分析 @Administrator」这类长名字被截断。给一个最小宽度 + 允许内容撑开。
-          max-h 也要放宽：员工 7 位 + 小队 + 团队后总高 ~435px，320px 会把「员工小队」
+          max-h 也要放宽：员工 7 位 + 小队后总高 ~435px，320px 会把「员工小队」
           这一组压到折叠线以下 —— 而小队作用域下当前选中项恰恰就在那组里。 */}
       <DropdownMenuContent
         align="start"
@@ -491,11 +439,6 @@ function AgentSwitcher({
         ))}
         <DispatcherScopeItems
           scopeDispatchers={scopeDispatchers}
-          selectedAgentId={selectedAgentId}
-          onSelectAgent={onSelectAgent}
-        />
-        <TeamScopeItems
-          scopeTeams={scopeTeams}
           selectedAgentId={selectedAgentId}
           onSelectAgent={onSelectAgent}
         />
@@ -637,7 +580,6 @@ function CollapsedAgentSwitcher({
   sidebarDispatcher,
   scopeAgents,
   scopeDispatchers = [],
-  scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   nameLabel,
@@ -648,7 +590,6 @@ function CollapsedAgentSwitcher({
   | 'sidebarDispatcher'
   | 'scopeAgents'
   | 'scopeDispatchers'
-  | 'scopeTeams'
   | 'selectedAgentId'
   | 'onSelectAgent'
   | 'scopeLoading'
@@ -658,7 +599,6 @@ function CollapsedAgentSwitcher({
   const employeeAgents = scopeAgents.filter((agent) => !agent.is_overall);
   const currentAgent = sidebarAgent && !sidebarAgent.is_overall ? sidebarAgent : undefined;
   const currentDispatcher = sidebarDispatcher || undefined;
-  const selectedTeamId = teamIdFromScope(selectedAgentId);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -675,7 +615,7 @@ function CollapsedAgentSwitcher({
             <EmployeeAvatar agent={currentAgent} width={32} height={38} radius={8} />
           ) : (
             <span className="flex h-[38px] w-[32px] items-center justify-center rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white text-sidebar-foreground">
-              {selectedTeamId ? <IconTeams className="size-[16px]" /> : <IconAdd className="size-[16px]" />}
+              <IconAdd className="size-[16px]" />
             </span>
           )}
           <span className="w-[34px] text-center text-[10px] font-medium leading-tight wrap-break-word text-[#18181a]">
@@ -707,11 +647,6 @@ function CollapsedAgentSwitcher({
           selectedAgentId={selectedAgentId}
           onSelectAgent={onSelectAgent}
         />
-        <TeamScopeItems
-          scopeTeams={scopeTeams}
-          selectedAgentId={selectedAgentId}
-          onSelectAgent={onSelectAgent}
-        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -725,7 +660,6 @@ function CollapsedSidebar({
   sidebarDispatcher,
   scopeAgents,
   scopeDispatchers = [],
-  scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   onOpenChat,
@@ -741,28 +675,21 @@ function CollapsedSidebar({
   | 'sidebarDispatcher'
   | 'scopeAgents'
   | 'scopeDispatchers'
-  | 'scopeTeams'
   | 'selectedAgentId'
   | 'onSelectAgent'
   | 'onOpenChat'
   | 'modelSetupAttention'
   | 'scopeLoading'
 > & { onToggle: () => void }) {
-  const selectedTeamId = teamIdFromScope(selectedAgentId);
-  const selectedTeam = selectedTeamId
-    ? scopeTeams.find((team) => team.id === selectedTeamId)
-    : undefined;
-  const nameLabel = selectedTeamId
-    ? selectedTeam?.name || '团队'
-    : sidebarDispatcher
-      ? sidebarDispatcher.name
-      : sidebarAgent
-        ? sidebarAgent.is_overall
-          ? '未选择'
-          : employeeDisplayNameWithCreator(sidebarAgent)
-        : scopeLoading
-          ? '…'
-          : '未选择';
+  const nameLabel = sidebarDispatcher
+    ? sidebarDispatcher.name
+    : sidebarAgent
+      ? sidebarAgent.is_overall
+        ? '未选择'
+        : employeeDisplayNameWithCreator(sidebarAgent)
+      : scopeLoading
+        ? '…'
+        : '未选择';
   // 多智能体没有知识库/技能/SOP/工具，底部这组换成对它成立的入口
   const profileNav = sidebarDispatcher ? DISPATCHER_PROFILE_NAV : PROFILE_NAV;
   const capabilityNav = sidebarDispatcher ? DISPATCHER_STRUCTURE_NAV : CAPABILITY_NAV;
@@ -824,7 +751,6 @@ function CollapsedSidebar({
             sidebarDispatcher={sidebarDispatcher}
             scopeAgents={scopeAgents}
             scopeDispatchers={scopeDispatchers}
-            scopeTeams={scopeTeams}
             selectedAgentId={selectedAgentId}
             onSelectAgent={onSelectAgent}
             nameLabel={nameLabel}
@@ -892,7 +818,6 @@ function ManagementSidebar({
   sidebarDispatcher,
   scopeAgents,
   scopeDispatchers = [],
-  scopeTeams = [],
   selectedAgentId,
   onSelectAgent,
   onOpenChat,
@@ -917,7 +842,6 @@ function ManagementSidebar({
           sidebarDispatcher={sidebarDispatcher}
           scopeAgents={scopeAgents}
           scopeDispatchers={scopeDispatchers}
-          scopeTeams={scopeTeams}
           selectedAgentId={selectedAgentId}
           onSelectAgent={onSelectAgent}
           onOpenChat={onOpenChat}
@@ -989,7 +913,6 @@ function ManagementSidebar({
             sidebarDispatcher={sidebarDispatcher}
             scopeAgents={scopeAgents}
             scopeDispatchers={scopeDispatchers}
-            scopeTeams={scopeTeams}
             selectedAgentId={selectedAgentId}
             onSelectAgent={onSelectAgent}
             scopeLoading={scopeLoading}
@@ -1044,37 +967,6 @@ function sessionSubtitleFor(session: ChatSession, _agent: AgentProfileRead | nul
   return recent ? staffdeckDisplayText(recent) : '新对话';
 }
 
-function TeamGroupAvatar({
-  team,
-  agents,
-  size = 42,
-}: {
-  team: TeamRead | null;
-  agents: AgentProfileRead[];
-  size?: number;
-}) {
-  const members = (team?.members || []).slice(0, 4);
-  const avatarSize = size >= 40 ? 17 : 14;
-  const radius = size >= 40 ? 5 : 4;
-
-  return (
-    <span
-      className="grid shrink-0 grid-cols-2 place-content-center gap-[2px] overflow-hidden rounded-[12px] border-[0.5px] border-[#dfe3ea] bg-[#eef0f4] p-[3px]"
-      style={{ width: size, height: size }}
-    >
-      {members.length > 0 ? members.map((member) => (
-        <EmployeeAvatar
-          key={member.id}
-          agent={agents.find((agent) => agent.id === member.agent_id)}
-          size={avatarSize}
-          radius={radius}
-        />
-      )) : (
-        <IconTeams className="col-span-2 m-auto size-[18px]! text-[#646b7c]" />
-      )}
-    </span>
-  );
-}
 
 function ChatSessionFilter({
   sessionFilter,
@@ -1228,7 +1120,6 @@ function ChatHandoffButton({
 function ChatSessionRow({
   session,
   agent,
-  team,
   agents,
   active,
   unread,
@@ -1238,7 +1129,6 @@ function ChatSessionRow({
 }: {
   session: ChatSession;
   agent: AgentProfileRead | null;
-  team: TeamRead | null;
   agents: AgentProfileRead[];
   active: boolean;
   unread: boolean;
@@ -1248,13 +1138,13 @@ function ChatSessionRow({
 }) {
   const title = sessionTitleFor(session, agent);
   const subtitle = sessionSubtitleFor(session, agent);
+  // 「我的团队」已下线，但历史会话里 team_id 仍可能非空：按只读的历史群聊展示，
+  // 名称优先用会话自带的 team_name，不再查团队花名册。
   const isTeamGroup = Boolean(session.team_id);
   const displayTitle = isTeamGroup
-    ? team?.name || session.team_name || title.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
+    ? session.team_name || title.replace(/^团队\s*/, '').replace(/\s*·\s*TL 对话$/, '')
     : title;
-  const displaySubtitle = isTeamGroup
-    ? team ? `${team.members.length} 位成员 · 团队群聊` : '团队群聊'
-    : subtitle;
+  const displaySubtitle = isTeamGroup ? '历史群聊' : subtitle;
 
   return (
     <div
@@ -1276,21 +1166,17 @@ function ChatSessionRow({
     >
       <Tooltip>
         <TooltipTrigger asChild>
-          {isTeamGroup ? (
-            <TeamGroupAvatar team={team} agents={agents} />
-          ) : (
-            <span className="inline-grid size-[42px] shrink-0 place-items-center overflow-hidden rounded-[12px] bg-[#f1f2f5] text-[#464c5e]">
-              {agent ? (
+          <span className="inline-grid size-[42px] shrink-0 place-items-center overflow-hidden rounded-[12px] bg-[#f1f2f5] text-[#464c5e]">
+            {agent && !isTeamGroup ? (
               <EmployeeAvatar agent={agent} size={42} radius={12} />
-              ) : (
-                <IconChatBubble className="size-[20px]!" />
-              )}
-            </span>
-          )}
+            ) : (
+              <IconChatBubble className="size-[20px]!" />
+            )}
+          </span>
         </TooltipTrigger>
         {(agent || isTeamGroup) && (
           <TooltipContent side="right" align="center">
-            {isTeamGroup ? `${displayTitle} · 团队群聊` : agent?.name}
+            {isTeamGroup ? `${displayTitle} · 历史群聊` : agent?.name}
           </TooltipContent>
         )}
       </Tooltip>
@@ -1394,7 +1280,6 @@ function CollapsedChatSidebar({
   sessions,
   sessionsLoading = false,
   agents,
-  scopeTeams = [],
   activeSessionId,
   sessionFilter,
   onSessionFilterChange,
@@ -1411,7 +1296,7 @@ function CollapsedChatSidebar({
   onToggle,
 }: Pick<
   AppSidebarChatProps,
-  'sessions' | 'sessionsLoading' | 'agents' | 'scopeTeams' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onNewConversation' | 'onOpenHome' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
+  'sessions' | 'sessionsLoading' | 'agents' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onNewConversation' | 'onOpenHome' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
 > & { onToggle: () => void }) {
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[20px] pt-[42px] pb-[10px]">
@@ -1506,9 +1391,6 @@ function CollapsedChatSidebar({
                 const active = session.id === activeSessionId;
                 const unread = isSessionUnread(session);
                 const title = sessionTitleFor(session, agent);
-                const team = session.team_id
-                  ? scopeTeams.find((item) => item.id === session.team_id) || null
-                  : null;
                 return (
                   <Tooltip key={session.id}>
                     <TooltipTrigger asChild>
@@ -1523,9 +1405,7 @@ function CollapsedChatSidebar({
                             : 'size-[36px] rounded-[10px] bg-[#D8D8D8] text-[#464c5e]',
                         )}
                       >
-                        {session.team_id ? (
-                          <TeamGroupAvatar team={team} agents={agents} size={active ? 36 : 32} />
-                        ) : agent ? (
+                        {agent && !session.team_id ? (
                           <EmployeeAvatar agent={agent} size={active ? 34 : 36} radius={10} />
                         ) : (
                           <IconChatBubble className="size-[18px]!" />
@@ -1537,7 +1417,7 @@ function CollapsedChatSidebar({
                     </TooltipTrigger>
                     <TooltipContent side="right" align="center">
                       {session.team_id
-                        ? `${team?.name || session.team_name || title} · 团队群聊`
+                        ? `${session.team_name || title} · 历史群聊`
                         : agent ? `${agent.name} · ${title}` : title}
                     </TooltipContent>
                   </Tooltip>
@@ -1571,7 +1451,6 @@ function ChatSidebarVariant({
   sessions,
   sessionsLoading = false,
   agents,
-  scopeTeams = [],
   activeSessionId,
   sessionFilter,
   onSessionFilterChange,
@@ -1591,7 +1470,6 @@ function ChatSidebarVariant({
   const { toggleSidebar, state } = useSidebar();
   const collapsed = state === 'collapsed';
   const showSkeleton = sessionsLoading && sessions.length === 0;
-  const teamById = new Map(scopeTeams.map((team) => [team.id, team]));
 
   if (collapsed) {
     return (
@@ -1600,7 +1478,6 @@ function ChatSidebarVariant({
           sessions={sessions}
           sessionsLoading={showSkeleton}
           agents={agents}
-          scopeTeams={scopeTeams}
           activeSessionId={activeSessionId}
           sessionFilter={sessionFilter}
           onSessionFilterChange={onSessionFilterChange}
@@ -1697,7 +1574,6 @@ function ChatSidebarVariant({
                     key={session.id}
                     session={session}
                     agent={sessionAgentFor(session, agents)}
-                    team={session.team_id ? teamById.get(session.team_id) || null : null}
                     agents={agents}
                     active={session.id === activeSessionId}
                     unread={isSessionUnread(session)}

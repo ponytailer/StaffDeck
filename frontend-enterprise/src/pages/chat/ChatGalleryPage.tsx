@@ -50,7 +50,6 @@ export default function ChatGalleryPage() {
         sessions={chat.visibleSidebarSessions}
         sessionsLoading={chat.sessionsLoading}
         agents={chat.agents}
-        scopeTeams={chat.teams}
         activeSessionId={chat.sessionId}
         sessionFilter={chat.sessionAgentFilter}
         onSessionFilterChange={chat.setSessionAgentFilter}

@@ -1533,6 +1533,7 @@ export function mergeTurnTraceSnapshot(existing: TurnTrace | undefined, incoming
     startedAt,
     completedAt: incoming.completedAt || existing.completedAt,
     durationMs: incoming.durationMs ?? existing.durationMs,
+    firstTokenMs: incoming.firstTokenMs ?? existing.firstTokenMs,
   };
 }
 

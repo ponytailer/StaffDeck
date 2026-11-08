@@ -70,7 +70,6 @@ from app.db.models import (
     HarnessTurnRecord,
     Message,
     Skill,
-    Team,
     utc_now,
 )
 from app.knowledge.citations import (

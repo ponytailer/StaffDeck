@@ -17,7 +17,6 @@ import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import { RevealGroup } from '../components/RevealGroup';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
-import TeamCard, { teamLeader } from '../components/TeamCard';
 import {
   canManageEmployeeAgent,
   employeeDisplayName,
@@ -32,9 +31,9 @@ import {
   ENTERPRISE_AGENT_STORAGE_KEY,
   onAgentRosterRefresh,
 } from '../lib/agent-scope-storage';
-import type { AgentProfileRead, TeamRead } from '../types';
+import type { AgentProfileRead } from '../types';
 
-type GalleryScope = 'all' | 'mine' | 'teams' | 'gallery';
+type GalleryScope = 'all' | 'mine' | 'gallery';
 
 export default function EmployeeGalleryPage({
   currentUser,
@@ -48,15 +47,12 @@ export default function EmployeeGalleryPage({
   onLogout?: () => void;
 }) {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
-  const [teams, setTeams] = useState<TeamRead[]>([]);
-  const [teamsLoadFailed, setTeamsLoadFailed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [startingAgentId, setStartingAgentId] = useState<string | null>(null);
-  const [startingTeamId, setStartingTeamId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [scope, setScope] = useState<GalleryScope>('all');
   const navigate = useNavigate();
@@ -73,20 +69,8 @@ export default function EmployeeGalleryPage({
     }
   }
 
-  async function loadTeams() {
-    try {
-      const rows = await api.get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`);
-      setTeams(rows);
-      setTeamsLoadFailed(false);
-    } catch (error) {
-      setTeamsLoadFailed(true);
-      notify.error(error instanceof Error ? error.message : '加载团队失败');
-    }
-  }
-
   useEffect(() => {
     void load();
-    void loadTeams();
   }, []);
 
   // 员工列表按页面各自拉取：创建 / 编辑 / 上下线 / 删除发生在别的页面或 App
@@ -103,7 +87,6 @@ export default function EmployeeGalleryPage({
   // Keep these tabs aligned with the rest of the app:
   // - 所有员工: employees the current user can access and chat with
   // - 我的数字员工: employees the current user can manage/edit
-  // - 团队对话: teams the backend has authorized for the current tenant
   // - 数字员工广场: public employees not already listed as mine
   const availableAgents = useMemo(
     () => visibleEmployeeAgents(agents, currentUser, { activeOnly: true }),
@@ -138,16 +121,6 @@ export default function EmployeeGalleryPage({
     ].some((value) => value.toLowerCase().includes(keyword));
   });
 
-  const filteredTeams = teams.filter((team) => {
-    const keyword = searchTerm.trim().toLowerCase();
-    if (!keyword) return true;
-    return [
-      team.name,
-      team.description || '',
-      teamLeader(team)?.agent_name || '',
-    ].some((value) => value.toLowerCase().includes(keyword));
-  });
-
   async function startEmployeeChat(row: AgentProfileRead) {
     if (startingAgentId) return;
     setStartingAgentId(row.id);
@@ -161,23 +134,6 @@ export default function EmployeeGalleryPage({
       notify.error(error instanceof Error ? error.message : '发起对话失败');
     } finally {
       setStartingAgentId(null);
-    }
-  }
-
-  async function startTeamChat(team: TeamRead) {
-    if (startingTeamId) return;
-    setStartingTeamId(team.id);
-    try {
-      const result = await api.post<{ session_id: string }>(
-        `/api/enterprise/teams/${team.id}/tl/session`,
-        { tenant_id: TENANT_ID },
-      );
-      if (!result.session_id) throw new Error('未返回团队群聊');
-      navigate(`/workspace/chat/${result.session_id}`);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '发起团队对话失败');
-    } finally {
-      setStartingTeamId(null);
     }
   }
 
@@ -255,15 +211,11 @@ export default function EmployeeGalleryPage({
   const galleryTabs: UnderlineTabItem<GalleryScope>[] = [
     { value: 'all', label: '所有员工' },
     { value: 'mine', label: '我的数字员工' },
-    { value: 'teams', label: '团队对话' },
     { value: 'gallery', label: '数字员工广场' },
   ];
 
   function changeScope(nextScope: GalleryScope) {
     setScope(nextScope);
-    if (nextScope === 'teams' && teamsLoadFailed) {
-      void loadTeams();
-    }
   }
 
   const hasSearchTerm = Boolean(searchTerm.trim());
@@ -271,10 +223,6 @@ export default function EmployeeGalleryPage({
   const emptyDescription = hasSearchTerm
     ? '换个关键词，或切换员工分类再试试'
     : '当前分类还没有可用员工';
-  const teamsEmptyText = hasSearchTerm ? '没有匹配的团队' : '暂无团队';
-  const teamsEmptyDescription = hasSearchTerm
-    ? '换个关键词再试试'
-    : '请先在管理端创建团队并设置项目领导';
 
   // 「我的数字员工」还需要在下方挂「我创建的技能」维护区，所以把员工网格抽出来复用，
   // 避免在 mine / 其它两个 tab 之间复制同一段 JSX。
@@ -337,27 +285,7 @@ export default function EmployeeGalleryPage({
         tabClassName="max-[560px]:min-h-[54px] max-[560px]:w-auto max-[560px]:flex-1 max-[560px]:px-[6px] max-[560px]:text-[12px] max-[560px]:leading-[16px]"
       />
 
-      {scope === 'teams' ? (
-        <section aria-label="团队">
-          <RevealGroup
-            className="grid grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]"
-            itemCount={filteredTeams.length}
-          >
-            {filteredTeams.map((team) => (
-              <TeamCard
-                key={team.id}
-                team={team}
-                agents={agents}
-                busy={startingTeamId === team.id}
-                onOpen={() => void startTeamChat(team)}
-              />
-            ))}
-            {!filteredTeams.length && (
-              <EmployeeGalleryEmptyState title={teamsEmptyText} description={teamsEmptyDescription} />
-            )}
-          </RevealGroup>
-        </section>
-      ) : scope === 'mine' ? (
+      {scope === 'mine' ? (
         <>
           <section aria-label="我的数字员工">{employeeGrid}</section>
           <MyCreatedSkillsPanel agents={agents} searchTerm={searchTerm} />

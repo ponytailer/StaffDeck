@@ -27,10 +27,6 @@ import type { UseChatSession } from '../useChatSession';
 import ChatEmptyState from './ChatEmptyState';
 import MessageBubble, { dispatchAnswerInfo, type MessageRender } from './MessageBubble';
 import ScheduledDraftCard from './ScheduledDraftCard';
-import TeamCollaborationPanel, {
-  mergeTeamChatTimeline,
-  useTeamCollaborations,
-} from './TeamCollaborationPanel';
 
 export default function MessageList({
   chat,
@@ -83,28 +79,13 @@ export default function MessageList({
     }
     return dispatchAnswerInfo(messageItem);
   };
-  const teamCollaborations = useTeamCollaborations(chat.displayedTeam);
-  const timelineEntries = mergeTeamChatTimeline(renderMessages, teamCollaborations);
 
   return (
     <div className={CHAT_MESSAGES_CLASS} ref={chatMessagesRef} onScroll={handleChatMessagesScroll}>
-      {timelineEntries.length === 0 && (emptyState ?? <ChatEmptyState chat={chat} />)}
+      {renderMessages.length === 0 && (emptyState ?? <ChatEmptyState chat={chat} />)}
 
       <div className={CHAT_MESSAGE_STACK_CLASS}>
-        {timelineEntries.map((entry) => {
-          if (entry.kind === 'collaboration') {
-            return chat.displayedTeam ? (
-              <TeamCollaborationPanel
-                key={`${entry.conversation.session_id}:collaboration`}
-                team={chat.displayedTeam}
-                agents={chat.agents}
-                conversation={entry.conversation}
-                onOpenCitation={chat.setActiveCitation}
-                hideCitations={hideKnowledgeCitations}
-              />
-            ) : null;
-          }
-          const { message: item, messageIndex: itemIndex } = entry;
+        {renderMessages.map((item, itemIndex) => {
           const turnId = item.turnId || item.id;
           const fallbackTraceId = item.role === 'assistant' && item.isStreaming
             ? (currentStream.turnId || runningTurn?.turnId || '')
@@ -228,6 +209,7 @@ export default function MessageList({
               startedAt: trace.startedAt,
               completedAt: trace.completedAt,
               durationMs: trace.durationMs,
+              firstTokenMs: trace.firstTokenMs,
             }
             : undefined;
 

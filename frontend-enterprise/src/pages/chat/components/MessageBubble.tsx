@@ -73,6 +73,8 @@ export type TurnTraceTiming = {
   startedAt: number;
   completedAt?: number;
   durationMs?: number;
+  /** 首 token 耗时（毫秒）。缺失时只显示总耗时（如兜底回复 / 非流式）。 */
+  firstTokenMs?: number;
 };
 
 export type MessageRender = {
@@ -138,7 +140,14 @@ function activeTeamProgress(item: ChatMessage): { phase: string; statusText: str
   return statusText ? { phase, statusText } : null;
 }
 
-/** 本轮整体耗时：未完成时实时跳动，完成后定格。 */
+/**
+ * 本轮耗时：未完成时实时跳动，完成后定格。
+ *
+ * 有首 token 数据时拆成「首 token X · 总耗时 Y」：
+ * - 首 token = 消息发出 → 第一个答案字符出现（用户真正感知的「开始答应」）
+ * - 总耗时  = 消息发出 → 答案落库（含路由/检索/工具/落库，口径更宽）
+ * 两者差距大时，用户一眼能看出慢在「等第一个字」还是「收尾」。
+ */
 function TurnDurationNote({ timing }: { timing: TurnTraceTiming }) {
   const running = timing.completedAt === undefined && timing.durationMs === undefined;
   const [now, setNow] = useState(() => Date.now());
@@ -154,16 +163,29 @@ function TurnDurationNote({ timing }: { timing: TurnTraceTiming }) {
       : Math.max(0, now - timing.startedAt));
   const label = formatTraceDuration(durationMs);
   if (!label) return null;
+  // 只有服务端投影带回真实首包时间时才显示（流式中途还没有，兜底回复没有）。
+  const firstTokenLabel = !running && timing.firstTokenMs !== undefined && timing.firstTokenMs >= 0
+    ? formatTraceDuration(timing.firstTokenMs)
+    : '';
   return (
     <span
       className={cn(CHAT_TRACE_TOTAL_DURATION_CLASS, running && CHAT_TRACE_FLOW_TEXT_CLASS)}
       data-i18n-ignore
       title={running
         ? '本轮仍在执行，计时进行中'
-        // 「3s 就有答案，却显示 8.9s」多数是口径差：小队这一轮还包含
-        // 路由决策、成员会话准备、知识检索与答案落库，不只是模型出字的那几秒。
-        : '本轮总耗时：从消息发出到答案落库，含路由/检索/工具与模型调用'}
+        // 「3s 就有答案，却显示 8.9s」多数是口径差：这一轮还包含路由决策、
+        // 知识检索与答案落库，不只是模型出字的那几秒 —— 拆出首 token 后
+        // 用户能直接看出「等第一个字」与「收尾」各占多少。
+        : firstTokenLabel
+          ? `首 token ${firstTokenLabel}：消息发出到第一个字出现；总耗时 ${label}：消息发出到答案落库`
+          : '本轮总耗时：从消息发出到答案落库，含路由/检索/工具与模型调用'}
     >
+      {firstTokenLabel && (
+        <>
+          首 token {firstTokenLabel}
+          <span aria-hidden> · </span>
+        </>
+      )}
       总耗时 {label}
     </span>
   );
@@ -206,7 +228,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
   const sentSlashCommand = item.role === 'user'
     ? slashCommandMessage(visibleContent, chat.slashCommands)
     : null;
-  const groupAssistantMessage = item.role === 'assistant' && Boolean(chat.displayedTeam);
+  const groupAssistantMessage = item.role === 'assistant' && Boolean(chat.currentSession?.team_id);
   const groupSenderName = chat.displayedAgent
     ? employeeDisplayName(chat.displayedAgent)
     : '项目领导';

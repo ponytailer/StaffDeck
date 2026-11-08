@@ -229,7 +229,7 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
                     对话上下文与自动压缩
                   </CardTitle>
                   <p className="mt-[7px] text-[11px] leading-[17px] text-muted-foreground">
-                    租户级即时生效；单员工会话和团队成员任务共享这套参数。
+                    租户级即时生效；单员工会话与定时任务共享这套参数。
                   </p>
                 </div>
                 <UIButton

@@ -19,7 +19,7 @@ RouterDecisionValue = Literal[
     "clarify",
 ]
 TaskFrameKind = Literal["sop", "conversation"]
-TaskFrameExecutionTarget = Literal["self", "team_member"]
+TaskFrameExecutionTarget = Literal["self"]
 TaskFrameRunStatus = Literal[
     "queued",
     "running",
@@ -227,8 +227,7 @@ class ChatTurnRequest(BaseModel):
     message: str
     attachments: list["ChatAttachmentRead"] = Field(default_factory=list)
     channel: str = "web"
-    interaction_mode: Literal["normal", "scheduled_task", "team_task", "team_tl"] = "normal"
-    team_context: Optional["TeamPlannerContext"] = Field(default=None, exclude=True)
+    interaction_mode: Literal["normal", "scheduled_task"] = "normal"
     # Server-only prompt prefix. It is consumed by the runtime but never persisted as
     # the user's visible message or serialized into background-job payloads.
     context_injection: Optional[str] = Field(default=None, exclude=True)
@@ -254,19 +253,6 @@ class ChatTurnRequest(BaseModel):
     # 打开后也不是无脑联网 —— 知识工作流先查本地知识库，证据不够才补联网。
     web_search: bool = False
     debug: bool = False
-
-
-class TeamPlannerMember(BaseModel):
-    agent_id: str
-    name: str
-    role: Optional[str] = None
-    capabilities: list[str] = Field(default_factory=list)
-
-
-class TeamPlannerContext(BaseModel):
-    team_id: str
-    leader_agent_id: str
-    members: list[TeamPlannerMember] = Field(default_factory=list)
 
 
 class ChatAttachmentRead(BaseModel):

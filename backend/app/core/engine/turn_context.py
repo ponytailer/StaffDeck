@@ -39,12 +39,7 @@ def _turn_skill_projection(
     *,
     interaction_mode: str,
 ) -> tuple[list[Skill], list[Skill]]:
-    """Project executable and routable SOPs for every supported turn mode.
-
-    Team TL conversations already own a dedicated session, so hiding the
-    leader's SOPs here would only disable valid work; it is not required for
-    state isolation.
-    """
+    """Project executable and routable SOPs for every supported turn mode."""
 
     _ = interaction_mode
     skills = expand_visible_sops(source_skills)
@@ -87,7 +82,6 @@ def _intent_cache_key(
     conversation_context: dict[str, Any] | None,
     memory_context: list[dict[str, Any]],
     planner_state: list[dict[str, Any]],
-    team_context: Any,
 ) -> str | None:
     """按 planner 的**全部输入**计算指纹；不可序列化返回 None（不缓存）。
 
@@ -104,9 +98,6 @@ def _intent_cache_key(
             "conversation_context": conversation_context,
             "memory_context": memory_context,
             "planner_state": planner_state,
-            "team_context": (
-                team_context.model_dump(mode="json") if team_context is not None else None
-            ),
         }
         raw = json.dumps(material, ensure_ascii=False, sort_keys=True, default=str)
         return f"intent:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"

@@ -1,5 +1,4 @@
 import EmployeeAvatar from '@/components/EmployeeAvatar';
-import { teamLeader } from '@/components/TeamCard';
 import { employeeDisplayName } from '@/employee';
 
 import {
@@ -20,9 +19,6 @@ function greetingFontSize(displayName: string): number {
 }
 
 export default function ChatEmptyState({ chat }: { chat: UseChatSession }) {
-  if (chat.currentSession?.team_id) {
-    return <TeamEmptyCard chat={chat} />;
-  }
   // 多智能体不是普通员工：不套「#角色 / 资料 / 技能 / SOP」那套话术，
   // 改为展示它自己表单里的「入口说明」与「成员有谁」。
   if (chat.displayedAgentIsDispatcher) {
@@ -85,7 +81,7 @@ function DispatcherEmptyCard({ chat }: { chat: UseChatSession }) {
   const displayName = displayedAgent ? employeeDisplayName(displayedAgent) : '';
   const members = displayedDispatcher?.members || [];
   const agentById = (agentId: string) => agents.find((agent) => agent.id === agentId) || null;
-  // 头像叠放沿用团队名片的手法；成员不在当前花名册里时 EmployeeAvatar 自己回落预设头像
+  // 头像叠放；成员不在当前花名册里时 EmployeeAvatar 自己回落预设头像
   const avatarMembers = members.slice(0, 3);
   // 成员名 chips：routing_rule 挂在 title 上，鼠标停一下能看到「什么情况转给他」。
   // 详情还没回来时不要谎称「没有成员」——配置好的入口一进来就会看到这句话。
@@ -211,76 +207,6 @@ function EmployeeEmptyCard({ chat }: { chat: UseChatSession }) {
         </div>
         <div className="flex flex-1 items-stretch">
           {emptyStats.map((item) => (
-            <div key={item.label} className={CHAT_EMPTY_STAT_CELL_CLASS}>
-              <span className="text-[18px] font-medium leading-none">{item.value}</span>
-              <span className="text-[10px] leading-none">{item.label}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TeamEmptyCard({ chat }: { chat: UseChatSession }) {
-  const { displayedTeam, currentSession, agents, teamEmptyStats } = chat;
-  const members = displayedTeam?.members || [];
-  const leader = displayedTeam ? teamLeader(displayedTeam) : null;
-  const teamName = displayedTeam?.name || currentSession?.team_name || '';
-  const agentById = (agentId: string) => agents.find((agent) => agent.id === agentId) || null;
-  const summary = displayedTeam?.description?.trim()
-    || `团队由 ${members.length} 名成员组成，项目领导是 ${leader?.agent_name || '未设置'}`;
-  const memberTags = members.slice(0, 5).map((member) => (
-    member.role === 'leader'
-      ? `${member.agent_name || '未设置'} · 项目领导`
-      : member.agent_name || '未设置'
-  ));
-  const stats = [
-    { label: '成员数', value: members.length },
-    { label: '任务数', value: teamEmptyStats.tasks },
-    { label: '黑板条目数', value: teamEmptyStats.blackboard },
-  ];
-
-  return (
-    <div className={CHAT_EMPTY_CLASS}>
-      <div className={CHAT_EMPTY_GREETING_CARD_CLASS}>
-        <div className="flex min-h-[102px] w-full gap-[10px]">
-          <div className="relative h-[102px] w-[136px] shrink-0 self-end">
-            <div className="absolute inset-x-0 bottom-[14px] flex items-center justify-center">
-              {members.slice(0, 3).map((member) => (
-                <EmployeeAvatar
-                  key={member.id}
-                  agent={agentById(member.agent_id)}
-                  size={56}
-                  className="-ml-[14px] shrink-0 rounded-full ring-4 ring-[#f6f6f6] first:ml-0"
-                />
-              ))}
-            </div>
-          </div>
-          <div className="flex min-w-0 flex-1 flex-col justify-center gap-[8px] py-[12px] capitalize">
-            <strong
-              className={`${CHAT_EMPTY_TITLE_CLASS} max-w-full [overflow-wrap:anywhere]`}
-              style={{ fontSize: `${greetingFontSize(teamName)}px` }}
-              title={teamName}
-            >
-              Hello 我们是{teamName}！
-            </strong>
-            <span className={CHAT_EMPTY_SUBTITLE_CLASS}>我们来做什么？</span>
-          </div>
-        </div>
-      </div>
-
-      <div className={CHAT_EMPTY_CARD_CLASS}>
-        <div className="flex min-w-0 flex-1 flex-col justify-center gap-[8px] px-[4px]">
-          <p className={CHAT_EMPTY_ROLE_CLASS}>{summary}</p>
-          <div className={CHAT_EMPTY_TAGS_CLASS}>
-            {memberTags.map((tag, index) => (
-              <span key={`${tag}-${index}`}>{tag}</span>
-            ))}
-          </div>
-        </div>
-        <div className="flex flex-1 items-stretch">
-          {stats.map((item) => (
             <div key={item.label} className={CHAT_EMPTY_STAT_CELL_CLASS}>
               <span className="text-[18px] font-medium leading-none">{item.value}</span>
               <span className="text-[10px] leading-none">{item.label}</span>

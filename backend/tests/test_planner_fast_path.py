@@ -42,7 +42,6 @@ def test_fast_path_hits_on_clean_context() -> None:
         available_skills=[],
         task_frame_state=None,
         interaction_mode="normal",
-        team_context=None,
     )
 
     assert plan is not None
@@ -64,7 +63,6 @@ def test_fast_path_plan_normalizes_like_llm_plan() -> None:
         available_skills=[],
         task_frame_state=None,
         interaction_mode="normal",
-        team_context=None,
     )
     assert plan is not None
 
@@ -93,7 +91,6 @@ def test_fast_path_skips_when_skills_available() -> None:
         available_skills=[_skill()],
         task_frame_state=None,
         interaction_mode="normal",
-        team_context=None,
     )
     assert plan is None
 
@@ -105,7 +102,6 @@ def test_fast_path_skips_when_active_skill() -> None:
         available_skills=[],
         task_frame_state=None,
         interaction_mode="normal",
-        team_context=None,
     )
     assert plan is None
 
@@ -117,7 +113,6 @@ def test_fast_path_skips_when_pending_tasks() -> None:
         available_skills=[],
         task_frame_state=None,
         interaction_mode="normal",
-        team_context=None,
     )
     assert plan is None
 
@@ -129,7 +124,6 @@ def test_fast_path_skips_when_task_frames_present() -> None:
         available_skills=[],
         task_frame_state=[{"task_id": "task-1", "kind": "conversation"}],
         interaction_mode="normal",
-        team_context=None,
     )
     assert plan is None
 
@@ -141,7 +135,6 @@ def test_fast_path_skips_on_handoff_keyword() -> None:
         available_skills=[],
         task_frame_state=None,
         interaction_mode="normal",
-        team_context=None,
     )
     assert plan is None
 
@@ -151,7 +144,6 @@ def test_fast_path_skips_on_handoff_keyword() -> None:
         available_skills=[],
         task_frame_state=None,
         interaction_mode="normal",
-        team_context=None,
     )
     assert plan is None
 
@@ -164,8 +156,7 @@ def test_fast_path_skips_on_slash_command_and_empty() -> None:
             available_skills=[],
             task_frame_state=None,
             interaction_mode="normal",
-            team_context=None,
-        )
+            )
         assert plan is None, message
 
 

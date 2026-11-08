@@ -10,7 +10,7 @@ import {
   resetDispatcherScopeCacheForTests,
 } from '@/lib/dispatcher-scope';
 import { I18nProvider } from '@/i18n';
-import type { AgentProfileRead, TeamRead } from '@/types';
+import type { AgentProfileRead } from '@/types';
 
 import App from './App';
 
@@ -31,19 +31,6 @@ const agent: AgentProfileRead = {
   status: 'active',
   metadata: {},
   resources: [],
-  created_at: '2026-08-01T00:00:00Z',
-  updated_at: '2026-08-01T00:00:00Z',
-};
-
-const team: TeamRead = {
-  id: 'team-1',
-  tenant_id: 'tenant_demo',
-  name: '增长团队',
-  description: '',
-  owner_user_id: 'user-1',
-  config: {},
-  status: 'active',
-  members: [],
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',
 };
@@ -109,22 +96,14 @@ function stubAppFetch(
   options: { agents?: AgentProfileRead[]; dispatchers?: unknown[] } = {},
 ) {
   const agents = options.agents ?? [agent];
-  // 不给就当成「没有员工小队」，避免影响既有的团队/落地页用例
+  // 不给就当成「没有员工小队」，避免影响既有的落地页用例
   const dispatchers = options.dispatchers ?? [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method || 'GET').toUpperCase();
-    if (method === 'POST' && url.includes('/tl/session')) {
-      return jsonResponse({ session_id: 'session-tl-1' });
-    }
     if (url.includes('/api/auth/me')) return jsonResponse(currentUser);
     if (url.includes('/api/enterprise/dispatchers')) return jsonResponse(dispatchers);
     if (url.includes('/api/enterprise/agents')) return jsonResponse(agents);
-    if (/\/api\/enterprise\/teams\/team-1\/(tasks|blackboard|events)/.test(url)) {
-      return jsonResponse([]);
-    }
-    if (url.includes('/api/enterprise/teams/team-1')) return jsonResponse(team);
-    if (url.includes('/api/enterprise/teams')) return jsonResponse([team]);
     if (url.includes('/api/enterprise/model-configs')) return jsonResponse([modelConfig]);
     // 知识库列表是分页对象（{items,...}），返空数组会让页面里的 page.items 变 undefined
     if (url.includes('/api/enterprise/knowledge-bases')) {
@@ -177,45 +156,16 @@ afterEach(() => {
   window.history.pushState({}, '', '/');
 });
 
-describe('App team scope selection', () => {
-  it('opens the team group in the chat app when a team is selected', async () => {
-    const user = userEvent.setup();
-    const fetchMock = stubAppFetch();
-    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'agent-1');
-    window.history.pushState({}, '', '/enterprise/agents');
+describe('我的团队模块已移除', () => {
+  it('不再请求任何 /api/enterprise/teams 接口，也不再渲染团队入口', async () => {
+    const fetchMock = stubAppFetch(authUser);
     render(<I18nProvider><App /></I18nProvider>);
 
-    const switcher = await screen.findByLabelText('切换当前员工');
-    await user.click(switcher);
-    const menu = await screen.findByRole('menu');
-    const teamItem = within(menu)
-      .getAllByRole('menuitem')
-      .find((item) => item.textContent?.includes('增长团队'));
-    expect(teamItem).toBeTruthy();
-    await user.click(teamItem!);
-
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/workspace/chat/session-tl-1');
-    });
-    const postCall = fetchMock.mock.calls.find(([, init]) => (
-      (init?.method || '').toUpperCase() === 'POST'
-    ));
-    expect(String(postCall?.[0])).toContain('/api/enterprise/teams/team-1/tl/session');
-    expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('team:team-1');
-  });
-
-  it('keeps a preset team scope instead of resetting it to an employee on agents load', async () => {
-    stubAppFetch();
-    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'team:team-1');
-    window.history.pushState({}, '', '/enterprise/agents');
-    render(<I18nProvider><App /></I18nProvider>);
-
-    const switcher = await screen.findByLabelText('切换当前员工');
-    await waitFor(() => {
-      expect(switcher.textContent).toContain('当前团队');
-      expect(switcher.textContent).toContain('增长团队');
-    });
-    expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('team:team-1');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const teamCalls = fetchMock.mock.calls.filter(([input]) =>
+      String(input).includes('/api/enterprise/teams'));
+    expect(teamCalls).toHaveLength(0);
+    expect(screen.queryByText('我的团队')).toBeNull();
   });
 });
 

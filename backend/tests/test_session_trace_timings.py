@@ -499,6 +499,8 @@ def _model_span(
     session_id: str = "session_demo",
     task_frame_id: str = "",
     iteration: int | None = None,
+    ttft_ms: int | None = None,
+    stream: bool = False,
 ) -> AgentEvent:
     return _event(
         "llm_call_finished",
@@ -513,6 +515,69 @@ def _model_span(
             "model_name": "GLM Test",
             **({"task_frame_id": task_frame_id} if task_frame_id else {}),
             **({"iteration": iteration} if iteration is not None else {}),
+            **({"ttft_ms": ttft_ms} if ttft_ms is not None else {}),
+            "stream": stream,
         },
         session_id=session_id,
     )
+
+
+def test_trace_reports_first_token_alongside_total_duration() -> None:
+    """首 token = 消息发出 → 第一个答案字符，与总耗时分别投影。"""
+    turn_started = datetime(2026, 1, 1, 12, 0, 0)
+    traces = [
+        {
+            "turn_id": "turn_first_token",
+            "started_at": turn_started.isoformat(),
+            "completed_at": (turn_started + timedelta(milliseconds=9000)).isoformat(),
+            "lines": [],
+        }
+    ]
+    events = [
+        _model_span(
+            turn_started,
+            finished_after_ms=8900,
+            started_after_ms=3000,
+            duration_ms=5900,
+            operation="response.knowledge_answer",
+            stream=True,
+            turn_id="turn_first_token",
+            ttft_ms=1200,
+        ),
+    ]
+
+    enriched = enrich_turn_traces_with_timings(traces, events)[0]
+
+    assert enriched["duration_ms"] == 9000
+    # 3000（开始生成）+ 1200（首个内容包）= 4200
+    assert enriched["first_token_ms"] == 4200
+
+
+def test_trace_omits_first_token_for_non_streaming_response() -> None:
+    """非流式调用的 ttft 等于整个生成时长，不能伪装成「首 token」。"""
+    turn_started = datetime(2026, 1, 1, 12, 0, 0)
+    traces = [
+        {
+            "turn_id": "turn_non_stream",
+            "started_at": turn_started.isoformat(),
+            "completed_at": (turn_started + timedelta(milliseconds=6000)).isoformat(),
+            "lines": [],
+        }
+    ]
+    events = [
+        _model_span(
+            turn_started,
+            finished_after_ms=5000,
+            started_after_ms=1000,
+            duration_ms=4000,
+            operation="response.generate",
+            stream=False,
+            turn_id="turn_non_stream",
+            ttft_ms=4000,
+        ),
+    ]
+
+    enriched = enrich_turn_traces_with_timings(traces, events)[0]
+
+    assert enriched["duration_ms"] == 6000
+    assert "first_token_ms" not in enriched

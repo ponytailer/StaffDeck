@@ -21,6 +21,11 @@ class _ModelSpan:
     started_ms: float
     finished_ms: float
     duration_ms: float
+    # 首个内容包的等待时间。只有流式调用才是真实的「首 token」；非流式
+    # 调用会把整个生成时长填进来（provider 一次返回全文），所以还要配合
+    # ``streamed`` 一起判断，不能只看 operation 名。
+    ttft_ms: float | None = None
+    streamed: bool = False
 
 
 @dataclass
@@ -59,7 +64,13 @@ def enrich_turn_traces_with_timings(
         # Timing fields are a projection over durable events rather than source
         # data. Always clear a previous projection first so historical cached
         # traces cannot keep the old ``0ms / 0 calls`` placeholders.
-        for key in ("duration_ms", "model_duration_ms", "model_names", "model_call_count"):
+        for key in (
+            "duration_ms",
+            "first_token_ms",
+            "model_duration_ms",
+            "model_names",
+            "model_call_count",
+        ):
             trace.pop(key, None)
         for line in lines:
             for key in ("duration_ms", "model_duration_ms", "model_names"):
@@ -68,7 +79,7 @@ def enrich_turn_traces_with_timings(
         response_spans = [
             span
             for span in spans
-            if span.operation in {"response.generate", "response.generate_stream"}
+            if span.operation.startswith("response.")
         ]
         if response_spans and not any(line.get("id") == "response_generation" for line in lines):
             response_started = min(span.started_ms for span in response_spans)
@@ -121,6 +132,31 @@ def enrich_turn_traces_with_timings(
         trace_finished = _iso_ms(trace.get("completed_at"))
         if trace_started is not None and trace_finished is not None:
             trace["duration_ms"] = round(max(0.0, trace_finished - trace_started), 3)
+            # 「首 token」= 用户发出消息 → 第一个答案字符出现。
+            #
+            # 判定必须同时满足「是作答调用」+「流式」+「记录了 ttft」：
+            # - 作答调用的 operation 有四种：`response.generate`（非流式）、
+            #   `response.generate_stream`、`response.knowledge_answer`（知识
+            #   问答，默认流式）、`response.direct_reply`。按名字猜会漏掉知识
+            #   问答 —— 实测它是主要路径，所以用 `response.` 前缀 + 下面的
+            #   `streamed` 判断。
+            # - 非流式调用一次返回全文，ttft 等于整个生成时长，用它会把首
+            #   token 标成接近总耗时，必须排除。
+            # - 兜底回复 / 无模型调用的轮次根本没有作答 span，字段直接缺省。
+            stream_response_spans = [
+                span
+                for span in response_spans
+                if span.streamed and span.ttft_ms is not None
+            ]
+            if stream_response_spans:
+                first_content_ms = min(
+                    span.started_ms + float(span.ttft_ms or 0.0)
+                    for span in stream_response_spans
+                )
+                trace["first_token_ms"] = round(
+                    max(0.0, first_content_ms - trace_started),
+                    3,
+                )
             model_duration_ms = _model_duration_in_window(
                 spans,
                 trace_started,
@@ -333,6 +369,8 @@ def _model_spans_by_turn(
                 started_ms=started_ms,
                 finished_ms=finished_ms,
                 duration_ms=duration_ms or max(0.0, finished_ms - started_ms),
+                ttft_ms=_optional_ms(payload.get("ttft_ms")),
+                streamed=payload.get("stream") is True,
             )
         )
     for spans in spans_by_turn.values():
@@ -631,6 +669,20 @@ def _float_ms(value: object) -> float:
         return max(0.0, float(value or 0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _optional_ms(value: object) -> float | None:
+    """可缺省的毫秒值。
+
+    ``None`` 与 ``0`` 在这里语义不同：``ttft_ms=None`` 表示「这条调用没有
+    记录首包时间」（非流式或被跳过），不能被当成「首 token 为 0ms」。
+    """
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _positive_int(value: object, *, default: int) -> int:

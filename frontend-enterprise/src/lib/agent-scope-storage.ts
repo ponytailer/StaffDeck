@@ -17,8 +17,10 @@ export function clearSharedAgentScope(userId?: string): void {
   window.localStorage.removeItem(ENTERPRISE_AGENT_STORAGE_KEY);
 }
 
-// Team scopes share the same storage slot as employee agent ids, prefixed so
-// readers can tell "current team" apart from "current employee".
+/** 历史兼容：`我的团队` 功能已移除，但老用户的 localStorage 里可能仍残留
+ * `team:<id>` 作用域值。保留前缀识别是为了让 `readEmployeeScope()` 把它折成
+ * 「未选员工」，避免残留值被当成员工 id 覆写或传给后端查询。
+ * 新代码不应再调用 `toTeamScope` / `teamIdFromScope` 产生 team 作用域。 */
 export const TEAM_SCOPE_PREFIX = 'team:';
 
 export function toTeamScope(teamId: string): string {
@@ -35,7 +37,7 @@ export function teamIdFromScope(value: string | null | undefined): string {
   return isTeamScope(value) ? String(value).slice(TEAM_SCOPE_PREFIX.length) : '';
 }
 
-/** 读取共享作用域；团队作用域对员工向页面视为"未选员工"，返回空串。 */
+/** 读取共享作用域；历史残留的 team 作用域对员工向页面视为"未选员工"，返回空串。 */
 export function readEmployeeScope(): string {
   const raw = window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '';
   return isTeamScope(raw) ? '' : raw;

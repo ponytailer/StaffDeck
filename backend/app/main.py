@@ -35,7 +35,6 @@ from app.api import (
     sessions,
     skills,
     static_assets,
-    teams,
     tool_access,
     tools,
     traces,
@@ -57,7 +56,6 @@ from app.public_api.webhooks import enqueue_due_webhook_deliveries
 from app.runtime_lock import acquire_runtime_instance_lock, release_runtime_instance_lock
 from app.scheduled_tasks.worker import start_background_worker, stop_background_worker
 from app.security.auth import read_token_payload, share_scope_from_payload
-from app.teams.sweeper import start_timeout_sweeper, stop_timeout_sweeper
 from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.version import app_version
 
@@ -132,7 +130,6 @@ def on_startup() -> None:
         recover_a2a_client_tasks()
         if settings.scheduler_backend != "rq":
             start_background_worker()
-        start_timeout_sweeper()
         start_harness_recovery_sweeper()
         # Internal durable jobs (for example feedback analysis) use the same
         # recovery table even when the externally exposed API is disabled.
@@ -151,7 +148,6 @@ def on_shutdown() -> None:
     try:
         stop_public_api_maintenance()
         stop_background_worker()
-        stop_timeout_sweeper()
         stop_harness_recovery_sweeper()
         shutdown_async_jobs()
     finally:
@@ -197,8 +193,6 @@ app.include_router(scheduled_tasks.chat_router)
 app.include_router(scheduled_tasks.chat_draft_router)
 app.include_router(scheduled_task_monitor.enterprise_router)
 app.include_router(ui_config.enterprise_router)
-app.include_router(teams.router)
-app.include_router(teams.threads_router)
 app.include_router(tools.router)
 app.include_router(tools.mcp_router)
 app.include_router(tool_access.router)

@@ -62,9 +62,6 @@ import OpenPlatformPage from "./pages/OpenPlatformPage";
 import PlatformUpdatesPage from "./pages/PlatformUpdatesPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
-import TeamChatPage from "./pages/TeamChatPage";
-import TeamDetailPage from "./pages/TeamDetailPage";
-import TeamsPage from "./pages/TeamsPage";
 import {
   ScheduledTaskEditPage,
   ScheduledTaskNewPage,
@@ -101,8 +98,6 @@ import {
   isTeamScope,
   onAgentRosterRefresh,
   persistSharedAgentScope,
-  teamIdFromScope,
-  toTeamScope,
 } from "@/lib/agent-scope-storage";
 import { cn } from "@/lib/utils";
 import { useRouteReveal } from "./lib/motion";
@@ -112,7 +107,7 @@ import {
   DIALOG_FOOTER_CLASS,
   DIALOG_PRIMARY_BUTTON_CLASS,
 } from "@/lib/enterprise-ui";
-import type { AgentProfileRead, ModelConfigRead, TeamRead } from "./types";
+import type { AgentProfileRead, ModelConfigRead } from "./types";
 import {
   listDispatchers,
   type DispatcherRead,
@@ -181,7 +176,6 @@ function Shell({
    * 否则选中多智能体时左下角会退化成「未选择 / -」，或被兜底改写成别的员工。
    */
   const [dispatchers, setDispatchers] = useState<DispatcherRead[]>([]);
-  const [scopeTeams, setScopeTeams] = useState<TeamRead[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(
     () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || "",
   );
@@ -213,9 +207,7 @@ function Shell({
             ? "/enterprise/general-skills"
             : location.pathname.startsWith("/enterprise/tools")
               ? "/enterprise/tools"
-              : location.pathname.startsWith("/enterprise/teams")
-                ? "/enterprise/teams"
-                : location.pathname.startsWith("/enterprise/scheduled-tasks")
+              : location.pathname.startsWith("/enterprise/scheduled-tasks")
                 ? "/enterprise/scheduled-tasks"
                 : isDistillRoute
                   ? "/enterprise/skills"
@@ -238,7 +230,6 @@ function Shell({
 
   useEffect(() => {
     loadAgents();
-    loadTeams();
   }, []);
 
   const loadModelConfigs = useCallback(() => {
@@ -327,13 +318,6 @@ function Shell({
       );
   }, []);
 
-  function loadTeams() {
-    return api
-      .get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`)
-      .then((rows) => setScopeTeams(rows))
-      .catch(() => setScopeTeams([]));
-  }
-
   function loadAgents(preferredAgentId = "") {
     return Promise.all([
       api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
@@ -349,7 +333,7 @@ function Shell({
         const dispatcherIds = new Set(dispatcherRows.map((item) => item.id));
         const selectableRows = rows.filter((item) => canUseAgentScope(item));
         setSelectedAgentId((current) => {
-          // A team scope is not part of the employee roster; keep it untouched.
+          // 历史残留的 team: 作用域不属于员工花名册；保持原值，别被兜底改写。
           if (isTeamScope(current)) return current;
           const requestedAgentId = preferredAgentId || current;
           if (
@@ -397,23 +381,6 @@ function Shell({
     setSelectedAgentId(agentId);
     persistSharedAgentScope(agentId, auth.user.id);
     emitAgentScopeChange(agentId);
-  }
-
-  async function selectTeamScope(teamId: string) {
-    const scope = toTeamScope(teamId);
-    try {
-      const result = await api.post<{ session_id: string }>(
-        `/api/enterprise/teams/${teamId}/tl/session`,
-        { tenant_id: TENANT_ID },
-      );
-      if (!result.session_id) throw new Error("发起群聊失败");
-      setSelectedAgentId(scope);
-      persistSharedAgentScope(scope, auth.user.id);
-      emitAgentScopeChange(scope);
-      navigate(`/workspace/chat/${result.session_id}`);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : "发起群聊失败");
-    }
   }
 
   function handleSidebarOpenChange(open: boolean) {
@@ -597,14 +564,8 @@ function Shell({
         sidebarDispatcher={sidebarDispatcher}
         scopeAgents={scopeAgents}
         scopeDispatchers={dispatchers}
-        scopeTeams={scopeTeams}
         selectedAgentId={selectedAgentId}
         onSelectAgent={(agentId) => {
-          const teamId = teamIdFromScope(agentId);
-          if (teamId) {
-            void selectTeamScope(teamId);
-            return;
-          }
           if (agentId !== selectedAgentId) changeAgentScope(agentId);
           navigate(EnterpriseRoute.Dashboard);
         }}
@@ -726,30 +687,6 @@ function Shell({
                     currentUser={auth.user}
                     isAdmin={isAdmin}
                     onCreateAgent={openCreateAgentModal}
-                    onLogout={onLogout}
-                  />
-                }
-              />
-              <Route
-                path="/enterprise/teams"
-                element={
-                  <TeamsPage
-                    currentUser={auth.user}
-                    isAdmin={isAdmin}
-                    onLogout={onLogout}
-                  />
-                }
-              />
-              <Route
-                path="/enterprise/teams/:teamId/chat"
-                element={<TeamChatPage />}
-              />
-              <Route
-                path="/enterprise/teams/:teamId"
-                element={
-                  <TeamDetailPage
-                    currentUser={auth.user}
-                    isAdmin={isAdmin}
                     onLogout={onLogout}
                   />
                 }

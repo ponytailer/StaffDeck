@@ -12,7 +12,6 @@ from app.config import get_settings
 from app.db.models import ChatSession, Skill
 from app.session.session_schema import (
     PlannedTaskFrame,
-    TeamPlannerContext,
     TurnPlan,
 )
 
@@ -38,7 +37,6 @@ def _fast_path_plan(
     available_skills: list[Skill],
     task_frame_state: list[dict[str, Any]] | None,
     interaction_mode: str,
-    team_context: TeamPlannerContext | None,
 ) -> TurnPlan | None:
     """结构性守卫全部命中时，跳过 planner LLM 直接合成 answer_only 计划。
 
@@ -51,7 +49,7 @@ def _fast_path_plan(
     判定本身就是唯一路径（要回滚只能改代码，属于有意的取舍）。
     """
     if (
-        interaction_mode != "normal" or team_context is not None \
+        interaction_mode != "normal" \
         # 有 SOP 可选时必须走 LLM：消息可能想触发某个 SOP 的 trigger_intents。
         or available_skills \
         # 有活跃 SOP / 待处理任务 / 待补槽 / 恢复中的帧时，决策空间非空，走 LLM。
@@ -90,7 +88,6 @@ def _followup_shortcircuit_plan(
     conversation_context: dict[str, object] | None,
     task_frame_state: list[dict[str, Any]] | None,
     interaction_mode: str,
-    team_context: TeamPlannerContext | None,
 ) -> TurnPlan | None:
     """会话续跑短路（qa-optimization I6 增量）。
 
@@ -106,7 +103,6 @@ def _followup_shortcircuit_plan(
         return
     if (
         interaction_mode != "normal"
-        or team_context is not None
         or str(session.active_skill_id or "").strip()
         or str(session.active_step_id or "").strip()
         or session.pending_tasks_json

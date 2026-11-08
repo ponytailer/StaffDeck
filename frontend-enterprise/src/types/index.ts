@@ -713,7 +713,7 @@ export type ChatSession = {
   summary?: string;
   last_agent_question?: string;
   is_scheduled?: boolean;
-  /** 团队会话归属（后端逐步放开，可能缺省）。 */
+  /** 历史团队会话归属：「我的团队」已下线，字段保留只为读旧会话。 */
   team_id?: string | null;
   team_name?: string | null;
   updated_at: string;
@@ -970,6 +970,8 @@ export type TurnTraceRead = {
   completed_at?: string | null;
   lines: TraceLineRead[];
   duration_ms?: number | null;
+  /** 首 token 耗时（毫秒）：消息发出 → 第一个答案字符；无流式作答时缺省。 */
+  first_token_ms?: number | null;
   model_duration_ms?: number | null;
   model_call_count?: number | null;
   model_names?: string[] | null;
@@ -1050,187 +1052,4 @@ export type FeedbackSummaryRead = {
   status_counts: Record<string, number>;
   summary: string;
   top_summaries: Array<Record<string, unknown>>;
-};
-
-// ---------------------------------------------------------------------------
-// Multi-agent teams (增量 1)
-// ---------------------------------------------------------------------------
-
-export type TeamMemberRead = {
-  id: string;
-  team_id: string;
-  agent_id: string;
-  role: 'leader' | 'member' | string;
-  agent_name?: string | null;
-  created_at: string;
-};
-
-export type TeamRead = {
-  id: string;
-  tenant_id: string;
-  name: string;
-  description?: string | null;
-  owner_user_id: string;
-  config: Record<string, unknown>;
-  status: 'active' | 'archived' | string;
-  members: TeamMemberRead[];
-  created_at: string;
-  updated_at: string;
-};
-
-export type TeamConversationKind = 'tl_chat' | 'member_task' | 'member_bid' | 'tl_review';
-
-export type TeamConversationRead = {
-  session_id: string;
-  kind: TeamConversationKind;
-  agent_id?: string | null;
-  agent_name?: string | null;
-  task_id?: string | null;
-  task_status?: string | null;
-  needs_input?: boolean;
-  pending_question?: string | null;
-  title: string;
-  preview: string;
-  created_at: string;
-  updated_at: string;
-};
-
-export type TeamConversationsResponse = {
-  team_id: string;
-  team_name: string;
-  tl?: {
-    agent_id: string;
-    agent_name?: string | null;
-    session_id?: string | null;
-  } | null;
-  conversations: TeamConversationRead[];
-};
-
-export type TeamConversationMessageRead = {
-  id: string;
-  role: string;
-  content: string;
-  metadata?: ChatMessage['metadata'];
-  turn_id?: string | null;
-  created_at: string;
-};
-
-export type TeamConversationStreamRead = {
-  status: 'idle' | 'running' | 'completed' | 'failed';
-  content: string;
-  phase?: string | null;
-  updated_at?: string | null;
-};
-
-export type TeamTaskEventRead = {
-  id: string;
-  task_id: string;
-  team_id: string;
-  actor_type: string;
-  actor_id?: string | null;
-  event_type: string;
-  payload: Record<string, unknown>;
-  created_at: string;
-};
-
-export type TeamTaskBidRead = {
-  id: string;
-  task_id: string;
-  agent_id: string;
-  agent_name?: string | null;
-  round: number;
-  kind: 'statement' | 'rebuttal' | string;
-  content: string;
-  score?: number | null;
-  score_rationale?: string | null;
-  created_at: string;
-};
-
-export type TeamTaskRead = {
-  id: string;
-  team_id: string;
-  tenant_id: string;
-  team_run_id?: string | null;
-  source_turn_id?: string | null;
-  parent_task_id?: string | null;
-  title: string;
-  description?: string | null;
-  priority: string;
-  status:
-    | 'bidding'
-    | 'blocked'
-    | 'pending'
-    | 'in_progress'
-    | 'review'
-    | 'done'
-    | 'rework'
-    | 'escalated'
-    | string;
-  created_by_user_id?: string | null;
-  created_by_tl: boolean;
-  assignee_agent_id?: string | null;
-  session_id?: string | null;
-  depends_on_task_ids?: string[];
-  activation_condition?: Record<string, unknown>;
-  report: Record<string, unknown>;
-  review: Record<string, unknown>;
-  version?: number;
-  events?: TeamTaskEventRead[];
-  bids?: TeamTaskBidRead[];
-  created_at: string;
-  updated_at: string;
-};
-
-export type TeamTLChatResponse = {
-  reply: string;
-  session_id: string;
-  created_tasks: TeamTaskRead[];
-};
-
-export type TeamReviewVerdict = 'approve' | 'rework' | 'escalate';
-
-// ---------------------------------------------------------------------------
-// Team blackboard (增量 2)
-// ---------------------------------------------------------------------------
-
-export type TeamBlackboardEntryRead = {
-  id: string;
-  team_id: string;
-  tenant_id: string;
-  content: string;
-  tags: string[];
-  source_type: 'member' | 'leader' | 'human' | string;
-  source_agent_id?: string | null;
-  source_task_id?: string | null;
-  citation: Record<string, unknown>;
-  status: string;
-  pinned: boolean;
-  created_at: string;
-  updated_at: string;
-};
-
-// ---------------------------------------------------------------------------
-// Team threads / events / settings (增量 4)
-// ---------------------------------------------------------------------------
-
-export type TeamThreadRead = {
-  team_id: string;
-  team_name: string;
-  kind: 'tl_chat' | 'task' | string;
-  session_id: string;
-  task_id?: string | null;
-  title: string;
-  task_status?: string | null;
-  updated_at: string;
-};
-
-export type TeamEventRead = {
-  id: string;
-  task_id?: string | null;
-  task_title?: string | null;
-  actor_type: string;
-  actor_id?: string | null;
-  event_type: string;
-  payload: Record<string, unknown>;
-  created_at: string;
 };

@@ -10,7 +10,7 @@ import { I18nProvider } from '@/i18n';
 import { notify } from '@/components/ui/app-toast';
 import { MemoryRouter } from 'react-router-dom';
 import type { EnterpriseAuthUser } from '@/auth';
-import type { AgentProfileRead, GeneralSkillRead, TeamRead } from '@/types';
+import type { AgentProfileRead, GeneralSkillRead } from '@/types';
 
 import EmployeeGalleryPage from './EmployeeGalleryPage';
 
@@ -82,11 +82,9 @@ function stubGalleryFetch(opts: {
   skills?: GeneralSkillRead[];
   skillsStatus?: number;
   skillsText?: string;
-  teams?: TeamRead[];
 }) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes('/api/enterprise/teams')) return jsonResponse(opts.teams ?? []);
     if (url.includes('/api/enterprise/agents')) return jsonResponse(agents);
     if (url.includes('/api/enterprise/general-skills')) {
       if (opts.skillsStatus && opts.skillsStatus >= 400) {
@@ -156,9 +154,6 @@ describe('我创建的技能 页面级集成', () => {
     await user.click(screen.getByRole('tab', { name: '数字员工广场' }));
     expect(screen.queryByRole('region', { name: '我创建的技能' })).toBeNull();
 
-    // 切到「团队对话」→ 区块消失
-    await user.click(screen.getByRole('tab', { name: '团队对话' }));
-    expect(screen.queryByRole('region', { name: '我创建的技能' })).toBeNull();
   }, 20000);
 
   it('顶部搜索框关键词透传给面板并过滤技能列表', async () => {

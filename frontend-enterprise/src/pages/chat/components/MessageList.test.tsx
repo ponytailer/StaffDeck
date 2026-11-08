@@ -112,6 +112,21 @@ describe('MessageList 总耗时显示', () => {
     expect(screen.getByTitle(/本轮总耗时/)).toBeTruthy();
   });
 
+  it('服务端带回首 token 时拆成「首 token · 总耗时」两项', () => {
+    const turnTraceRef = {
+      current: new Map([[
+        'msg-assistant-1',
+        traceFor({ durationMs: 8900, firstTokenMs: 1200, completedAt: Date.now() }),
+      ]]),
+    };
+    render(<MessageList chat={chatStub({ turnTraceRef })} />);
+
+    const note = screen.getByText(/总耗时/);
+    expect(note.textContent).toContain('首 token 1.2s');
+    expect(note.textContent).toContain('总耗时 8.9s');
+    expect(screen.getByTitle(/首 token 1.2s/)).toBeTruthy();
+  });
+
   it('流式气泡本来就不挂反馈区，计时也不该出现（既有行为不变）', () => {
     const streaming = { ...answerWithCitation, isStreaming: true };
     const turnTraceRef = { current: new Map([['msg-assistant-1', traceFor()]]) };
