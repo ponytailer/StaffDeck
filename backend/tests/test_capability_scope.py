@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import inspect, text
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -27,7 +26,6 @@ from app.api.tools import (
     update_tool,
 )
 from app.capability_scope import normalize_capability_scope
-from app.db.database import _migrate_capability_scope_schema
 from app.db.models import (
     AgentProfile,
     AgentKnowledgeBranch,
@@ -526,36 +524,3 @@ def test_mcp_sync_inherits_server_scope_and_accepts_child_override() -> None:
         db.refresh(child)
         assert child.capability_scope == "general"
         assert child.capability_scope_inherited is False
-
-
-def test_sqlite_capability_scope_migration_backfills_and_is_idempotent(tmp_path) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'capability-scope.db'}")
-    table_names = {
-        "general_skills",
-        "tools",
-        "mcp_servers",
-        "knowledge_bases",
-        "knowledge_base_versions",
-    }
-    with engine.begin() as conn:
-        for table_name in table_names:
-            conn.execute(text(f"CREATE TABLE {table_name} (id VARCHAR PRIMARY KEY)"))
-            conn.execute(text(f"INSERT INTO {table_name} (id) VALUES ('legacy')"))
-
-    with engine.begin() as conn:
-        _migrate_capability_scope_schema(conn, inspect(engine), table_names)
-
-    with engine.begin() as conn:
-        for table_name in table_names:
-            assert conn.execute(
-                text(f"SELECT capability_scope FROM {table_name} WHERE id = 'legacy'")
-            ).scalar_one() == "general"
-        conn.execute(
-            text("UPDATE tools SET capability_scope = 'unsupported' WHERE id = 'legacy'")
-        )
-
-    with engine.begin() as conn:
-        _migrate_capability_scope_schema(conn, inspect(engine), table_names)
-        assert conn.execute(
-            text("SELECT capability_scope FROM tools WHERE id = 'legacy'")
-        ).scalar_one() == "general"

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import inspect
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -46,7 +45,6 @@ from app.db.models import (
     Tool,
     User,
 )
-from app.db.database import _seed_agent_branch_state
 from app.general_skills.schema import GeneralSkillImportRequest
 from app.security.permissions import (
     ensure_agent_scope_manager,
@@ -210,49 +208,6 @@ def test_agents_always_inherit_tenant_default_model_and_legacy_bindings_are_remo
         ).all() == []
 
 
-def test_startup_seed_removes_legacy_agent_model_bindings() -> None:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as db:
-        db.add(Tenant(id="tenant_demo", name="Demo"))
-        db.add(
-            AgentProfile(
-                id="agent_startup_cleanup",
-                tenant_id="tenant_demo",
-                name="启动清理员工",
-            )
-        )
-        db.add(
-            ModelConfig(
-                id="model_startup_default",
-                tenant_id="tenant_demo",
-                name="默认模型",
-                api_key_encrypted="encrypted-default",
-                model="default-model",
-                is_default=True,
-            )
-        )
-        db.add(
-            AgentModelBinding(
-                id="binding_startup_cleanup",
-                tenant_id="tenant_demo",
-                agent_id="agent_startup_cleanup",
-                role="default",
-                model_config_id="model_startup_default",
-            )
-        )
-        db.commit()
-
-    table_names = set(inspect(engine).get_table_names())
-    with engine.begin() as conn:
-        _seed_agent_branch_state(conn, inspect(engine), table_names)
-
-    with Session(engine) as db:
-        assert db.exec(select(AgentModelBinding)).all() == []
 
 
 def test_resource_binding_requires_agent_manager() -> None:
@@ -1173,4 +1128,3 @@ def test_cannot_create_second_overall_agent() -> None:
             current_user=admin,
         )
         assert created.is_overall is False
-

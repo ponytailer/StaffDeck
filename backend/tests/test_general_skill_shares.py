@@ -26,7 +26,7 @@ from app.db.models import (
 )
 from app.general_skills import GeneralSkillPackageUploadRequest
 
-from tests.test_general_skills import _seed_minimal_tenant, _test_session
+from test_general_skills import _seed_minimal_tenant, _test_session
 
 
 def _admin_user() -> User:
