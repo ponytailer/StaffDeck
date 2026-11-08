@@ -29,6 +29,7 @@ export default function DispatcherCard({
   onEdit,
   onDelete,
   onGallery,
+  onOpenProfile,
 }: {
   dispatcher: DispatcherRead;
   busy?: boolean;
@@ -39,6 +40,8 @@ export default function DispatcherCard({
   onDelete: () => void;
   /** 发布到广场 / 从广场下架。传 true 表示发布，false 表示下架 */
   onGallery: (published: boolean) => void;
+  /** 切到该小队作用域并跳档案页（对应切换器里的「当前员工小队」） */
+  onOpenProfile: () => void;
 }) {
   const members = dispatcher.members;
   const missingRule = members.filter((item) => !item.routing_rule.trim()).length;
@@ -73,8 +76,9 @@ export default function DispatcherCard({
             员工小队 · {members.length}/{MAX_DISPATCH_MEMBERS} 位同事
           </div>
         </div>
-        {/* 低频管理动作收进右上角「···」：发布/下架与删除。底部只留「去对话 + 配置」，
-            按钮不再挤成两行，窄屏也不会把文字压变形。 */}
+        {/* 低频管理动作收进右上角「···」：档案 / 发布下架 / 删除。底部只留「去对话 + 配置」，
+            按钮不再挤成两行，窄屏也不会把文字压变形。
+            档案放第一位：它是最常回看的入口，且与员工卡片「进档案」的心智一致。 */}
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={`更多操作 ${dispatcher.name}`}
@@ -83,6 +87,13 @@ export default function DispatcherCard({
             <StaffdeckIcon name="more" size={15} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-[148px] rounded-[10px] p-[4px]">
+            <DropdownMenuItem
+              onSelect={onOpenProfile}
+              className="rounded-[7px] px-[8px] py-[6px] text-[12px] text-[#5b6274] data-[highlighted]:bg-[#f6f6f6]"
+            >
+              员工小队档案
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="my-[3px]" />
             <DropdownMenuItem
               disabled={publishing || (!published && !canPublish)}
               onSelect={() => onGallery(!published)}

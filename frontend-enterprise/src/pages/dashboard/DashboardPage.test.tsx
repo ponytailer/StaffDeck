@@ -288,12 +288,16 @@ describe('DashboardPage dispatcher profile tabs', () => {
   });
 
   /**
-   * hero 布局口径（用户截图反馈「上方圈起来的地方拥挤得很」后重设计）。
+   * hero 布局口径。
    *
-   * 两条不能回退的口径：
-   * ① 模型说明不再占一张独立卡片 —— 模型名并进 hero 状态行，总览区只剩「成员与路由规则」一张卡；
-   * ② 「去对话 / 配置成员与规则」从头像正下方挪到右侧信息区底部（与指标块同一行），
-   *    不再把左列撑高、也不再紧贴 tab 栏（旧版按钮底边距 tab 只剩 4px）。
+   * 第 2 版口径（用户反馈「按钮布局也不对。参考下员工档案页面」后改回）：
+   * ① 模型说明不再占一张独立卡片 —— 模型名并进 hero 状态行；
+   * ② 「去对话 / 配置成员」放回**左侧头像列下方**，与员工档案页一致
+   *    （员工页实测按钮 x=316，与头像左边缘基本齐平；第 1 版把它挪到右侧
+   *    信息区底部 x=964，于是切作用域时按钮会从左跳到右）。
+   *
+   * 上一版这里钉的是「按钮在信息区里、不在头像下方」，正是用户这次指出的
+   * 布局问题，已随改动一并更正 —— 契约以「两页一致」为准。
    */
   it('模型名进状态行，不再单独占一张「模型」卡片', async () => {
     renderDispatcherProfile();
@@ -303,21 +307,25 @@ describe('DashboardPage dispatcher profile tabs', () => {
     expect(screen.getByText('deepseek-v4-flash')).toBeTruthy();
     expect(screen.queryByText(/员工小队不参与免费额度/)).toBeNull();
 
-    // 总览区只有一张卡：成员与路由规则。旧版还有第二张「模型」卡。
+    // 总览区没有任何「模型」独立卡片；成员与路由规则仍然在
     expect(screen.getByText(/成员与路由规则/)).toBeTruthy();
     expect(screen.queryAllByText(/^模型$/)).toHaveLength(0);
   });
 
-  it('操作按钮在信息区里，不在头像下方（两个按钮同一容器）', async () => {
+  it('操作按钮在左侧头像列下方，与员工档案页一致', async () => {
     renderDispatcherProfile();
 
     const chat = await screen.findByRole('button', { name: /去对话/ });
-    const config = screen.getByRole('button', { name: /配置成员与规则/ });
+    const config = screen.getByRole('button', { name: /配置成员/ });
 
-    // 两者共享同一个父容器 —— 同一行，且都位于 hero 内（不在头像列）
+    // 两者共享同一个父容器 —— 同一行
     expect(chat.parentElement).toBe(config.parentElement);
-    // 头像块是个 span（只放拓扑图标），按钮不该在它里面
-    expect(chat.closest('span[class*="bg-[#e1f1ed]"]')).toBeNull();
+
+    // 这个容器与拓扑图标同属一个 flex-col 列（即「头像列」），而不是信息区
+    const avatarColumn = chat.parentElement?.parentElement;
+    expect(avatarColumn).toBeTruthy();
+    // 该列里包含拓扑图标所在的圆角底块
+    expect(avatarColumn?.querySelector('span[class*="bg-[#e1f1ed]"]')).toBeTruthy();
   });
 
   it('状态行仍完整展示兜底方式与累计转接', async () => {
@@ -325,6 +333,44 @@ describe('DashboardPage dispatcher profile tabs', () => {
 
     expect(await screen.findByText(/无法匹配：固定话术/)).toBeTruthy();
     expect(screen.getByText(/累计转接 3 次/)).toBeTruthy();
+  });
+
+  /**
+   * 真实反馈「员工档案页面现在有点空」：档案总览原先只有「成员与路由规则」一张卡。
+   * 现在按员工档案页的构成补齐四块 —— 活动记录 / 成员与路由规则 / 兜底策略 / 基础信息。
+   */
+  it('档案总览不是空页面：活动记录、兜底策略、基础信息都在', async () => {
+    renderDispatcherProfile();
+
+    expect(await screen.findByText('活动记录')).toBeTruthy();
+    expect(screen.getByText('成员与路由规则')).toBeTruthy();
+    expect(screen.getByText('兜底策略')).toBeTruthy();
+    expect(screen.getByText('基础信息')).toBeTruthy();
+
+    // 兜底策略要展开真实内容，不能只有一个标题
+    expect(screen.getByText('换个说法再试一次？')).toBeTruthy();
+    expect(screen.getByText(/置信度门槛 0.5/)).toBeTruthy();
+
+    // 基础信息要有可读的时间，而不是裸 ISO 串
+    expect(screen.getByText('创建时间')).toBeTruthy();
+    expect(screen.queryByText(/T\d{2}:\d{2}:\d{2}/)).toBeNull();
+  });
+
+  /**
+   * 小队的反馈按技能维度统计，它没有技能 → `total_feedback` 恒为 0。
+   * 所以「查看全部对话」绝不能像员工页那样跳 /enterprise/feedback（那里是空的），
+   * 必须在本页切到「对话日志」分区。
+   */
+  it('活动记录卡片的「查看全部对话」切到本页对话日志分区', async () => {
+    renderDispatcherProfile();
+
+    const link = await screen.findByRole('button', { name: '查看全部对话' });
+    const user = userEvent.setup();
+    await user.click(link);
+
+    const tablist = screen.getByLabelText('员工小队档案分区');
+    const active = within(tablist).getByText('对话日志').closest('[data-state]');
+    expect(active?.getAttribute('data-state')).toBe('active');
   });
 
   /**

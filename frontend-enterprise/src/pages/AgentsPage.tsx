@@ -247,6 +247,28 @@ export default function AgentsPage({
     }
   }
 
+  /**
+   * 进小队档案页：只切作用域，**不进对话**。
+   *
+   * 与 `selectDispatcher` 的唯一差别是落点（`/enterprise/dashboard` 而非对话草稿页），
+   * 其余三件事（本地选中态 / 持久化作用域 / 广播）必须一致 —— 少任何一步，
+   * 档案页会因为作用域没落库而被兜底改写成某位员工（历史上踩过）。
+   */
+  async function openDispatcherProfile(row: DispatcherRead) {
+    if (selectingAgentId) return;
+    setSelectingAgentId(row.id);
+    try {
+      setSelectedAgentId(row.id);
+      persistSharedAgentScope(row.id, currentUser?.id);
+      emitAgentScopeChange(row.id);
+      navigate('/enterprise/dashboard');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '打开员工小队档案失败');
+    } finally {
+      setSelectingAgentId(null);
+    }
+  }
+
   async function updateStatus(row: AgentProfileRead, status: 'active' | 'archived') {
     try {
       await api.put<AgentProfileRead>(`/api/enterprise/agents/${row.id}`, {
@@ -511,6 +533,7 @@ export default function AgentsPage({
                   onEdit={() => openDispatcherEditor(row)}
                   onDelete={() => setDispatcherDeleteTarget(row)}
                   onGallery={(published) => void updateDispatcherGalleryState(row, published)}
+                  onOpenProfile={() => void openDispatcherProfile(row)}
                 />
               ))}
             </RevealGroup>

@@ -24,7 +24,7 @@ import StaffdeckIcon from '../../components/StaffdeckIcon';
 import ScheduledTasksTab from './ScheduledTasksTab';
 import MemoriesTab from './MemoriesTab';
 import ConversationLogsTab from './ConversationLogsTab';
-import WorkRecordTab from './WorkRecordTab';
+import WorkRecordTab, { ActivityTimeline } from './WorkRecordTab';
 import KnowledgeManagePage from '../KnowledgePage';
 import SkillsPage from '../SkillsPage';
 import GeneralSkillsPage from '../GeneralSkillsPage';
@@ -56,6 +56,8 @@ import type {
   ToolRead,
 } from '../../types';
 import { isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
+import { cn } from '@/lib/utils';
+import { parseBackendDateTime } from '../../lib/timezone';
 import {
   MAX_DISPATCH_MEMBERS,
   dispatchFallbackLabel,
@@ -66,6 +68,16 @@ import DispatcherGlyph from '../../components/dispatcher/DispatcherGlyph';
 import { isDispatcherScopeId } from '../../lib/dispatcher-scope';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
+
+/**
+ * 档案页 hero 的两颗按钮样式。提到模块级是因为员工档案与员工小队档案
+ * **必须长得一模一样** —— 用户反馈「按钮布局不对」时，除了位置，视觉权重也
+ * 在对比范围内；两处各写一份 class 迟早会漂。
+ */
+const HERO_PRIMARY_BUTTON_CLASS =
+  'inline-flex items-center justify-center gap-[7px] h-[40px] px-[20px] rounded-[12px] border-0 bg-[#0f7268] text-[13.5px] font-semibold text-white shadow-[0_10px_22px_-10px_rgba(15,114,104,0.85)] transition-all hover:bg-[#0c6158] hover:-translate-y-[1px] hover:shadow-[0_14px_26px_-10px_rgba(15,114,104,0.9)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0f7268]/35 focus-visible:ring-offset-2';
+const HERO_SECONDARY_BUTTON_CLASS =
+  'inline-flex items-center justify-center gap-[4px] py-[8px] px-[12px] rounded-[14px] border-[0.5px] border-[#e3e7f1] bg-white text-[12px] font-normal text-[#858b9c] shadow-[0px_6px_6px_rgba(0,0,0,0.05)] hover:bg-[#f6f6f6] hover:text-[#858b9c]';
 
 export default function DashboardPage({
   currentUser,
@@ -207,28 +219,34 @@ export default function DashboardPage({
   useEffect(() => {
     let cancelled = false;
     async function loadWorkRecord() {
-      if (!selectedAgent || selectedAgent.is_overall) {
+      // 员工小队同样走这条接口：它也是 agent_profiles 里的一行，后端
+      // `/agents/{id}/work-record` 不按 kind 过滤，实测小队有 78 条回复事件。
+      // 档案总览要复用员工那套「活动时间线」，所以这里不能因为 scope 是小队就清空。
+      const targetId = selectedAgent?.id || selectedDispatcher?.id || '';
+      if (!targetId || selectedAgent?.is_overall) {
         setActivityEvents([]);
         return;
       }
       try {
         const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai';
         const workRecord = await api.get<AgentWorkRecordRead>(
-          `/api/enterprise/agents/${encodeURIComponent(selectedAgent.id)}/work-record?tenant_id=${TENANT_ID}&timezone=${encodeURIComponent(timezone)}`,
+          `/api/enterprise/agents/${encodeURIComponent(targetId)}/work-record?tenant_id=${TENANT_ID}&timezone=${encodeURIComponent(timezone)}`,
         );
         if (cancelled) return;
-        setActivityEvents(workRecord.events);
+        // 后端字段理论上一定有，但桩数据/老版本可能缺 `events`：
+        // 直接透传会让下游 `events.length` 抛错、整棵档案树被卸载。
+        setActivityEvents(workRecord.events || []);
       } catch (error) {
         if (cancelled) return;
         setActivityEvents([]);
-        notify.error(error instanceof Error ? error.message : '加载员工工作记录失败');
+        notify.error(error instanceof Error ? error.message : '加载工作记录失败');
       }
     }
     void loadWorkRecord();
     return () => {
       cancelled = true;
     };
-  }, [selectedAgent?.id, selectedAgent?.is_overall]);
+  }, [selectedAgent?.id, selectedAgent?.is_overall, selectedDispatcher?.id]);
   const defaultModel = models.find((item) => item.is_default);
   const totalCalls = skills.reduce((sum, item) => sum + (item.total_call_count || item.call_count || 0), 0);
   const positiveFeedback = skills.reduce((sum, item) => sum + (item.total_positive_feedback_count || 0), 0);
@@ -282,6 +300,7 @@ export default function DashboardPage({
         profileTab={profileTab}
         sessions={sessions}
         feedbackSummary={feedbackSummary}
+        activityEvents={activityEvents}
         onOpenChat={() => navigate(`/workspace/chat/draft/${selectedDispatcher.id}`)}
         onConfigure={() => navigate(EnterpriseRoute.Agents)}
         onLogout={onLogout}
@@ -356,10 +375,10 @@ export default function DashboardPage({
     132,
   );
 
-  const heroActionButtonClass = 'inline-flex items-center justify-center gap-[4px] py-[8px] px-[12px] rounded-[14px] border-[0.5px] border-[#e3e7f1] bg-white text-[12px] font-normal text-[#858b9c] shadow-[0px_6px_6px_rgba(0,0,0,0.05)] hover:bg-[#f6f6f6] hover:text-[#858b9c]';
+  const heroActionButtonClass = HERO_SECONDARY_BUTTON_CLASS;
   // 「去对话」是这个页面的主行动：全页唯一的填充色按钮（teal 强调色）+ 更大尺寸 +
   // 柔和投影。首次进入的人视线会先落在这块，不必在几个同权重灰按钮里挑。
-  const heroPrimaryButtonClass = 'inline-flex items-center justify-center gap-[7px] h-[40px] px-[20px] rounded-[12px] border-0 bg-[#0f7268] text-[13.5px] font-semibold text-white shadow-[0_10px_22px_-10px_rgba(15,114,104,0.85)] transition-all hover:bg-[#0c6158] hover:-translate-y-[1px] hover:shadow-[0_14px_26px_-10px_rgba(15,114,104,0.9)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0f7268]/35 focus-visible:ring-offset-2';
+  const heroPrimaryButtonClass = HERO_PRIMARY_BUTTON_CLASS;
   const heroAvatar = (
     <EmployeeAvatar
       agent={selectedAgent}
@@ -536,6 +555,7 @@ function DispatcherProfileView({
   profileTab,
   sessions,
   feedbackSummary,
+  activityEvents,
   onOpenChat,
   onConfigure,
   onLogout,
@@ -545,6 +565,8 @@ function DispatcherProfileView({
   profileTab: ProfileTabKey;
   sessions: EnterpriseChatSessionRead[];
   feedbackSummary: FeedbackSummaryRead | null;
+  /** 小队自己的活动事件（对话/转接），复用员工那套时间线渲染 */
+  activityEvents: AgentWorkRecordEventRead[];
   onOpenChat: () => void;
   onConfigure: () => void;
   onLogout?: () => void;
@@ -565,22 +587,48 @@ function DispatcherProfileView({
     if (isDispatcherTab(profileTab)) setActiveTab(profileTab);
   }, [profileTab]);
 
+  // 档案总览里的「活动时间线」下方「查看全部」要能切到本页的对话日志分区。
+  // 绝不能像员工页那样跳 /enterprise/feedback —— 小队的反馈按技能维度统计，
+  // 它没有任何技能，那个页面只会是空的（实测 total_feedback 恒为 0）。
+  const onOpenLogs = () => setActiveTab('logs');
+
   return (
     <div className="min-h-full w-full min-w-0 max-w-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
       <AppHeader
         onLogout={onLogout}
         userName={userName}
         left={(
-          /* 两列：左=标识块（只放拓扑图标，不再塞按钮），右=信息区（标题 → 状态行 →
-             简介 → 指标），操作按钮落在信息区最后一行。
-             旧版把「去对话 / 配置成员与规则」塞在头像正下方，两个按钮不等宽、也都比
-             136px 的头像窄，且左列比右侧信息区高出 70px，整个 hero 看着歪；
-             按钮底边又紧贴 tab 栏（实测只剩 4px）。改后左右两列高度接近，操作按钮与
-             指标行同宽，也没有贴边问题。 */
+          /* 两列：左=标识块 + 其下方的操作按钮，右=信息区（标题 → 状态行 → 简介 → 指标）。
+             这与员工档案页的结构一致 —— 员工页的「去对话 / 编辑资料」就落在左侧头像
+             正下方（实测 x=316，与头像左边缘 364.8 基本齐平），小队页原先却把按钮
+             塞在右侧信息区最后一行（实测 x=964），于是同一个「档案页」在切作用域时
+             按钮会从左跳到右，这是用户说的「按钮布局不对」。
+             指标行改为整行铺开（不再与按钮抢一行），也不再被 min-w 挤压。 */
           <div className="flex flex-wrap items-start gap-x-[28px] gap-y-[18px] pt-1 pl-1">
-            <span className="grid size-[112px] shrink-0 place-items-center rounded-[16px] bg-[#e1f1ed] text-[#0f7268]">
-              <DispatcherGlyph className="size-[52px]" />
-            </span>
+            <div className="flex shrink-0 flex-col items-center">
+              <span className="grid size-[112px] shrink-0 place-items-center rounded-[16px] bg-[#e1f1ed] text-[#0f7268]">
+                <DispatcherGlyph className="size-[52px]" />
+              </span>
+              <div className="mt-[4px] flex flex-wrap items-center justify-center gap-[8px]">
+                <UiButton
+                  variant="default"
+                  className={HERO_PRIMARY_BUTTON_CLASS}
+                  onClick={onOpenChat}
+                >
+                  <IconChat className="size-[16px]" />
+                  去对话
+                  <span aria-hidden className="ml-[1px] text-[15px] leading-none">→</span>
+                </UiButton>
+                <UiButton
+                  variant="outline"
+                  className={HERO_SECONDARY_BUTTON_CLASS}
+                  onClick={onConfigure}
+                >
+                  <IconEdit className="size-[14px]" />
+                  配置成员
+                </UiButton>
+              </div>
+            </div>
 
             <div className="flex min-w-[280px] flex-1 flex-col gap-[10px]">
               <div className="flex flex-wrap items-center gap-x-[8px] gap-y-[6px]">
@@ -618,6 +666,14 @@ function DispatcherProfileView({
                 </span>
                 <span aria-hidden className="text-[#d5d9e3]">·</span>
                 <span>累计转接 {dispatcher.usage_count} 次</span>
+                {dispatcher.published_to_gallery && (
+                  <>
+                    <span aria-hidden className="text-[#d5d9e3]">·</span>
+                    <span className="whitespace-nowrap rounded-[5px] bg-[#e1f1ed] px-[6px] py-[1px] text-[11px] leading-none text-[#0f7268]">
+                      已发布到广场
+                    </span>
+                  </>
+                )}
               </div>
 
               <p className="m-0 line-clamp-2 max-w-[720px] text-[14px] leading-[22px] text-[#757f9c]">
@@ -625,32 +681,13 @@ function DispatcherProfileView({
                   || '我是员工小队：先说需求，我来判断本轮该交给谁，再把问题转给最合适的同事。'}
               </p>
 
-              {/* 指标块 + 操作按钮同一行；窄屏（<1100）换行时按钮独占一行并靠左对齐，
-                  避免「一行只剩两个按钮、还飘在中间」的突兀感。 */}
-              <div className="mt-[2px] flex flex-wrap items-center gap-[10px] max-[1100px]:flex-col max-[1100px]:items-stretch">
-                <div className="flex min-w-[240px] flex-1 gap-[10px]">
-                  <HeroMetric value={members.length} label="成员" />
-                  <HeroMetric value={sessionCount} label="对话" />
-                  <HeroMetric value={feedbackSummary?.total_feedback || 0} label="反馈" />
-                </div>
-                <div className="ml-auto flex shrink-0 items-center gap-[8px] max-[1100px]:ml-0">
-                  <UiButton
-                    variant="default"
-                    className="inline-flex h-[36px] items-center justify-center gap-[6px] rounded-[10px] border-0 bg-[#0f7268] px-[16px] text-[13px] font-semibold text-white shadow-[0_8px_18px_-10px_rgba(15,114,104,0.8)] transition-colors hover:bg-[#0c6158]"
-                    onClick={onOpenChat}
-                  >
-                    <IconChat className="size-[15px]" />
-                    去对话
-                  </UiButton>
-                  <UiButton
-                    variant="outline"
-                    className="inline-flex h-[36px] items-center justify-center gap-[5px] rounded-[10px] border border-[#e3e7f1] bg-white px-[14px] text-[12.5px] text-[#5b6274] transition-colors hover:border-[#cbd3e6] hover:text-[#18181a]"
-                    onClick={onConfigure}
-                  >
-                    <IconEdit className="size-[13px]" />
-                    配置成员与规则
-                  </UiButton>
-                </div>
+              {/* 指标行：与员工页同宽铺开（员工页是资料/技能/SOP/工具/定时任务 5 格），
+                  小队只有 4 个成立的计数，多出来的宽度交给「累计转接」。 */}
+              <div className="flex w-full max-w-[640px] gap-3">
+                <HeroMetric value={members.length} label="成员" />
+                <HeroMetric value={sessionCount} label="对话" />
+                <HeroMetric value={feedbackSummary?.total_feedback || 0} label="反馈" />
+                <HeroMetric value={dispatcher.usage_count} label="累计转接" />
               </div>
             </div>
           </div>
@@ -664,46 +701,21 @@ function DispatcherProfileView({
       {activeTab === 'work' && (
         // 不再用 pl-[226px] 对齐头像列：窄屏时 hero 会换成竖排，那个固定缩进
         // 把卡片整体推向右侧、左边留一大片空白（真实截图确认过）。
-        <div className="mt-[18px] grid gap-[12px]">
-          <div className="rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] backdrop-blur">
-            <div className="flex items-center justify-between gap-[12px]">
-              <span className="min-w-0 truncate text-[13px] font-medium text-[#18181a]">
-                成员与路由规则 · {members.length}/{MAX_DISPATCH_MEMBERS}
-              </span>
-              <button
-                type="button"
-                onClick={onConfigure}
-                className="shrink-0 whitespace-nowrap text-[12px] text-[#0f7268] hover:underline"
-              >
-                去配置
-              </button>
-            </div>
-            <div className="mt-[12px] flex flex-col gap-[10px]">
-              {members.length === 0 && (
-                <span className="text-[12.5px] leading-[1.6] text-[#8a5a12]">
-                  还没有成员，所有问题都会走兜底。至少添加 {MAX_DISPATCH_MEMBERS > 1 ? 2 : 1} 位同事才有路由意义。
-                </span>
-              )}
-              {members.map((member, index) => (
-                <div key={member.member_agent_id} className="flex items-start gap-[10px]">
-                  <span className="mt-[1px] grid size-[20px] shrink-0 place-items-center rounded-[6px] bg-[#f0f1f4] text-[10.5px] font-medium text-[#9aa1b1]">
-                    {index + 1}
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                    <span className="flex min-w-0 flex-wrap items-center gap-[6px] text-[13px] text-[#18181a]">
-                      <span className="min-w-0 truncate">{member.agent_name}</span>
-                      {member.has_own_model && (
-                        <span className="shrink-0 whitespace-nowrap rounded-[4px] bg-[#f2f9f7] px-[4px] py-[1px] text-[10px] text-[#0f7268]">
-                          自有模型
-                        </span>
-                      )}
-                    </span>
-                    <span className="min-w-0 break-words text-[12px] leading-[1.5] text-[#757f9c]">
-                      {member.routing_rule.trim() || '还没写「什么情况交给他」，这一位基本选不中。'}
-                    </span>
-                  </div>
-                </div>
-              ))}
+        <div className="mt-[18px] flex flex-col gap-[12px]">
+          {/* 这一块原先只有「成员与路由规则」一张卡，档案总览看起来空得像个
+              未完成页面（真实反馈「员工档案页面现在有点空」）。这里按员工档案页
+              的构成补齐：活动时间线（可复用组件）+ 成员规则 + 兜底策略 + 基础信息。 */}
+          <DispatcherActivityCard events={activityEvents} onOpenLogs={onOpenLogs} />
+
+          <div className="grid gap-[12px] lg:grid-cols-[1.35fr_1fr]">
+            <DispatcherMembersCard
+              members={members}
+              maxMembers={MAX_DISPATCH_MEMBERS}
+              onConfigure={onConfigure}
+            />
+            <div className="flex flex-col gap-[12px]">
+              <DispatcherFallbackCard dispatcher={dispatcher} onConfigure={onConfigure} />
+              <DispatcherMetaCard dispatcher={dispatcher} />
             </div>
           </div>
         </div>
@@ -764,6 +776,252 @@ function DispatcherProfileTabs({
       </TabsList>
     </Tabs>
   );
+}
+
+/**
+ * 小队档案页的卡片外壳。四张卡共用同一套边距/圆角/阴影，避免各写一份后慢慢漂移
+ * （员工页那几张卡就是各自写的，间距已经不一致了）。
+ */
+function DispatcherCardShell({
+  title,
+  count,
+  action,
+  children,
+}: {
+  title: string;
+  count?: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="flex min-w-0 flex-col rounded-[20px] border border-black/[0.05] bg-white/85 shadow-[0_6px_20px_rgba(17,17,17,0.04)] backdrop-blur">
+      <div className="flex items-center justify-between gap-[12px] px-[20px] pt-[16px]">
+        <span className="flex min-w-0 items-baseline gap-[6px]">
+          <span className="truncate text-[13px] font-medium text-[#18181a]">{title}</span>
+          {count && (
+            <span className="shrink-0 text-[11.5px] leading-none text-[#9aa1b1]">{count}</span>
+          )}
+        </span>
+        {action}
+      </div>
+      <div className="flex min-w-0 flex-col gap-[10px] px-[20px] pb-[18px] pt-[12px]">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 活动时间线卡：直接复用员工档案页那套（Day/Week/Month + 悬浮明细）。
+ *
+ * 小队的事件几乎全是 `chat`（转接问答也记在它自己名下），所以图上只有「对话」
+ * 一条泳道 —— 这是事实，不是占位。
+ */
+function DispatcherActivityCard({
+  events,
+  onOpenLogs,
+}: {
+  events: AgentWorkRecordEventRead[];
+  onOpenLogs: () => void;
+}) {
+  return (
+    <section className="flex min-w-0 flex-col gap-[16px] rounded-[20px] border border-black/[0.05] bg-white/85 p-[20px] shadow-[0_6px_20px_rgba(17,17,17,0.04)] backdrop-blur">
+      <div className="flex items-center justify-between gap-[12px]">
+        <span className="flex min-w-0 items-baseline gap-[6px]">
+          <span className="text-[13px] font-medium text-[#18181a]">活动记录</span>
+          <span className="shrink-0 text-[11.5px] leading-none text-[#9aa1b1]">
+            近 {events.length} 条事件
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={onOpenLogs}
+          className="shrink-0 whitespace-nowrap text-[12px] text-[#0f7268] hover:underline"
+        >
+          查看全部对话
+        </button>
+      </div>
+      <ActivityTimeline events={events} />
+    </section>
+  );
+}
+
+/**
+ * 成员与路由规则。这是小队唯一「有内容」的配置，所以给它更宽的一列。
+ *
+ * 每位成员补了三样原先看不到的信息：
+ * - 他的岗位描述（`agent_description`）—— 判断「规则写得对不对」的依据；
+ * - 示例问题数量（`example_queries`）—— 路由准确率的另一个来源；
+ * - 状态（`agent_status`）—— 成员被下线后这条规则就失效了，得能看见。
+ */
+function DispatcherMembersCard({
+  members,
+  maxMembers,
+  onConfigure,
+}: {
+  members: DispatcherRead['members'];
+  maxMembers: number;
+  onConfigure: () => void;
+}) {
+  return (
+    <DispatcherCardShell
+      title="成员与路由规则"
+      count={`${members.length}/${maxMembers}`}
+      action={(
+        <button
+          type="button"
+          onClick={onConfigure}
+          className="shrink-0 whitespace-nowrap text-[12px] text-[#0f7268] hover:underline"
+        >
+          去配置
+        </button>
+      )}
+    >
+      {members.length === 0 && (
+        <span className="text-[12.5px] leading-[1.6] text-[#8a5a12]">
+          还没有成员，所有问题都会走兜底。至少添加 {maxMembers > 1 ? 2 : 1} 位同事才有路由意义。
+        </span>
+      )}
+      {members.map((member, index) => {
+        const offline = member.agent_status !== 'active';
+        const noRule = !member.routing_rule.trim();
+        return (
+          <div key={member.member_agent_id} className="flex items-start gap-[10px]">
+            <span
+              className={cn(
+                'mt-[1px] grid size-[20px] shrink-0 place-items-center rounded-[6px] text-[10.5px] font-medium',
+                offline ? 'bg-[#f2f3f6] text-[#b4bac8]' : 'bg-[#e1f1ed] text-[#0f7268]',
+              )}
+            >
+              {index + 1}
+            </span>
+            <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+              <span className="flex min-w-0 flex-wrap items-center gap-[6px] text-[13px] text-[#18181a]">
+                <span className={cn('min-w-0 truncate', offline && 'text-[#9aa1b1]')}>
+                  {member.agent_name}
+                </span>
+                {member.has_own_model && (
+                  <span className="shrink-0 whitespace-nowrap rounded-[4px] bg-[#f2f9f7] px-[4px] py-[1px] text-[10px] text-[#0f7268]">
+                    自有模型
+                  </span>
+                )}
+                {offline && (
+                  <span className="shrink-0 whitespace-nowrap rounded-[4px] bg-[#fdf6ec] px-[4px] py-[1px] text-[10px] text-[#8a5a12]">
+                    已下线 · 这条规则暂不生效
+                  </span>
+                )}
+              </span>
+              {member.agent_description && (
+                <span className="line-clamp-1 min-w-0 text-[11.5px] leading-[1.5] text-[#9aa1b1]">
+                  {member.agent_description}
+                </span>
+              )}
+              <span
+                className={cn(
+                  'min-w-0 break-words text-[12px] leading-[1.5]',
+                  noRule ? 'text-[#8a5a12]' : 'text-[#5b6274]',
+                )}
+              >
+                {noRule ? '还没写「什么情况交给他」，这一位基本选不中。' : member.routing_rule}
+              </span>
+              {member.example_queries.length > 0 && (
+                <span className="text-[11px] leading-none text-[#b4bac8]">
+                  {member.example_queries.length} 条示例问题
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </DispatcherCardShell>
+  );
+}
+
+/** 「无法匹配时怎么办」的完整兜底策略：模式 + 固定话术 + 置信度门槛。 */
+function DispatcherFallbackCard({
+  dispatcher,
+  onConfigure,
+}: {
+  dispatcher: DispatcherRead;
+  onConfigure: () => void;
+}) {
+  const config = dispatcher.config;
+  const defaultMember = dispatcher.members.find(
+    (item) => item.member_agent_id === config.default_member_agent_id,
+  );
+  return (
+    <DispatcherCardShell
+      title="兜底策略"
+      action={(
+        <button
+          type="button"
+          onClick={onConfigure}
+          className="shrink-0 whitespace-nowrap text-[12px] text-[#0f7268] hover:underline"
+        >
+          调整
+        </button>
+      )}
+    >
+      <div className="flex flex-col gap-[2px]">
+        <span className="text-[11.5px] leading-none text-[#9aa1b1]">无法匹配时</span>
+        <span className="text-[13px] leading-[1.5] text-[#18181a]">
+          {dispatchFallbackLabel(config.fallback_mode)}
+          {config.fallback_mode === 'default_member' && (
+            <span className="text-[#5b6274]">
+              {defaultMember ? ` · ${defaultMember.agent_name}` : ' · 未指定默认同事'}
+            </span>
+          )}
+        </span>
+      </div>
+      {config.fallback_mode === 'reply' && config.fallback_reply.trim() && (
+        <p className="m-0 rounded-[10px] bg-[#f7f8fa] px-[10px] py-[8px] text-[12px] leading-[1.6] text-[#5b6274]">
+          {config.fallback_reply}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-[6px] text-[11px] leading-none text-[#9aa1b1]">
+        <span className="rounded-[5px] bg-[#f7f8fa] px-[6px] py-[3px]">
+          置信度门槛 {config.min_confidence}
+        </span>
+        <span className="rounded-[5px] bg-[#f7f8fa] px-[6px] py-[3px]">
+          {config.offer_candidates ? '会列出候选同事' : '不列候选'}
+        </span>
+      </div>
+    </DispatcherCardShell>
+  );
+}
+
+/** 基础信息：创建时间 / 更新时间 / 广场状态。原先这些字段根本无处可看。
+ *  （路由模型不重复列在这里 —— 它已经在 hero 状态行里，重复出现会让同一事实
+ *   在页面上出现两次，也容易让「取值口径」日后漂移。） */
+function DispatcherMetaCard({ dispatcher }: { dispatcher: DispatcherRead }) {
+  const rows: Array<[string, string]> = [
+    ['创建时间', formatDispatcherTime(dispatcher.created_at)],
+    ['最近修改', formatDispatcherTime(dispatcher.updated_at)],
+    ['广场状态', dispatcher.published_to_gallery ? '已发布到「员工小队」' : '未发布'],
+  ];
+  return (
+    <DispatcherCardShell title="基础信息">
+      <dl className="m-0 flex flex-col gap-[7px]">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-baseline justify-between gap-[12px]">
+            <dt className="shrink-0 text-[11.5px] leading-none text-[#9aa1b1]">{label}</dt>
+            <dd className="m-0 min-w-0 truncate text-right text-[12px] leading-[1.5] text-[#5b6274]">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </DispatcherCardShell>
+  );
+}
+
+/** `2026-11-07T04:29:34.488845` → `2026-11-07 04:29`；解析失败原样返回。 */
+function formatDispatcherTime(value?: string | null): string {
+  if (!value) return '—';
+  const parsed = parseBackendDateTime(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  const pad = (n: number) => `${n}`.padStart(2, '0');
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
 }
 
 function DashboardStat({ title, value, icon }: { title: string; value: number; icon: ReactNode }) {

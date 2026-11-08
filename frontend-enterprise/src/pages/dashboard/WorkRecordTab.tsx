@@ -247,7 +247,14 @@ type ActivityTimelineProps = {
   events: AgentWorkRecordEventRead[];
 };
 
-function ActivityTimeline({ events }: ActivityTimelineProps) {
+/**
+ * 活动时间线（Day/Week/Month 三档）。
+ *
+ * 导出给员工小队档案页复用：小队也是 agent_profiles 的一行，
+ * `/agents/{id}/work-record` 对它同样返回事件（实测 78 条 chat），
+ * 没必要为它再写一套图表。
+ */
+export function ActivityTimeline({ events }: ActivityTimelineProps) {
   const [mode, setMode] = useState<TimelineMode>('day');
   const [anchor, setAnchor] = useState<number>(() => startOfDay(new Date()).getTime());
 
