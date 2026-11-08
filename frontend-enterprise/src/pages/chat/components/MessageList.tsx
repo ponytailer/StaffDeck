@@ -206,6 +206,31 @@ export default function MessageList({
             return null;
           }
 
+          /**
+           * 「总耗时」只在有可靠计时数据时挂到答案气泡上。
+           *
+           * 一条**已经定稿**的答案气泡如果只拿到本地新建的空 trace
+           * （`startedAt` 是页面加载/首帧时刻、没有 completedAt），
+           * `TurnDurationNote` 会把它当成「本轮仍在执行」，每 250ms 往上跳 ——
+           * 真实反馈「3s 左右就有答案了，但是时间计时仍然在增加」。
+           * 常见触发：刷新后 `/trace` 投影还没回来、或 turn id 别名让
+           * finishTrace 落在另一个 trace 上。此时正确做法是**不显示**计时，
+           * 等服务端投影带 completed_at / duration_ms 回来再一次性显示权威值，
+           * 而不是拿一个没有终态的 trace 假装在计时。
+           * 仍在流式的气泡保留本地实时计时（`finishTrace` 会在 stream_end 定格）。
+           */
+          const hasTraceTerminal = Boolean(
+            trace && (trace.completedAt !== undefined || trace.durationMs !== undefined),
+          );
+          const traceTiming = item.role === 'assistant' && trace
+            && (hasTraceTerminal || item.isStreaming)
+            ? {
+              startedAt: trace.startedAt,
+              completedAt: trace.completedAt,
+              durationMs: trace.durationMs,
+            }
+            : undefined;
+
           const render: MessageRender = {
             traceTurnId,
             summary: summaryForRender,
@@ -222,13 +247,7 @@ export default function MessageList({
             statusOnly,
             slotForm,
             dispatchInfo: dispatchInfoFor(item),
-            traceTiming: item.role === 'assistant' && trace
-              ? {
-                startedAt: trace.startedAt,
-                completedAt: trace.completedAt,
-                durationMs: trace.durationMs,
-              }
-              : undefined,
+            traceTiming,
           };
 
           return <MessageBubble key={`${item.id}:message`} chat={chat} item={item} render={render} />;

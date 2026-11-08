@@ -158,7 +158,11 @@ function TurnDurationNote({ timing }: { timing: TurnTraceTiming }) {
     <span
       className={cn(CHAT_TRACE_TOTAL_DURATION_CLASS, running && CHAT_TRACE_FLOW_TEXT_CLASS)}
       data-i18n-ignore
-      title={running ? '本轮仍在执行，计时进行中' : '本轮执行的总耗时'}
+      title={running
+        ? '本轮仍在执行，计时进行中'
+        // 「3s 就有答案，却显示 8.9s」多数是口径差：小队这一轮还包含
+        // 路由决策、成员会话准备、知识检索与答案落库，不只是模型出字的那几秒。
+        : '本轮总耗时：从消息发出到答案落库，含路由/检索/工具与模型调用'}
     >
       总耗时 {label}
     </span>
