@@ -15,6 +15,7 @@ export function SearchEmptyState({
   description,
   height = 'h-[262px]',
   icon,
+  action,
 }: {
   title: ReactNode;
   description: ReactNode;
@@ -22,12 +23,14 @@ export function SearchEmptyState({
   height?: string;
   /** 覆盖默认的放大镜图标。 */
   icon?: ReactNode;
+  /** 空态里的主行动（如「新建小队」）。不传则只有文案。 */
+  action?: ReactNode;
 }) {
   return (
     <div
       className={`flex ${height} w-full items-center justify-center rounded-[20px] border border-dashed border-[#e4e9f2] bg-[#fbfcfe] px-[24px] text-center`}
     >
-      <div className="flex max-w-[210px] flex-col items-center">
+      <div className="flex max-w-[240px] flex-col items-center">
         <span className="grid size-[34px] place-items-center rounded-[12px] bg-white text-[#98a2b3] shadow-[0_1px_8px_rgba(70,76,94,0.06)] ring-1 ring-[#edf1f6]">
           {icon ?? <IconSearch className="size-[16px] shrink-0" />}
         </span>
@@ -35,6 +38,7 @@ export function SearchEmptyState({
           {title}
         </p>
         <p className="mt-[4px] text-[11px] leading-[17px] text-[#a7adbb]">{description}</p>
+        {action && <div className="mt-[14px]">{action}</div>}
       </div>
     </div>
   );

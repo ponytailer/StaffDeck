@@ -545,19 +545,9 @@ export default function AgentsPage({
             <h1 className="m-0 text-[22px] font-semibold leading-[30px] text-[#18181a]">我的小队</h1>
             <span className="text-[12px] text-[#858b9c]">{dispatchers.length} 个</span>
           </div>
-          <div className="mb-[16px] flex flex-wrap items-center justify-between gap-[12px]">
-            <p className="text-[12px] leading-[18px] text-[#757f9c]">
-              一个入口把问题路由给合适的同事，本身不回答业务问题。
-            </p>
-            <UIButton
-              type="button"
-              onClick={() => openDispatcherEditor(null)}
-              className="h-[38px] shrink-0 rounded-[10px] border border-[#cfe7e2] bg-[#eef7f5] px-[18px] text-[13px] font-medium text-[#0f5f57] hover:bg-[#e4f3ef] hover:text-[#0f5f57]"
-            >
-              <IconPlus className="size-[16px]" />
-              新建小队
-            </UIButton>
-          </div>
+          <p className="mb-[16px] text-[12px] leading-[18px] text-[#757f9c]">
+            一个入口把问题路由给合适的同事，本身不回答业务问题。
+          </p>
 
           <DispatcherOverviewBar
             overview={dispatcherOverview}
@@ -571,7 +561,7 @@ export default function AgentsPage({
             <SearchEmptyState
               height="h-[280px]"
               title="还没有员工小队"
-              description="点右上角「新建小队」，选 2~3 位同事并写清各自负责什么"
+              description="选 2~3 位同事并写清各自负责什么，就能把问题路由给他们"
               icon={
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" className="shrink-0">
                   <circle cx="8" cy="3.2" r="1.9" />
@@ -580,12 +570,35 @@ export default function AgentsPage({
                   <path d="M7 4.8 4.2 10.9M9 4.8l2.8 6.1" />
                 </svg>
               }
+              action={
+                // 空态时左列表不渲染，「新建小队」必须在这里 —— 否则整个页面没有创建入口
+                <button
+                  type="button"
+                  onClick={() => openDispatcherEditor(null)}
+                  className="inline-flex h-[34px] items-center gap-[5px] rounded-[9px] border border-[#cfe7e2] bg-[#eef7f5] px-[14px] text-[12.5px] font-medium text-[#0f5f57] transition-colors hover:bg-[#e4f3ef]"
+                >
+                  <IconPlus className="size-[14px]" />
+                  新建小队
+                </button>
+              }
             />
           ) : (
             // master-detail：左列表永远是窄栏（1 个入口时也就一行 + 新建按钮），
             // 右详情撑满剩余宽度 —— 这样「只有 1 个入口 → 卡片下面一大片空白」不再出现。
             <div className="flex flex-col gap-[14px] lg:flex-row lg:items-start">
               <aside className="w-full shrink-0 rounded-[18px] border border-black/[0.05] bg-white p-[8px] shadow-[0_6px_20px_rgba(17,17,17,0.04)] lg:sticky lg:top-[16px] lg:w-[276px]">
+                {/* 「新建小队」放在列表**上方**且不在滚动容器里：小队一多，列表会滚，
+                    按钮放底部就会被推到折叠线以下（用户反馈）。 */}
+                <button
+                  type="button"
+                  onClick={() => openDispatcherEditor(null)}
+                  className="mb-[6px] flex w-full items-center gap-[7px] rounded-[12px] px-[8px] py-[7px] text-[12.5px] font-medium text-[#0f5f57] transition-colors hover:bg-[#f4faf8]"
+                >
+                  <span className="grid size-[22px] shrink-0 place-items-center rounded-[7px] border border-[#cfe7e2] bg-[#eef7f5]">
+                    <IconPlus className="size-[12px]" />
+                  </span>
+                  新建小队
+                </button>
                 {attentionOnly && (
                   <div className="mb-[6px] flex items-center justify-between gap-[6px] rounded-[10px] bg-[#fdf8ee] px-[9px] py-[6px]">
                     <span className="text-[11px] text-[#8a5a12]">
@@ -601,7 +614,7 @@ export default function AgentsPage({
                   </div>
                 )}
                 <div
-                  className="flex flex-col gap-[2px] lg:max-h-[calc(100vh-320px)] lg:overflow-y-auto"
+                  className="flex flex-col gap-[2px] lg:max-h-[calc(100vh-360px)] lg:overflow-y-auto"
                   role="listbox"
                   aria-label="小队列表"
                 >
@@ -622,14 +635,6 @@ export default function AgentsPage({
                     </p>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => openDispatcherEditor(null)}
-                  className="mt-[6px] flex w-full items-center justify-center gap-[5px] rounded-[12px] border border-dashed border-[#dfe3ea] py-[8px] text-[12px] text-[#757f9c] transition-colors hover:border-[#cfe7e2] hover:bg-[#f4faf8] hover:text-[#0f5f57]"
-                >
-                  <IconPlus className="size-[13px]" />
-                  新建小队
-                </button>
               </aside>
 
               <div className="min-w-0 flex-1">

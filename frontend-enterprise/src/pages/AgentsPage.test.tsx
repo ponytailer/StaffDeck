@@ -441,13 +441,14 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     );
   }
 
-  it('「我的小队」页不渲染员工网格，创建入口只在页内两处（无页尾引导条）', async () => {
+  it('「我的小队」页不渲染员工网格，空态自带创建入口', async () => {
     vi.stubGlobal('fetch', mockAgents([agent, { ...agent, id: 'agent-2', name: '小新' }]));
     renderPage();
 
     expect(await screen.findByText('我的小队')).toBeTruthy();
-    // 空态下只有页头那一个入口
-    expect(screen.getAllByText('新建小队').length).toBeGreaterThanOrEqual(1);
+    // 空态（0 个小队）时左列表不渲染 → 创建入口必须在空态里，且只有这一个
+    expect(await screen.findByText('还没有员工小队')).toBeTruthy();
+    expect(screen.getAllByText('新建小队')).toHaveLength(1);
     // 小队页不渲染数字员工的统计与网格
     expect(screen.queryByText('员工总数')).toBeNull();
     expect(screen.queryByText('小艾')).toBeNull();
@@ -461,9 +462,8 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     renderPage();
 
     const user = userEvent.setup();
-    // 页头入口与左列表底部入口同名，取第一个；弹窗标题另按 dialog 作用域断言
-    const [firstCreate] = await screen.findAllByText('新建小队');
-    await user.click(firstCreate);
+    // 页头按钮已取消，空态里只剩一个入口
+    await user.click(await screen.findByText('新建小队'));
 
     const dialog = await screen.findByRole('dialog');
     const title = dialog.querySelector('[data-slot="dialog-title"]');
@@ -504,6 +504,13 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     // 左列表一项 + 右详情标题，名字会出现两次
     expect(screen.getByLabelText('小队列表')).toBeTruthy();
     expect(screen.getAllByText('前台调度').length).toBeGreaterThanOrEqual(2);
+    // 有入口时创建入口只有一个，且在列表**上方**（放底部会被滚动区推走）
+    const createButtons = screen.getAllByText('新建小队');
+    expect(createButtons).toHaveLength(1);
+    const list = screen.getByLabelText('小队列表');
+    expect(
+      createButtons[0].compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     // 详情里的操作入口
     expect(screen.getByRole('button', { name: /去对话/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: '员工小队档案' })).toBeTruthy();
