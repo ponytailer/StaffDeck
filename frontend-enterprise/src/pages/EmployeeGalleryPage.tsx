@@ -15,6 +15,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import EmployeeCard from '../components/EmployeeCard';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
+import DispatcherGalleryCard from '../components/dispatcher/DispatcherGalleryCard';
 import { RevealGroup } from '../components/RevealGroup';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import {
@@ -26,14 +27,17 @@ import {
   visibleEmployeeAgents,
 } from '../employee';
 import {
+  activateAgentScope,
   emitAgentRosterRefresh,
   emitAgentScopeChange,
   ENTERPRISE_AGENT_STORAGE_KEY,
   onAgentRosterRefresh,
 } from '../lib/agent-scope-storage';
+import { listDispatchers, type DispatcherRead } from '../lib/dispatcher';
+import { EnterpriseRoute } from '../enums/routes';
 import type { AgentProfileRead } from '../types';
 
-type GalleryScope = 'all' | 'mine' | 'gallery';
+type GalleryScope = 'all' | 'mine' | 'squads' | 'gallery';
 
 export default function EmployeeGalleryPage({
   currentUser,
@@ -55,7 +59,25 @@ export default function EmployeeGalleryPage({
   const [startingAgentId, setStartingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [scope, setScope] = useState<GalleryScope>('all');
+  // 小队是另一类对象（kind=dispatcher），不在 /api/enterprise/agents 里，
+  // 只有切到「我的小队」tab 时才拉 —— 别让进页面就多等一次远程 PG（3~8s）。
+  const [squads, setSquads] = useState<DispatcherRead[]>([]);
+  const [squadsLoaded, setSquadsLoaded] = useState(false);
+  const [squadsLoading, setSquadsLoading] = useState(false);
+  const [startingSquadId, setStartingSquadId] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  async function loadSquads() {
+    setSquadsLoading(true);
+    try {
+      setSquads(await listDispatchers());
+      setSquadsLoaded(true);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '加载员工小队失败');
+    } finally {
+      setSquadsLoading(false);
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -107,6 +129,17 @@ export default function EmployeeGalleryPage({
       ? galleryEmployees
       : availableAgents;
 
+  // 小队也用同一个搜索框：名字 / 介绍 / 成员名任一命中即可
+  const filteredSquads = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    if (!keyword) return squads;
+    return squads.filter((row) => [
+      row.name,
+      row.description || '',
+      ...row.members.map((member) => member.agent_name || ''),
+    ].some((value) => value.toLowerCase().includes(keyword)));
+  }, [squads, searchTerm]);
+
   const filteredEmployees = scopedEmployees.filter((item) => {
     const profile = employeeProfile(item);
     const keyword = searchTerm.trim().toLowerCase();
@@ -135,6 +168,31 @@ export default function EmployeeGalleryPage({
     } finally {
       setStartingAgentId(null);
     }
+  }
+
+  /**
+   * 进小队对话：**必须先切作用域**再 navigate。
+   * 只 navigate 时，对话页会把这个 id 当成「不在花名册里的员工」而兜底改写回某一位
+   * 员工（历史踩过，表现是「点了小队却进了别人的对话」）。切作用域的三步收敛在
+   * `activateAgentScope` 里，与「我的小队」页共用。
+   */
+  function startDispatcherChat(row: DispatcherRead) {
+    if (startingSquadId) return;
+    setStartingSquadId(row.id);
+    try {
+      activateAgentScope(row.id, currentUser?.id);
+      navigate(`/workspace/chat/draft/${row.id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '发起对话失败');
+    } finally {
+      setStartingSquadId(null);
+    }
+  }
+
+  /** 进小队档案页（只切作用域，不进对话）。 */
+  function openDispatcherProfile(row: DispatcherRead) {
+    activateAgentScope(row.id, currentUser?.id);
+    navigate(EnterpriseRoute.Dashboard);
   }
 
   async function updateStatus(row: AgentProfileRead, status: 'active' | 'archived') {
@@ -211,11 +269,18 @@ export default function EmployeeGalleryPage({
   const galleryTabs: UnderlineTabItem<GalleryScope>[] = [
     { value: 'all', label: '所有员工' },
     { value: 'mine', label: '我的数字员工' },
+    // 小队也是「可以聊的对象」，只是它不干活、只负责把人分对 —— 放在「我的」这组里，
+    // 不混进「所有员工」（混进去会让员工总数虚高，也容易被以为能给它配知识库）。
+    { value: 'squads', label: '我的小队' },
     { value: 'gallery', label: '数字员工广场' },
   ];
 
   function changeScope(nextScope: GalleryScope) {
     setScope(nextScope);
+    // 懒加载：只在第一次切到这个 tab 时拉，失败时 loaded 保持 false 以便重试
+    if (nextScope === 'squads' && !squadsLoaded && !squadsLoading) {
+      void loadSquads();
+    }
   }
 
   const hasSearchTerm = Boolean(searchTerm.trim());
@@ -253,6 +318,57 @@ export default function EmployeeGalleryPage({
     </RevealGroup>
   );
 
+  /**
+   * 「我的小队」tab 的网格。
+   *
+   * 与员工网格同样是 262px 网格卡，但卡片换成 `DispatcherGalleryCard`（小队没有
+   * 知识库/技能/SOP，统计项改成 成员 / 被使用 / 兜底）。空态分三种：加载中、
+   * 搜索无结果、一个小队都没有（给「去我的小队」的引导）。
+   */
+  const squadGrid = (
+    <RevealGroup
+      className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]"
+      itemCount={filteredSquads.length}
+    >
+      {filteredSquads.map((row) => (
+        <DispatcherGalleryCard
+          key={row.id}
+          dispatcher={row}
+          busy={startingSquadId === row.id}
+          onChat={() => startDispatcherChat(row)}
+          onProfile={() => openDispatcherProfile(row)}
+        />
+      ))}
+      {squadsLoading && !filteredSquads.length && (
+        <p className="col-span-full m-0 py-[44px] text-center text-[12px] text-[#858b9c]">
+          正在加载员工小队…
+        </p>
+      )}
+      {!squadsLoading && !filteredSquads.length && (
+        hasSearchTerm ? (
+          <SearchEmptyState
+            title="没有匹配的员工小队"
+            description="换个关键词，或清空搜索再试试"
+          />
+        ) : (
+          <SearchEmptyState
+            title="还没有员工小队"
+            description="在「我的小队」里选 2~3 位同事、写清各自负责什么，就能把问题路由给他们"
+            action={
+              <button
+                type="button"
+                onClick={() => navigate(EnterpriseRoute.Squads)}
+                className="inline-flex h-[32px] items-center rounded-[9px] border border-[#cfe7e2] bg-[#eef7f5] px-[14px] text-[12.5px] font-medium text-[#0f5f57] transition-colors hover:bg-[#e4f3ef]"
+              >
+                去我的小队
+              </button>
+            }
+          />
+        )
+      )}
+    </RevealGroup>
+  );
+
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader
@@ -285,7 +401,9 @@ export default function EmployeeGalleryPage({
         tabClassName="max-[560px]:min-h-[54px] max-[560px]:w-auto max-[560px]:flex-1 max-[560px]:px-[6px] max-[560px]:text-[12px] max-[560px]:leading-[16px]"
       />
 
-      {scope === 'mine' ? (
+      {scope === 'squads' ? (
+        <section aria-label="我的小队">{squadGrid}</section>
+      ) : scope === 'mine' ? (
         <>
           <section aria-label="我的数字员工">{employeeGrid}</section>
           <MyCreatedSkillsPanel agents={agents} searchTerm={searchTerm} />

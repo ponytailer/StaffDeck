@@ -12,6 +12,20 @@ export function persistSharedAgentScope(agentId: string, userId?: string): void 
   window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, agentId);
 }
 
+/**
+ * 切到某个员工/小队作用域并广播（落库 + 通知）。
+ *
+ * **小队进对话/档案前必须走这一步**：只 navigate 不切作用域时，对话页与档案页
+ * 会把它当成「不在花名册里的 id」而兜底改写回某位员工（历史踩过）。
+ * 目前有三个入口（我的小队页、员工广场的「我的小队」tab），收敛在这里，
+ * 免得各写一份、漏掉其中一步。
+ */
+export function activateAgentScope(agentId: string, userId?: string): void {
+  if (!agentId) return;
+  persistSharedAgentScope(agentId, userId);
+  emitAgentScopeChange(agentId);
+}
+
 export function clearSharedAgentScope(userId?: string): void {
   void userId;
   window.localStorage.removeItem(ENTERPRISE_AGENT_STORAGE_KEY);

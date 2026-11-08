@@ -37,11 +37,10 @@ import {
   employeeProfile,
 } from '../employee';
 import {
+  activateAgentScope,
   emitAgentRosterRefresh,
-  emitAgentScopeChange,
   isTeamScope,
   onAgentRosterRefresh,
-  persistSharedAgentScope,
   readEmployeeScope,
 } from '../lib/agent-scope-storage';
 import type { AgentProfileRead, ModelConfigRead } from '../types';
@@ -334,8 +333,7 @@ export default function AgentsPage({
         updateAgentInList(selectedRow);
       }
       setSelectedAgentId(selectedRow.id);
-      persistSharedAgentScope(selectedRow.id, currentUser?.id);
-      emitAgentScopeChange(selectedRow.id);
+      activateAgentScope(selectedRow.id, currentUser?.id);
       navigate('/enterprise/dashboard');
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载员工失败');
@@ -354,8 +352,7 @@ export default function AgentsPage({
     setSelectingAgentId(row.id);
     try {
       setSelectedAgentId(row.id);
-      persistSharedAgentScope(row.id, currentUser?.id);
-      emitAgentScopeChange(row.id);
+      activateAgentScope(row.id, currentUser?.id);
       navigate(`/workspace/chat/draft/${row.id}`);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '打开员工小队失败');
@@ -376,8 +373,7 @@ export default function AgentsPage({
     setSelectingAgentId(row.id);
     try {
       setSelectedAgentId(row.id);
-      persistSharedAgentScope(row.id, currentUser?.id);
-      emitAgentScopeChange(row.id);
+      activateAgentScope(row.id, currentUser?.id);
       navigate('/enterprise/dashboard');
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '打开员工小队档案失败');
