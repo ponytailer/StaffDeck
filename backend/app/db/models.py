@@ -1728,8 +1728,9 @@ class AiReviewTask(SQLModel, table=True):
 
     __tablename__ = "ai_review_tasks"
     # 同一 PR/MR 同时只允许一条进行中任务（部分唯一索引，PG 与 SQLite 都支持
-    # WHERE 子句）。应用层在创建 / 重试时已拦一道，这里是并发写入的兜底；
-    # 已存在的表由 database._migrate_ai_review_schema() 补建同名索引。
+    # WHERE 子句）。应用层在创建 / 重试时已拦一道，这里是并发写入的兜底。
+    # 新库由 create_all 直接建；存量库的这条索引 2026-11-08 已确认在位
+    # （原来的补建迁移已随 init_db 的迁移层一起删除）。
     __table_args__ = (
         Index(
             "uq_ai_review_task_in_flight",
