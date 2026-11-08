@@ -7,8 +7,8 @@ import IconPlus from '../assets/icons/plus.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
 import { SearchEmptyState } from '@/components/SearchEmptyState';
 
-import { useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { api, TENANT_ID } from '../api/client';
 import { type EnterpriseAuthUser } from '../auth';
@@ -70,6 +70,8 @@ export default function AgentsPage({
   const [dispatchers, setDispatchers] = useState<DispatcherRead[]>([]);
   const [dispatcherEditorOpen, setDispatcherEditorOpen] = useState(false);
   const [editingDispatcher, setEditingDispatcher] = useState<DispatcherRead | null>(null);
+  /** 打开编辑弹窗时滚到哪一段（档案页「去配置/调整」深链带过来） */
+  const [dispatcherFocus, setDispatcherFocus] = useState<'members' | 'fallback' | null>(null);
   const [dispatcherDeleteTarget, setDispatcherDeleteTarget] = useState<DispatcherRead | null>(null);
   const [deletingDispatcher, setDeletingDispatcher] = useState(false);
   // 正在发布/下架的多智能体 id（同一时刻只处理一个，按钮显示「处理中…」）
@@ -106,6 +108,14 @@ export default function AgentsPage({
   );
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
+  // 从员工小队档案页「去配置 / 调整」带过来的深链参数：
+  // ?edit=<dispatcherId>&focus=members|fallback#dispatchers
+  const pendingEditId = searchParams.get('edit');
+  const pendingFocus = searchParams.get('focus');
+  // 已经消费过就别再弹：列表刷新 / 保存后重拉都会让下面的 effect 再跑一次，
+  // 没有这个闸门会把用户刚关掉的弹窗又弹出来。
+  const consumedEditIdRef = useRef<string | null>(null);
 
   // 侧栏「成员与路由规则」用 `/enterprise/agents#dispatchers` 深链跳进来。
   // 从员工页点它属于「同路由换 hash」，组件不会重挂载 → 只能监听 hash 变化。
@@ -154,6 +164,41 @@ export default function AgentsPage({
       }),
     [],
   );
+
+  useEffect(() => {
+    // 参数已被消费（URL 里没有 edit 了）→ 放开闸门，让下一次从档案页
+    // 点同一个小队的「去配置」还能正常打开。否则第二次会被 ref 挡住。
+    if (!pendingEditId) {
+      consumedEditIdRef.current = null;
+      return;
+    }
+    if (consumedEditIdRef.current === pendingEditId) return;
+    // 冷启动竞态：dispatchers 要等远程 PG 往返（实测 3~8s）。列表没到时
+    // **不能**清参数，否则等它到了就没有机会打开弹窗了 —— 静默返回即可。
+    const row = dispatchers.find((item) => item.id === pendingEditId);
+    if (!row) return;
+
+    consumedEditIdRef.current = pendingEditId;
+    setEditingDispatcher(row);
+    setDispatcherEditorOpen(true);
+    setDispatcherFocus(pendingFocus === 'fallback' ? 'fallback' : 'members');
+    // 消费掉 URL 参数：用 navigate 的对象形式**显式保留 #dispatchers**
+    // （setSearchParams 只改 search，但它走 navigate('?...') 字符串形式，
+    //   hash 会不会被带上取决于版本 —— 不如写死，免得页面悄悄跳回数字员工 tab）。
+    // replace 让浏览器后退不会又停在带参数的地址上。
+    const next = new URLSearchParams(searchParams);
+    next.delete('edit');
+    next.delete('focus');
+    const search = next.toString();
+    navigate(
+      {
+        pathname: location.pathname,
+        search: search ? `?${search}` : '',
+        hash: location.hash,
+      },
+      { replace: true },
+    );
+  }, [pendingEditId, pendingFocus, dispatchers, searchParams, navigate, location.pathname, location.hash]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -362,6 +407,7 @@ export default function AgentsPage({
 
   function openDispatcherEditor(row: DispatcherRead | null) {
     setEditingDispatcher(row);
+    setDispatcherFocus(null);
     setDispatcherEditorOpen(true);
   }
 
@@ -663,9 +709,11 @@ export default function AgentsPage({
         dispatcher={editingDispatcher}
         agents={agents}
         models={models}
+        focusSection={dispatcherFocus ?? undefined}
         onClose={() => {
           setDispatcherEditorOpen(false);
           setEditingDispatcher(null);
+          setDispatcherFocus(null);
         }}
         onSaved={(row) => {
           setDispatchers((current) => {

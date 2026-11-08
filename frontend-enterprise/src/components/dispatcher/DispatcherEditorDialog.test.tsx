@@ -268,4 +268,21 @@ describe('DispatcherEditorDialog 提交载荷', () => {
     // 切过去时自动预选第一位成员，避免用户漏选
     expect(body.config.default_member_agent_id).toBe('agent-a');
   });
+
+  /**
+   * 回归（用户原话「小队档案，调整和配置跳转的页面都是错误的」）：
+   * 从档案页「去配置 / 调整」进来时带 focusSection，弹窗必须挂上可定位的
+   * DOM 锚点。之前依赖 `Section`（函数组件）的 ref 透传，React 18 下
+   * ref 拿不到、scrollTop 恒为 0；现在用 data-dispatch-section + 滚动容器
+   * 原生 ref，两个锚点都得真实存在。
+   */
+  it.each(['members', 'fallback'] as const)(
+    '带 focusSection=%s 打开时，弹窗带定位标记且目标段有 DOM 锚点',
+    async (focusSection) => {
+      renderEditor({ focusSection });
+      const dialog = await screen.findByRole('dialog');
+      expect(dialog.getAttribute('data-focus-section')).toBe(focusSection);
+      expect(dialog.querySelector(`[data-dispatch-section="${focusSection}"]`)).toBeTruthy();
+    },
+  );
 });

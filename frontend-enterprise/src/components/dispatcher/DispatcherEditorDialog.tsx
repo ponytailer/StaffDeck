@@ -92,6 +92,7 @@ export default function DispatcherEditorDialog({
   dispatcher,
   agents,
   models,
+  focusSection,
   onClose,
   onSaved,
 }: {
@@ -100,6 +101,12 @@ export default function DispatcherEditorDialog({
   dispatcher?: DispatcherRead | null;
   agents: AgentProfileRead[];
   models: ModelConfigRead[];
+  /**
+   * 打开时滚到哪一段（员工小队档案页「去配置 / 调整」深链带过来）。
+   * 不传 = 从顶部正常打开。弹窗是三段式长表单，不定位的话用户看到的是
+   * 「基础信息」，跟他刚点的「兜底策略」对不上（真实反馈）。
+   */
+  focusSection?: 'members' | 'fallback';
   onClose: () => void;
   onSaved?: (row: DispatcherRead) => void;
 }) {
@@ -120,6 +127,8 @@ export default function DispatcherEditorDialog({
   const [highlightMemberId, setHighlightMemberId] = useState<string | null>(null);
   const [highlightFallback, setHighlightFallback] = useState(false);
   const fallbackCardRef = useRef<HTMLDivElement | null>(null);
+  /** 三段式长表单的滚动容器：原生 div 的 ref 一定拿得到，用来做深链定位 */
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const memberCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // 打开时初始化：编辑回填 / 新建清空
@@ -154,6 +163,46 @@ export default function DispatcherEditorDialog({
     // models 变化不该重置表单，故意不放进依赖
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, dispatcher]);
+
+  /**
+   * 深链定位：打开编辑弹窗后滚到「成员与路由规则」或「无法匹配时怎么办」。
+   *
+   * 坑（实测）：Radix Dialog 走 Portal + Presence，内容比本组件 effect
+   * **晚一帧以上**才进 DOM；而 `Section` 是函数组件用 ref-as-prop，ref 透传
+   * 在 React 18 下并不可靠（rAF 里 target.current 恒为 null，scrollTop 一直 0）。
+   * 所以改成：滚动容器拿原生 ref + 目标段用 `data-dispatch-section` 锚点，
+   * 直接算 offsetTop 写 scrollTop —— 完全不依赖 ref 链路。
+   * 再补一次是为了抵消 Radix 打开时 autofocus 引发的滚动复位。
+   */
+  useEffect(() => {
+    if (!open || !focusSection) return;
+    let cancelled = false;
+    let timer = 0;
+    let confirmed = false;
+    const scrollToSection = () => {
+      if (cancelled) return;
+      const container = scrollContainerRef.current;
+      const target = container?.querySelector<HTMLElement>(
+        `[data-dispatch-section="${focusSection}"]`,
+      );
+      if (!container || !target) {
+        timer = window.setTimeout(scrollToSection, 60);
+        return;
+      }
+      // offsetTop 是相对滚动内容计算的，减去容器自身的 padding 让标题贴顶
+      container.scrollTop = Math.max(0, target.offsetTop - 16);
+      if (focusSection === 'fallback') setHighlightFallback(true);
+      if (!confirmed) {
+        confirmed = true;
+        timer = window.setTimeout(scrollToSection, 180);
+      }
+    };
+    timer = window.setTimeout(scrollToSection, 80);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, focusSection]);
 
   const selectableAgents = useMemo(
     () =>
@@ -379,7 +428,10 @@ export default function DispatcherEditorDialog({
           → 弹窗不再相对视口居中，而是被 `top: 50%` 推到 body 高度的一半（实测 y=466、
           底部溢出视口 434px，「看不见」）。成员选择浮层本来就在 Content 内部，
           `absolute inset-0` 相对的是 Content，不需要这里再声明相对定位。 */}
-      <DialogContent className="flex max-h-[calc(100dvh-32px)] w-[calc(100%-32px)] flex-col gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[880px]">
+      <DialogContent
+        data-focus-section={focusSection || ''}
+        className="flex max-h-[calc(100dvh-32px)] w-[calc(100%-32px)] flex-col gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[880px]"
+      >
         <DialogTitle className="shrink-0 px-[24px] pt-[18px] text-[16px] font-semibold text-[#18181a]">
           {dispatcher ? '编辑员工小队' : '新建员工小队'}
           <span className="ml-[8px] rounded-[6px] bg-[#e1f1ed] px-[7px] py-[2px] align-middle text-[11px] font-normal text-[#0f7268]">
@@ -390,7 +442,10 @@ export default function DispatcherEditorDialog({
           用户只跟这个入口对话。它不回答业务问题，只负责判断该由哪位同事处理，然后把问题转过去。
         </p>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-[24px] pb-[8px]">
+        <div
+          ref={scrollContainerRef}
+          className="min-h-0 flex-1 overflow-y-auto px-[24px] pb-[8px]"
+        >
           <DispatcherTopology
             className="mt-[14px]"
             entryName={name.trim() || '未命名入口'}
@@ -469,6 +524,7 @@ export default function DispatcherEditorDialog({
 
           {/* ② 成员与路由规则 */}
           <Section
+            sectionKey="members"
             index={2}
             title="成员与路由规则"
             extra={
@@ -622,6 +678,7 @@ export default function DispatcherEditorDialog({
             index={3}
             title="无法匹配时怎么办"
             extra={null}
+            sectionKey="fallback"
             ref={fallbackCardRef}
           >
             <p className="text-[11.5px] leading-[1.6] text-[#757f9c]">
@@ -885,14 +942,21 @@ const Section = ({
   extra,
   children,
   ref,
+  sectionKey,
 }: {
   index: number;
   title: string;
   extra?: React.ReactNode;
   children: React.ReactNode;
   ref?: React.Ref<HTMLDivElement>;
+  /** 深链定位用的稳定 DOM 锚点（不依赖 ref 透传，React 18/19 都成立） */
+  sectionKey?: 'members' | 'fallback';
 }) => (
-  <div ref={ref} className="mt-[18px] border-t border-black/[0.05] pt-[16px]">
+  <div
+    ref={ref}
+    data-dispatch-section={sectionKey}
+    className="mt-[18px] border-t border-black/[0.05] pt-[16px]"
+  >
     <div className="mb-[8px] flex items-center gap-[8px]">
       <span className="grid size-[20px] shrink-0 place-items-center rounded-[6px] bg-[#18181a] text-[11px] font-semibold text-white">
         {index}

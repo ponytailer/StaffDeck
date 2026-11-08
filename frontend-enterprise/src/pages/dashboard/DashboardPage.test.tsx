@@ -2,7 +2,7 @@
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
@@ -326,6 +326,58 @@ describe('DashboardPage dispatcher profile tabs', () => {
     expect(avatarColumn).toBeTruthy();
     // 该列里包含拓扑图标所在的圆角底块
     expect(avatarColumn?.querySelector('span[class*="bg-[#e1f1ed]"]')).toBeTruthy();
+  });
+
+  /**
+   * 回归（用户原话「小队档案，调整和配置跳转的页面都是错误的」）：
+   * 旧版 onConfigure 只写 `navigate('/enterprise/agents')` —— 没 hash（落到默认
+   * 「数字员工」tab）、没小队 id、更不会打开编辑弹窗。现在必须带
+   * edit=<小队 id>&focus=<段>#dispatchers，让 AgentsPage 直接打开对应编辑器。
+   */
+  it.each([
+    ['去配置', 'members'],
+    ['调整', 'fallback'],
+    ['配置成员', 'members'],
+  ])('点「%s」跳到员工小队 tab 并带上 edit/focus=%s', async (buttonLabel, focus) => {
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, dispatcher.id);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([dispatcher]);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      if (url.includes('/api/enterprise/knowledge-bases')) {
+        return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
+      }
+      if (url.includes('/api/enterprise/feedback/summary')) {
+        return jsonResponse({ total_feedback: 0, up_count: 0, down_count: 0, bucket_counts: [] });
+      }
+      return jsonResponse([]);
+    }));
+    function LocationEcho() {
+      const location = useLocation();
+      return <div data-testid="nav-target">{`${location.pathname}${location.search}${location.hash}`}</div>;
+    }
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter initialEntries={['/enterprise/dashboard']}>
+            <Routes>
+              <Route
+                path="/enterprise/dashboard"
+                element={<DashboardPage currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }} isAdmin />}
+              />
+              <Route path="*" element={<LocationEcho />} />
+            </Routes>
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+
+    const user = userEvent.setup();
+    const button = await screen.findByRole('button', { name: buttonLabel });
+    await user.click(button);
+    expect((await screen.findByTestId('nav-target')).textContent).toBe(
+      `/enterprise/agents?edit=${dispatcher.id}&focus=${focus}#dispatchers`,
+    );
   });
 
   it('状态行仍完整展示兜底方式与累计转接', async () => {

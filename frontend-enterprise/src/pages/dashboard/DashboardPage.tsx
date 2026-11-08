@@ -302,7 +302,16 @@ export default function DashboardPage({
         feedbackSummary={feedbackSummary}
         activityEvents={activityEvents}
         onOpenChat={() => navigate(`/workspace/chat/draft/${selectedDispatcher.id}`)}
-        onConfigure={() => navigate(EnterpriseRoute.Agents)}
+        // 「去配置 / 调整」不是「去看员工列表」：落到 #dispatchers（员工小队 tab）
+        // 并带上 edit/focus，让 AgentsPage 直接打开**这个小队**的编辑弹窗、滚到
+        // 对应的段落。旧版只写 navigate(EnterpriseRoute.Agents) —— 既没 hash
+        // （落到默认「数字员工」tab），也不带 id（还得自己再找一遍卡片），
+        // 用户反馈「小队档案里调整和配置跳转的页面都是错误的」。
+        onConfigure={(section) => {
+          const params = new URLSearchParams({ edit: selectedDispatcher.id });
+          if (section) params.set('focus', section);
+          navigate(`${EnterpriseRoute.Agents}?${params.toString()}#dispatchers`);
+        }}
         onLogout={onLogout}
         userName={currentUser?.username}
       />
@@ -568,7 +577,8 @@ function DispatcherProfileView({
   /** 小队自己的活动事件（对话/转接），复用员工那套时间线渲染 */
   activityEvents: AgentWorkRecordEventRead[];
   onOpenChat: () => void;
-  onConfigure: () => void;
+  /** 打开配置弹窗并定位到对应段：members=成员与路由规则 / fallback=兜底策略 */
+  onConfigure: (section?: 'members' | 'fallback') => void;
   onLogout?: () => void;
   userName?: string;
 }) {
@@ -622,7 +632,7 @@ function DispatcherProfileView({
                 <UiButton
                   variant="outline"
                   className={HERO_SECONDARY_BUTTON_CLASS}
-                  onClick={onConfigure}
+                  onClick={() => onConfigure('members')}
                 >
                   <IconEdit className="size-[14px]" />
                   配置成员
@@ -711,10 +721,10 @@ function DispatcherProfileView({
             <DispatcherMembersCard
               members={members}
               maxMembers={MAX_DISPATCH_MEMBERS}
-              onConfigure={onConfigure}
+              onConfigure={() => onConfigure('members')}
             />
             <div className="flex flex-col gap-[12px]">
-              <DispatcherFallbackCard dispatcher={dispatcher} onConfigure={onConfigure} />
+              <DispatcherFallbackCard dispatcher={dispatcher} onConfigure={() => onConfigure('fallback')} />
               <DispatcherMetaCard dispatcher={dispatcher} />
             </div>
           </div>
