@@ -4,7 +4,9 @@
 
 ## 202611 w1
 
-- **Fix**: **员工小队档案页「去配置 / 调整 / 配置成员」跳转页面错误**（用户截图反馈）—— `onConfigure` 原先只写 `navigate(EnterpriseRoute.Agents)`：没 `#dispatchers` hash（落到默认「数字员工」tab）、没小队 id、更不会打开编辑弹窗，用户点完还要自己再找一遍卡片。现在跳 `/enterprise/agents?edit=<id>&focus=members|fallback#dispatchers`，`AgentsPage` 消费参数后自动打开**该小队**的 `DispatcherEditorDialog` 并滚到对应段（成员与路由规则 / 无法匹配时怎么办），同时保留 `#dispatchers`、清掉 query（`replace`）。冷启动竞态（dispatchers 要等远程 PG 3~8s）用「列表没到不清参数 + consumedEditIdRef 闸门」处理，重复点同一小队也能再次打开
+- **Fix**: **员工小队档案「配置成员 / 去配置 / 调整」改为就地打开编辑弹窗，不再跳转**（用户第 3 次反馈「点击配置成员，跳转的也不对」）。实测上一版 `?edit=&focus=#dispatchers` 深链会先跳到 `/enterprise/agents` 列表页，等远程 PG 的 dispatchers 列表约 4s 期间页面显示「还没有员工小队」空态，弹窗才出现 —— 用户看到的就是「跳错页面」。现在 `DashboardPage` 顶层直接挂 `DispatcherEditorDialog`（档案页本来就有 `selectedDispatcher` / `agents` / `models`），点击后 **~200ms 原地弹窗**、URL 不变、`focusSection` 定位到成员段/兜底段；保存后更新本地 dispatchers 并 `emitAgentRosterRefresh()` 同步侧栏。`AgentsPage` 的 `?edit=&focus=` 消费逻辑保留（不产生新入口，但留作外部深链兼容）
+- **Remove**: **员工小队档案「对话日志」去掉点踩归因摆设**（用户截图两个红框）：`ConversationLogsTab` 新增 `hideAttribution` prop，小队作用域下隐藏后端恒返「暂无点踩归因数据。」的灰卡，以及「工具问题 / 知识缺失 / SOP 问题」三个筛选 tab（小队不挂工具/知识库/SOP，永远筛不出数据）。保留 全部/好评/差评/未评价/能力不足；filter 若残留归因值自动回退 `all`，避免列表被点不到的条件清空。**普通员工作用域全部保留**（员工确有这三类资产，EvolutionPanel 还消费点踩归因）
+- **Fix（已被上一条取代，保留演进记录）**: **员工小队档案页「去配置 / 调整 / 配置成员」跳转页面错误**（用户截图反馈）—— `onConfigure` 原先只写 `navigate(EnterpriseRoute.Agents)`：没 `#dispatchers` hash（落到默认「数字员工」tab）、没小队 id、更不会打开编辑弹窗，用户点完还要自己再找一遍卡片。现在跳 `/enterprise/agents?edit=<id>&focus=members|fallback#dispatchers`，`AgentsPage` 消费参数后自动打开**该小队**的 `DispatcherEditorDialog` 并滚到对应段（成员与路由规则 / 无法匹配时怎么办），同时保留 `#dispatchers`、清掉 query（`replace`）。冷启动竞态（dispatchers 要等远程 PG 3~8s）用「列表没到不清参数 + consumedEditIdRef 闸门」处理，重复点同一小队也能再次打开
 - **Fix**: **技能管理 / 工具管理 tab → 新建/编辑 → 点「返回」落点不对**
 - **New**: **员工小队卡片新增「员工小队档案」入口**
 - **Improve**: **员工小队档案页 hero 按钮布局改回左侧头像列下方**

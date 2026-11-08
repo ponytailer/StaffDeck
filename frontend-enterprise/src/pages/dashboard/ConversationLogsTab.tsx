@@ -85,10 +85,25 @@ const FILTER_TABS: UnderlineTabItem<ConversationLogFilter>[] = [
   { label: 'SOP 问题', value: 'sop' },
 ];
 
+/**
+ * 点踩归因里跟「员工能力资产」绑定的三类。
+ *
+ * 员工小队是纯路由：它不挂工具、不挂知识库、不挂 SOP，所以这三类归因
+ * 对它永远不可能有数据；`feedback/summary` 也恒返回「暂无点踩归因数据。」
+ * 空文案。用户明确要求小队档案的对话日志里不要再出现这两块摆设。
+ * 普通员工仍有这三类资产，必须保留 —— 因此是**按作用域隐藏**，不是全站删。
+ */
+const ASSET_ATTRIBUTION_FILTERS = new Set<ConversationLogFilter>(['tool', 'knowledge', 'sop']);
+
 const MOBILE_CARD_CLASS =
   'min-w-0 rounded-[8px] border border-[#eceef1] bg-white p-[14px]';
 
-export default function ConversationLogsTab() {
+export default function ConversationLogsTab({
+  hideAttribution = false,
+}: {
+  /** 员工小队作用域：隐藏没有数据的「点踩归因」灰卡与工具/知识/SOP 三类筛选 */
+  hideAttribution?: boolean;
+}) {
   const [searchParams] = useSearchParams();
   const [scopedAgentId, setScopedAgentId] = useState(readEmployeeScope);
   const agentId = searchParams.get('agent_id') || scopedAgentId;
@@ -153,6 +168,17 @@ export default function ConversationLogsTab() {
     setConversationUserId(ALL_CONVERSATION_USERS);
   }, [agentId]);
 
+  const filterTabs = useMemo(
+    () => hideAttribution
+      ? FILTER_TABS.filter((item) => !ASSET_ATTRIBUTION_FILTERS.has(item.value))
+      : FILTER_TABS,
+    [hideAttribution],
+  );
+  // 作用域切换时 filter 可能还停在某个归因项上；对应的 tab 已不渲染，
+  // 若不过回 'all' 列表会被一个用户点不到的筛选条件悄悄清空。
+  const effectiveFilter: ConversationLogFilter =
+    hideAttribution && ASSET_ATTRIBUTION_FILTERS.has(filter) ? 'all' : filter;
+
   const rows = useMemo<ConversationLogRow[]>(() => {
     const downBySession = new Map(downRows.map((item) => [item.session_id, item]));
     const upBySession = new Map(upRows.map((item) => [item.session_id, item]));
@@ -192,8 +218,8 @@ export default function ConversationLogsTab() {
   const agentLabel = (row: ConversationLogRow): string => agentLabelFromId(row.agent_id);
 
   const logFilterRows = useMemo(
-    () => rows.filter((row) => matchesConversationLogFilter(row, filter)),
-    [filter, rows],
+    () => rows.filter((row) => matchesConversationLogFilter(row, effectiveFilter)),
+    [effectiveFilter, rows],
   );
 
   const conversationUserOptions = useMemo(
@@ -218,7 +244,7 @@ export default function ConversationLogsTab() {
   const pagination = useClientPagination(
     filteredRows,
     FEEDBACK_PAGE_SIZE,
-    `${filter}:${conversationUserId}`,
+    `${effectiveFilter}:${conversationUserId}`,
   );
 
   useEffect(() => {
@@ -544,7 +570,9 @@ export default function ConversationLogsTab() {
           <StatCard value={`${dashboardMetrics.negativeRate}%`} label="差评率" tone="red" />
         </div>
 
-        {summary && (summary.summary || summary.bucket_counts.length > 0) && (
+        {/* 小队没有工具/知识/SOP，后端的 summary 恒为「暂无点踩归因数据。」，
+            这张灰卡永远只是一句空话（用户截图红框）。按作用域隐藏。 */}
+        {!hideAttribution && summary && (summary.summary || summary.bucket_counts.length > 0) && (
           <div className="flex flex-col gap-[12px] rounded-[14px] border border-[#eef0f4] bg-[#fafbfc] px-[20px] py-[16px]">
             {summary.summary && (
               <p className="wrap-break-word text-[13px] leading-[1.7] text-[#464c5e]">
@@ -568,9 +596,9 @@ export default function ConversationLogsTab() {
             <UnderlineTabs
               aria-label="对话日志筛选"
               variant="line"
-              value={filter}
+              value={effectiveFilter}
               onChange={setFilter}
-              items={FILTER_TABS}
+              items={filterTabs}
             />
           </div>
           <div className="flex shrink-0 items-center gap-[8px] max-[1099px]:w-full max-[520px]:flex-col">

@@ -55,7 +55,7 @@ import type {
   SkillRead,
   ToolRead,
 } from '../../types';
-import { isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
+import { emitAgentRosterRefresh, isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
 import { cn } from '@/lib/utils';
 import { parseBackendDateTime } from '../../lib/timezone';
 import {
@@ -65,6 +65,7 @@ import {
   type DispatcherRead,
 } from '../../lib/dispatcher';
 import DispatcherGlyph from '../../components/dispatcher/DispatcherGlyph';
+import DispatcherEditorDialog from '../../components/dispatcher/DispatcherEditorDialog';
 import { isDispatcherScopeId } from '../../lib/dispatcher-scope';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -105,6 +106,18 @@ export default function DashboardPage({
   const [dispatchers, setDispatchers] = useState<DispatcherRead[] | null>(null);
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  /**
+   * 员工小队档案页里的配置弹窗。null = 关闭；members / fallback = 打开并定位到对应段。
+   *
+   * 为什么不跳到 /enterprise/agents 再由那边打开：实测点击后要先跳到员工小队
+   * 列表页、等远程 PG 的 dispatchers 列表 3~8s，期间页面还显示「还没有员工小队」
+   * 空态，弹窗才姗姗来迟 —— 用户连续两轮反馈「跳转的页面不对」。档案页本来
+   * 就已经有 selectedDispatcher / agents / models，就地挂载同一个弹窗即可，
+   * 既没有跳转也没有加载空窗。
+   */
+  const [dispatcherConfigSection, setDispatcherConfigSection] = useState<
+    'members' | 'fallback' | null
+  >(null);
   const [loaded, setLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState<ProfileTabKey>(profileTab);
   useEffect(() => setActiveTab(profileTab), [profileTab]);
@@ -295,26 +308,37 @@ export default function DashboardPage({
   // 套员工 hero 会全是「待补充岗位 / 0」。这里给一套只对它成立的字段。
   if (selectedDispatcher) {
     return (
-      <DispatcherProfileView
-        dispatcher={selectedDispatcher}
-        profileTab={profileTab}
-        sessions={sessions}
-        feedbackSummary={feedbackSummary}
-        activityEvents={activityEvents}
-        onOpenChat={() => navigate(`/workspace/chat/draft/${selectedDispatcher.id}`)}
-        // 「去配置 / 调整」不是「去看员工列表」：落到 #dispatchers（员工小队 tab）
-        // 并带上 edit/focus，让 AgentsPage 直接打开**这个小队**的编辑弹窗、滚到
-        // 对应的段落。旧版只写 navigate(EnterpriseRoute.Agents) —— 既没 hash
-        // （落到默认「数字员工」tab），也不带 id（还得自己再找一遍卡片），
-        // 用户反馈「小队档案里调整和配置跳转的页面都是错误的」。
-        onConfigure={(section) => {
-          const params = new URLSearchParams({ edit: selectedDispatcher.id });
-          if (section) params.set('focus', section);
-          navigate(`${EnterpriseRoute.Agents}?${params.toString()}#dispatchers`);
-        }}
-        onLogout={onLogout}
-        userName={currentUser?.username}
-      />
+      <>
+        <DispatcherProfileView
+          dispatcher={selectedDispatcher}
+          profileTab={profileTab}
+          sessions={sessions}
+          feedbackSummary={feedbackSummary}
+          activityEvents={activityEvents}
+          onOpenChat={() => navigate(`/workspace/chat/draft/${selectedDispatcher.id}`)}
+          // 就地打开编辑器，不跳走。曾经试过两版跳转（裸 /enterprise/agents、
+          // ?edit=&focus=#dispatchers 深链到 AgentsPage），用户都反馈落点不对：
+          // 前者落到默认「数字员工」tab，后者要先跳去列表页并等 4s 加载。
+          onConfigure={(section) => setDispatcherConfigSection(section ?? 'members')}
+          onLogout={onLogout}
+          userName={currentUser?.username}
+        />
+        <DispatcherEditorDialog
+          open={Boolean(dispatcherConfigSection)}
+          dispatcher={selectedDispatcher}
+          agents={agents}
+          models={models}
+          focusSection={dispatcherConfigSection ?? undefined}
+          onClose={() => setDispatcherConfigSection(null)}
+          onSaved={(row) => {
+            setDispatchers((current) => current?.map((item) => (
+              item.id === row.id ? row : item
+            )) ?? null);
+            // 侧栏切换器里的名字/成员数由 App 独立持有，改动后要让它重拉
+            emitAgentRosterRefresh();
+          }}
+        />
+      </>
     );
   }
 
@@ -737,7 +761,8 @@ function DispatcherProfileView({
       )}
       {activeTab === 'logs' && (
         <div className="mt-[20px]">
-          <ConversationLogsTab />
+          {/* 小队没有工具/知识/SOP，点踩归因恒为空；不要那张空话灰卡和三类筛选 */}
+          <ConversationLogsTab hideAttribution />
         </div>
       )}
     </div>

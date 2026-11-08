@@ -329,16 +329,17 @@ describe('DashboardPage dispatcher profile tabs', () => {
   });
 
   /**
-   * 回归（用户原话「小队档案，调整和配置跳转的页面都是错误的」）：
-   * 旧版 onConfigure 只写 `navigate('/enterprise/agents')` —— 没 hash（落到默认
-   * 「数字员工」tab）、没小队 id、更不会打开编辑弹窗。现在必须带
-   * edit=<小队 id>&focus=<段>#dispatchers，让 AgentsPage 直接打开对应编辑器。
+   * 回归（用户连续两轮反馈「跳转的页面不对」）：
+   * v1 跳 /enterprise/agents，落到默认「数字员工」tab；v2 跳
+   * ?edit=&focus=#dispatchers 让 AgentsPage 弹窗，但要先跳去列表页、等远程 PG
+   * 约 4s，期间还显示「还没有员工小队」空态。最终口径 = **不跳走**：档案页
+   * 就地打开同一个编辑弹窗并定位到对应段。
    */
   it.each([
     ['去配置', 'members'],
     ['调整', 'fallback'],
     ['配置成员', 'members'],
-  ])('点「%s」跳到员工小队 tab 并带上 edit/focus=%s', async (buttonLabel, focus) => {
+  ])('点「%s」就地打开编辑弹窗（focus=%s），不跳转', async (buttonLabel, focus) => {
     window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, dispatcher.id);
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -360,12 +361,12 @@ describe('DashboardPage dispatcher profile tabs', () => {
       <I18nProvider>
         <TooltipProvider>
           <MemoryRouter initialEntries={['/enterprise/dashboard']}>
+            <LocationEcho />
             <Routes>
               <Route
                 path="/enterprise/dashboard"
                 element={<DashboardPage currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }} isAdmin />}
               />
-              <Route path="*" element={<LocationEcho />} />
             </Routes>
           </MemoryRouter>
         </TooltipProvider>
@@ -375,9 +376,49 @@ describe('DashboardPage dispatcher profile tabs', () => {
     const user = userEvent.setup();
     const button = await screen.findByRole('button', { name: buttonLabel });
     await user.click(button);
-    expect((await screen.findByTestId('nav-target')).textContent).toBe(
-      `/enterprise/agents?edit=${dispatcher.id}&focus=${focus}#dispatchers`,
-    );
+    // 页面原地不动
+    expect(screen.getByTestId('nav-target').textContent).toBe('/enterprise/dashboard');
+    // 弹窗就地打开，且带上正确的段落定位
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.getAttribute('data-focus-section')).toBe(focus);
+  });
+
+  /**
+   * 回归（截图红框）：员工小队不挂工具/知识库/SOP，点踩归因恒为空。
+   * 灰卡只会显示后端兜底句「暂无点踩归因数据。」，三类资产归因筛选
+   * 也永远筛不出东西 —— 小队档案的对话日志里都不该出现。
+   */
+  it('小队档案对话日志不显示点踩归因空卡与工具/知识/SOP 筛选', async () => {
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, dispatcher.id);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([dispatcher]);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      if (url.includes('/api/enterprise/knowledge-bases')) {
+        return jsonResponse({ items: [], total: 0, page: 1, page_size: 200 });
+      }
+      if (url.includes('/api/enterprise/feedback/summary')) {
+        return jsonResponse({
+          total_feedback: 0, up_count: 0, down_count: 0, bucket_counts: [],
+          summary: '暂无点踩归因数据。',
+        });
+      }
+      return jsonResponse([]);
+    }));
+    renderDispatcherProfile();
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('tab', { name: /对话日志/ }));
+
+    expect(await screen.findByRole('tab', { name: '全部' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '好评' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '差评' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '未评价' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '能力不足' })).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: '工具问题' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: '知识缺失' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'SOP 问题' })).toBeNull();
+    expect(screen.queryByText(/暂无点踩归因数据/)).toBeNull();
   });
 
   it('状态行仍完整展示兜底方式与累计转接', async () => {
