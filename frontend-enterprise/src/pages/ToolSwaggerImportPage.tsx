@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -105,6 +105,13 @@ function updatePayloadFromTool(tool: ToolRead, enabled: boolean) {
 
 export default function ToolSwaggerImportPage({ currentUser, onLogout }: SwaggerImportPageProps = {}) {
   const navigate = useNavigate();
+  // ?return=employee_tab → 返回「我的数字员工→工具管理」tab。
+  // 同 ToolsPage 的 toolEditorLandingRoute：写死 /enterprise/tools 在员工小队作用域下
+  // 会被守卫劫到档案页（用户原话「点返回，返回的页面不对」）。
+  const [searchParams] = useSearchParams();
+  const landingRoute = searchParams.get('return') === 'employee_tab'
+    ? '/enterprise/agents#tools'
+    : '/enterprise/tools';
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [sourceText, setSourceText] = useState('');
   const [sourceName, setSourceName] = useState('');
@@ -330,7 +337,7 @@ export default function ToolSwaggerImportPage({ currentUser, onLogout }: Swagger
       <div className="mt-[20px] mb-[16px] flex flex-wrap justify-end gap-[16px]">
         <UIButton
           variant="outline"
-          onClick={() => navigate('/enterprise/tools')}
+          onClick={() => navigate(landingRoute)}
           className={RETURN_BUTTON_CLASS}
         >
           <ArrowLeft className="size-3.5" />
@@ -699,7 +706,7 @@ export default function ToolSwaggerImportPage({ currentUser, onLogout }: Swagger
               <div className="flex flex-wrap justify-end gap-[8px] border-t border-[#eceef1] px-[20px] py-[12px]">
                 <UIButton
                   variant="outline"
-                  onClick={() => navigate('/enterprise/tools')}
+                  onClick={() => navigate(landingRoute)}
                   className={RETURN_BUTTON_CLASS}
                 >
                   查看工具管理

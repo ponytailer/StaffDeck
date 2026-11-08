@@ -1758,12 +1758,21 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   // 而不是员工技能列表（enterprise/general-skills）。但 MyCreatedSkillsPanel
   // （数字员工-技能管理）进来时会显式带上 return=employee_skills：那是广场技能
   // 从员工技能 tab 编辑的入口，返回仍应去技能管理 tab，不被 scope 拉去平台广场。
+  // return=employee_tab：从「我的数字员工 → 技能管理」tab 的「创建技能」进来
+  // （AgentsPage 的入口带 ?scope=gallery&return=employee_tab），返回应回那个 tab。
+  // 落点用 /enterprise/agents#skills 而不是 /enterprise/general-skills：后者在
+  // 员工小队作用域下会被 DISPATCHER_UNSUPPORTED_PREFIXES 守卫劫到档案页
+  // （用户原话「点返回，返回的页面不对」），前者不在黑名单前缀里且 hash 深链现成。
   const explicitReturn = editorSearchParams.get('return');
-  const skillsLandingRoute = explicitReturn === 'employee_skills'
-    ? '/enterprise/general-skills'
-    : forceGalleryScope
-      ? '/enterprise/platform/general-skills'
-      : '/enterprise/general-skills';
+  const skillsLandingRoute = explicitReturn === 'employee_tab'
+    ? '/enterprise/agents#skills'
+    : explicitReturn === 'employee_skills'
+      // 「我创建的技能」面板（MyCreatedSkillsPanel）挂在 AgentsPage 的技能管理
+      // tab 里，从那里进编辑，返回也应回那个 tab —— 用同一个 #skills 深链。
+      ? '/enterprise/agents#skills'
+      : forceGalleryScope
+        ? '/enterprise/platform/general-skills'
+        : '/enterprise/general-skills';
   const pageTitle = isNew ? '新建空白技能' : '编辑技能';
   const pageDescription = isOverallAgent
     ? (isNew
@@ -2939,7 +2948,19 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
           返回
         </UIButton>
         {!isNew && canManageCurrentScope && (
-          <UIButton variant="outline" className={RETURN_BUTTON_CLASS} onClick={() => navigate(`/enterprise/general-skills/new${forceGalleryScope ? '?scope=gallery' : ''}`)}>
+          <UIButton
+            variant="outline"
+            className={RETURN_BUTTON_CLASS}
+            onClick={() => {
+              // 编辑页内的「新建技能」要继承 return 语义（否则从工具管理 tab 进来、
+              // 中途点新建，返回就掉回广场列表了）。
+              const params = new URLSearchParams();
+              if (forceGalleryScope) params.set('scope', 'gallery');
+              if (explicitReturn) params.set('return', explicitReturn);
+              const query = params.toString();
+              navigate(`/enterprise/general-skills/new${query ? `?${query}` : ''}`);
+            }}
+          >
             <PlusOutlined />
             新建技能
           </UIButton>

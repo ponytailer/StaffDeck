@@ -1101,6 +1101,24 @@ function ToolTypeSwitcher({ active, onProtocolChange }: { active: 'http' | 'mcp'
   );
 }
 
+/**
+ * 工具编辑/测试/导入页「返回工具」的落点。
+ *
+ * 两个真实回归都出在这里：
+ * ① 员工小队作用域下点「返回工具」→ `navigate('/enterprise/tools')` 被
+ *   `DISPATCHER_UNSUPPORTED_PREFIXES` 守卫 `<Navigate>` 劫走，落到 X Man 档案页
+ *   （用户原话「点返回，返回的页面不对」）；
+ * ② 从「我的数字员工 → 工具管理」tab 进来时，用户期望回到那个 tab，而不是
+ *   工具列表页。`/enterprise/agents` 不在守卫黑名单前缀里，`#tools` hash 又有
+ *   现成的深链监听，天然免疫两个问题。
+ *
+ * `?return=employee_tab` 表示从「工具管理」tab 进入；其它场景维持旧行为
+ * `/enterprise/tools`（员工档案页的工具 tab，同样是合法落点）。
+ */
+function toolEditorLandingRoute(returnParam: string | null): string {
+  return returnParam === 'employee_tab' ? '/enterprise/agents#tools' : '/enterprise/tools';
+}
+
 function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' } & ToolPageProps) {
   const [values, setValues] = useState<ToolFormValues>({ ...TOOL_FORM_INITIAL_VALUES });
   const [tool, setTool] = useState<ToolRead | null>(null);
@@ -1117,6 +1135,7 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
   const scopedAgentQuery = scopedAgentId
     ? `&agent_id=${encodeURIComponent(scopedAgentId)}`
     : '';
+  const landingRoute = toolEditorLandingRoute(searchParams.get('return'));
 
   const setField = <K extends keyof ToolFormValues>(name: K, value: ToolFormValues[K]) =>
     setValues((prev) => ({ ...prev, [name]: value }));
@@ -1189,7 +1208,7 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
         }
       />
       <div className="mt-[20px] mb-[16px] flex flex-wrap justify-end gap-[16px]">
-        <UIButton variant="outline" onClick={() => navigate('/enterprise/tools')} className={RETURN_BUTTON_CLASS}>
+        <UIButton variant="outline" onClick={() => navigate(landingRoute)} className={RETURN_BUTTON_CLASS}>
           <IconArrowRight className="size-3.5 rotate-180" />
           返回工具
         </UIButton>
@@ -1306,6 +1325,7 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
   const scopedAgentQuery = scopedAgentId
     ? `&agent_id=${encodeURIComponent(scopedAgentId)}`
     : '';
+  const landingRoute = toolEditorLandingRoute(searchParams.get('return'));
 
   useEffect(() => {
     if (!toolId) return;
@@ -1326,7 +1346,7 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
         description="用测试参数直接调用已保存工具，检查员工后续调用时的实际返回。"
       />
       <div className="mt-[20px] mb-[16px] flex flex-wrap justify-end gap-[16px]">
-        <UIButton variant="outline" onClick={() => navigate('/enterprise/tools')} className={RETURN_BUTTON_CLASS}>
+        <UIButton variant="outline" onClick={() => navigate(landingRoute)} className={RETURN_BUTTON_CLASS}>
           <IconArrowRight className="size-3.5 rotate-180" />
           返回工具
         </UIButton>
@@ -1462,7 +1482,9 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
   const [discovered, setDiscovered] = useState<DiscoveredRow[]>([]);
   const navigate = useNavigate();
   const { serverId } = useParams();
+  const [searchParams] = useSearchParams();
   const isEdit = mode === 'edit';
+  const landingRoute = toolEditorLandingRoute(searchParams.get('return'));
 
   const setField = <K extends keyof McpFormValues>(name: K, value: McpFormValues[K]) =>
     setValues((prev) => ({ ...prev, [name]: value }));
@@ -1718,7 +1740,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
         description="配置 MCP Server 连接后，可发现其提供的工具并同步为工具集。"
       />
       <div className="mt-[20px] mb-[16px] flex flex-wrap justify-end gap-[16px]">
-        <UIButton variant="outline" onClick={() => navigate('/enterprise/tools')} className={RETURN_BUTTON_CLASS}>
+        <UIButton variant="outline" onClick={() => navigate(landingRoute)} className={RETURN_BUTTON_CLASS}>
           <IconArrowRight className="size-3.5 rotate-180" />
           返回工具
         </UIButton>

@@ -126,7 +126,11 @@ export default function MyCreatedSkillsPanel({
     // 广场技能只能从广场进入编辑器，否则编辑器会按员工作用域解析、返回时掉出广场。
     // return=employee_skills：明确告诉编辑器「我是从数字员工-技能管理进来的」——
     // 返回按钮去技能管理 tab，而不是被 forceGalleryScope 拉到平台广场。
-    const scopeQuery = skillOwnerAgentId(row) ? '' : '?scope=gallery&return=employee_skills';
+    // （employee_tab 与 employee_skills 两个值都指向 /enterprise/agents#skills
+    //  一档；前者是「创建技能」入口用的，后者是历史值，行为保持不变。）
+    const scopeQuery = skillOwnerAgentId(row)
+      ? '?return=employee_skills'
+      : '?scope=gallery&return=employee_skills';
     return `/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit${scopeQuery}`;
   }
 
@@ -355,9 +359,9 @@ export default function MyCreatedSkillsPanel({
               <UIButton
                 variant="outline"
                 className={`mt-[14px] ${OUTLINE_ACTION_BUTTON_SM_CLASS}`}
-                onClick={() => navigate('/enterprise/general-skills')}
+                onClick={() => navigate('/enterprise/general-skills/new?scope=gallery&return=employee_tab')}
               >
-                去技能广场
+                去创建技能
               </UIButton>
             </>
           )}

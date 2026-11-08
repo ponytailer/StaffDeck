@@ -92,6 +92,7 @@ function renderPanel(skills: GeneralSkillRead[]) {
         <Routes>
           <Route path="/enterprise/general-skills/mine" element={<MyCreatedSkillsPanel agents={agents} />} />
           <Route path="/enterprise/general-skills" element={<LocationEcho />} />
+          <Route path="/enterprise/general-skills/new" element={<LocationEcho />} />
         </Routes>
       </MemoryRouter>
     </I18nProvider>,
@@ -226,12 +227,16 @@ describe('MyCreatedSkillsPanel', () => {
     });
   });
 
-  it('shows the empty state with a 去技能广场 button when there are no skills', async () => {
+  it('shows the empty state with a 去创建技能 button when there are no skills', async () => {
     renderPanel([]);
 
     expect(await screen.findByText('还没有创建过技能')).toBeTruthy();
-    const goButton = screen.getByRole('button', { name: '去技能广场' });
+    // 空状态的主行动是直接新建（不再绕道技能广场）：从技能管理 tab 进来的
+    // 人，期望一步到表单；且返回能回本 tab（return=employee_tab）。
+    const goButton = screen.getByRole('button', { name: '去创建技能' });
     fireEvent.click(goButton);
-    expect((await screen.findByTestId('location')).textContent).toBe('/enterprise/general-skills');
+    expect((await screen.findByTestId('location')).textContent).toBe(
+      '/enterprise/general-skills/new?scope=gallery&return=employee_tab',
+    );
   });
 });

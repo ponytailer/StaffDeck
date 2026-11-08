@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
@@ -181,11 +181,51 @@ describe('AgentsPage 页面级 tab', () => {
     await userEvent.click(screen.getByRole('tab', { name: '技能管理' }));
 
     expect(await screen.findByText('我创建的技能')).toBeTruthy();
-    // 创建技能入口出现在技能管理 tab 顶部
-    expect(screen.getByRole('button', { name: /创建技能/ })).toBeTruthy();
+    // 创建技能入口出现在技能管理 tab 顶部（精确名匹配：面板空状态里还有
+    // 「去创建技能」按钮，用 /创建技能/ 正则会多重命中）
+    expect(screen.getByRole('button', { name: '创建技能' })).toBeTruthy();
     // 切回后员工区还在
     await userEvent.click(screen.getByRole('tab', { name: '数字员工' }));
     expect(await screen.findByText('小艾')).toBeTruthy();
+  });
+
+  /**
+   * 回归（用户原话「点返回，返回的页面不对」）：
+   * 从「技能管理 / 工具管理」tab 点创建，入口必须带 `return=employee_tab` ——
+   * 编辑页据此把「返回」落回 `/enterprise/agents#skills` / `#tools`。
+   * 不带的话返回会落到 /enterprise/general-skills | /enterprise/tools：
+   * 员工小队作用域下那两个路由会被 DISPATCHER_UNSUPPORTED_PREFIXES 守卫
+   * 劫到档案页。用 LocationEcho 钉住跳转 URL 本身。
+   */
+  it('创建技能 / 新建工具 / Swagger 导入入口都带 return=employee_tab', async () => {
+    const seen: string[] = [];
+    function LocationEcho() {
+      const location = useLocation();
+      seen.push(`${location.pathname}${location.search}`);
+      return null;
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
+      return jsonResponse([]);
+    }));
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter initialEntries={['/enterprise/agents']}>
+            <Routes>
+              <Route path="/enterprise/agents" element={<AgentsPage currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }} />} />
+              <Route path="*" element={<LocationEcho />} />
+            </Routes>
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+    await screen.findByText('小艾');
+
+    await userEvent.click(screen.getByRole('tab', { name: '技能管理' }));
+    await userEvent.click(screen.getByRole('button', { name: '创建技能' }));
+    expect(seen).toContain('/enterprise/general-skills/new?scope=gallery&return=employee_tab');
   });
 
 it('tab 顺序为 数字员工 / 员工小队 / 技能管理 / 知识库 / 工具管理 / 静态资源', async () => {

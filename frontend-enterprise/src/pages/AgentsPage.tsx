@@ -559,7 +559,7 @@ export default function AgentsPage({
             <UIButton
               data-guide-target="skills-create"
               type="button"
-              onClick={() => navigate('/enterprise/general-skills/new?scope=gallery')}
+              onClick={() => navigate('/enterprise/general-skills/new?scope=gallery&return=employee_tab')}
               className="h-[38px] rounded-[10px] bg-[#18181a] px-[20px] text-[13px] font-normal text-white hover:bg-[#303030]"
             >
               <IconPlus className="size-[16px]" />
@@ -580,14 +580,14 @@ export default function AgentsPage({
             <UIButton
               type="button"
               variant="outline"
-              onClick={() => navigate('/enterprise/tools/import/swagger')}
+              onClick={() => navigate('/enterprise/tools/import/swagger?return=employee_tab')}
               className="h-[38px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[20px] text-[13px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
             >
               从 Swagger 导入
             </UIButton>
             <UIButton
               type="button"
-              onClick={() => navigate('/enterprise/tools/new')}
+              onClick={() => navigate('/enterprise/tools/new?return=employee_tab')}
               className="h-[38px] rounded-[10px] bg-[#18181a] px-[20px] text-[13px] font-normal text-white hover:bg-[#303030]"
             >
               <IconPlus className="size-[16px]" />

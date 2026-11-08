@@ -109,12 +109,18 @@ export default function MyCreatedToolsPanel({ agents }: { agents: AgentProfileRe
 
   function editRouteFor(row: ToolRead): string {
     const agentId = scopeAgentId(row);
-    return `/enterprise/tools/${encodeURIComponent(row.id)}/edit${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''}`;
+    // return=employee_tab：编辑完返回「我的数字员工→工具管理」tab（本面板所在地）。
+    // 不带的话返回会去 /enterprise/tools —— 员工小队作用域下被守卫劫到档案页。
+    const params = new URLSearchParams({ return: 'employee_tab' });
+    if (agentId) params.set('agent_id', agentId);
+    return `/enterprise/tools/${encodeURIComponent(row.id)}/edit?${params.toString()}`;
   }
 
   function testRouteFor(row: ToolRead): string {
     const agentId = scopeAgentId(row);
-    return `/enterprise/tools/${encodeURIComponent(row.id)}/test${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''}`;
+    const params = new URLSearchParams({ return: 'employee_tab' });
+    if (agentId) params.set('agent_id', agentId);
+    return `/enterprise/tools/${encodeURIComponent(row.id)}/test?${params.toString()}`;
   }
 
   async function setToolPublished(row: ToolRead, published: boolean) {
@@ -451,9 +457,9 @@ export default function MyCreatedToolsPanel({ agents }: { agents: AgentProfileRe
           <UIButton
             variant="outline"
             className={`mt-[14px] ${OUTLINE_ACTION_BUTTON_SM_CLASS}`}
-            onClick={() => navigate('/enterprise/tools')}
+            onClick={() => navigate('/enterprise/tools/new?return=employee_tab')}
           >
-            去工具管理
+            去创建工具
           </UIButton>
         </div>
       )}

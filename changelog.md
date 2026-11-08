@@ -4,6 +4,7 @@
 
 ## 202611 w1
 
+- **Fix**: **技能管理 / 工具管理 tab → 新建/编辑 → 点「返回」落点不对**（用户原话「技能管理、工具管理，新建，再点返回，返回的页面不对」）—— 两处独立根因：①工具类编辑/测试/导入页的「返回工具」写死 `navigate('/enterprise/tools')`，该路由在员工小队作用域下被 `DISPATCHER_UNSUPPORTED_PREFIXES` 守卫 `<Navigate>` 劫走 → 直接落到 X Man 档案页；②技能编辑页的 `skillsLandingRoute` 在 `?scope=gallery` 下返回平台广场 `/enterprise/platform/general-skills`，但用户从「我的数字员工→技能管理」tab 进来，期望回到那个 tab。统一修复：创建/编辑入口带 `?return=employee_tab`（AgentsPage 的创建技能/新建工具/Swagger 导入、MyCreatedSkillsPanel 与 MyCreatedToolsPanel 的编辑/测试/空状态按钮），返回落点解析为 `/enterprise/agents#skills` / `#tools`（hash 深链不在守卫黑名单前缀里，天然免疫）；技能编辑页内「新建技能」按钮同样继承 return 语义（防止 tab 进入→中途新建→返回掉回广场）；知识库新建页此前已正确（personal scope 走 `#knowledge`）
 - **New**: **员工小队卡片新增「员工小队档案」入口** —— 底部按钮放不下第五个动作，收进右上角「···」下拉的第一项（发布/下架与删除之间加分隔线）；点击后切到该小队作用域并跳 `/enterprise/dashboard`，与「去对话」共用同一套作用域持久化 + 广播（少任何一步都会让档案页因作用域未落库而被兜底改写成某位员工）
 - **Improve**: **员工小队档案页 hero 按钮布局改回左侧头像列下方**（用户反馈「按钮布局也不对。参考下员工档案页面」）—— 员工页实测「去对话」x=316、与头像左边缘齐平，小队页第 1 版却把它挪到右侧信息区底部 x=964，切作用域时同一个按钮会从左跳到右。现两页完全一致：左侧「拓扑图标 + 去对话/配置成员」，右侧「标题→状态行→简介→指标」，指标行改为整行铺开并补上第 4 格「累计转接」。两页按钮 class 提到模块级常量 `HERO_PRIMARY_BUTTON_CLASS` / `HERO_SECONDARY_BUTTON_CLASS`，避免视觉权重日后各自漂移
 - **Improve**: **员工小队档案总览从 1 张卡扩到 4 块**（用户反馈「员工档案页面现在有点空」）—— ①活动记录：直接复用员工那套 `ActivityTimeline`（`/agents/{id}/work-record` 对小队同样可用，实测 78 条回复事件），卡内「查看全部对话」切本页对话日志分区（**不跳** `/enterprise/feedback`：小队反馈按技能维度统计、它没有技能，那里恒为空）；②成员与路由规则：补成员岗位描述、示例问题数、成员下线提示（成员被下线后这条规则就失效）；③兜底策略：模式 / 固定话术原文 / 默认同事 / 置信度门槛 / 是否列候选；④基础信息：创建与修改时间（本地化格式，不露 ISO 串）与广场发布状态
