@@ -323,8 +323,17 @@ export default function MyStaticAssetsPanel({
           <Upload className="size-[13px]" />
           {uploading ? `上传中 ${progress}%` : '上传文件'}
         </UIButton>
-        <span className="text-[11px] text-[#a7adbb]">
-          上传后得到一个固定地址，可粘进知识库，让员工回答时把链接回给用户
+        {/* 这句是「静态资源 vs 知识库」的分工说明，也是这个功能唯一的使用指引。
+            原先是 11px / #a7adbb 的灰字，挤在按钮右侧几乎看不见。改成淡 teal
+            提示块：正文提到 12px / #464c5e，「固定地址」用品牌色加粗做视觉锚点。
+            保持与按钮同一行（窄屏由外层 flex-wrap 自动换行），不新增整行横幅，
+            避免抢走「上传文件」这个主操作的注意力。 */}
+        <span className="inline-flex items-center gap-[7px] rounded-[10px] border border-[#dceee9] bg-[#f2f9f7] px-[11px] py-[6px] text-[12px] leading-[18px] text-[#464c5e]">
+          <Link2 className="size-[13px] shrink-0 text-[#0f7268]" />
+          <span>
+            <strong className="font-semibold text-[#0f7268]">上传后得到一个固定地址</strong>
+            ，可粘进知识库，让员工回答时把链接回给用户
+          </span>
         </span>
       </div>
 

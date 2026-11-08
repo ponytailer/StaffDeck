@@ -81,6 +81,10 @@ describe('MyStaticAssetsPanel', () => {
     expect(screen.getByText(/单个文件最大 20 MB/)).toBeTruthy();
     // 公开下载是固有代价，必须在入口处提示
     expect(screen.getByText(/链接免登录即可访问/)).toBeTruthy();
+    // 用法说明（「固定地址 + 粘进知识库」）不能被改回一行看不见的淡灰小字：
+    // 前半句是独立的强调元素，后半句仍完整可读。
+    expect(screen.getByText('上传后得到一个固定地址').tagName.toLowerCase()).toBe('strong');
+    expect(screen.getByText(/可粘进知识库，让员工回答时把链接回给用户/)).toBeTruthy();
   });
 
   it('空态给出用途说明，区分「没有文件」与「搜索无结果」', async () => {
