@@ -61,6 +61,8 @@ export type DispatcherRead = {
    * 发布 = 对同租户其他人可见，不动成员、不动模型。
    */
   published_to_gallery: boolean;
+  /** 头像预设 key（DISPATCHER_AVATAR_PRESETS）；缺省时前端用默认图形。 */
+  avatar_preset?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -73,6 +75,7 @@ export type DispatcherCreatePayload = {
   model_config_id: string;
   members: DispatcherMemberInput[];
   config?: Partial<DispatchConfig>;
+  avatar_preset?: string | null;
 };
 
 export type DispatcherUpdatePayload = Partial<DispatcherCreatePayload>;

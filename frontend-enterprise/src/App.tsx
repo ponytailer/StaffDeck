@@ -207,7 +207,9 @@ function Shell({
             ? "/enterprise/general-skills"
             : location.pathname.startsWith("/enterprise/tools")
               ? "/enterprise/tools"
-              : location.pathname.startsWith("/enterprise/scheduled-tasks")
+              : location.pathname.startsWith("/enterprise/squads")
+                ? "/enterprise/squads"
+                : location.pathname.startsWith("/enterprise/scheduled-tasks")
                 ? "/enterprise/scheduled-tasks"
                 : isDistillRoute
                   ? "/enterprise/skills"
@@ -688,6 +690,17 @@ function Shell({
                     isAdmin={isAdmin}
                     onCreateAgent={openCreateAgentModal}
                     onLogout={onLogout}
+                  />
+                }
+              />
+              <Route
+                path="/enterprise/squads"
+                element={
+                  <AgentsPage
+                    currentUser={auth.user}
+                    isAdmin={isAdmin}
+                    onLogout={onLogout}
+                    mode="dispatchers"
                   />
                 }
               />

@@ -64,7 +64,7 @@ import {
   listDispatchers,
   type DispatcherRead,
 } from '../../lib/dispatcher';
-import DispatcherGlyph from '../../components/dispatcher/DispatcherGlyph';
+import DispatcherAvatar from '../../components/dispatcher/DispatcherAvatar';
 import DispatcherEditorDialog from '../../components/dispatcher/DispatcherEditorDialog';
 import { isDispatcherScopeId } from '../../lib/dispatcher-scope';
 
@@ -640,9 +640,7 @@ function DispatcherProfileView({
              指标行改为整行铺开（不再与按钮抢一行），也不再被 min-w 挤压。 */
           <div className="flex flex-wrap items-start gap-x-[28px] gap-y-[18px] pt-1 pl-1">
             <div className="flex shrink-0 flex-col items-center">
-              <span className="grid size-[112px] shrink-0 place-items-center rounded-[16px] bg-[#e1f1ed] text-[#0f7268]">
-                <DispatcherGlyph className="size-[52px]" />
-              </span>
+              <DispatcherAvatar preset={dispatcher.avatar_preset} size={112} radius={16} />
               <div className="mt-[4px] flex flex-wrap items-center justify-center gap-[8px]">
                 <UiButton
                   variant="default"

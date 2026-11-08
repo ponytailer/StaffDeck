@@ -80,6 +80,32 @@ def write_dispatch_config(dispatcher: AgentProfile, config: DispatchConfig) -> N
     dispatcher.updated_at = utc_now()
 
 
+# 小队头像存在 metadata 里（与员工的 avatar_preset 同一套命名），不新增列：
+# 旧数据没有这个 key 时返回 None，前端回落默认图形，不需要数据迁移。
+DISPATCHER_AVATAR_METADATA_KEY = "avatar_preset"
+
+
+def dispatcher_avatar_preset(dispatcher: AgentProfile) -> str | None:
+    """读小队头像预设；缺省/脏数据一律返回 None（前端兜底默认图形）。"""
+    raw = (dispatcher.metadata_json or {}).get(DISPATCHER_AVATAR_METADATA_KEY)
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        return cleaned or None
+    return None
+
+
+def write_dispatcher_avatar_preset(dispatcher: AgentProfile, preset: str | None) -> None:
+    """写小队头像；传空值表示清掉、回落到默认图形。"""
+    metadata = dict(dispatcher.metadata_json or {})
+    cleaned = (preset or "").strip()
+    if cleaned:
+        metadata[DISPATCHER_AVATAR_METADATA_KEY] = cleaned
+    else:
+        metadata.pop(DISPATCHER_AVATAR_METADATA_KEY, None)
+    dispatcher.metadata_json = metadata
+    dispatcher.updated_at = utc_now()
+
+
 # ────────────────────────────────────────────────────────────
 # 成员读取
 # ────────────────────────────────────────────────────────────

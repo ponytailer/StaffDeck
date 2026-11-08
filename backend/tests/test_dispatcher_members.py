@@ -461,6 +461,47 @@ def test_config_roundtrip() -> None:
     assert detail.json()["config"]["fallback_reply"] == "这个问题请联系前台。"
 
 
+def test_avatar_preset_roundtrip() -> None:
+    """小队头像：创建写入、详情回读、PUT 不传送保留 / 传空串清空。
+
+    头像 key 落在 `AgentProfile.metadata_json["avatar_preset"]`，前端 6 个
+    预设共用这一列；历史数据没有这个键时返回 None，由前端回落默认图形。
+    """
+    db = memory_session()
+    client = _prepare(db)
+    created = client.post(
+        BASE,
+        json=_create_payload(
+            [member_input(MEMBER_A), member_input(MEMBER_B)], avatar_preset="orbit"
+        ),
+    )
+    assert created.status_code == 200, created.text
+    dispatcher_id = created.json()["id"]
+    assert created.json()["avatar_preset"] == "orbit"
+
+    detail = client.get(f"{BASE}/{dispatcher_id}", params={"tenant_id": TENANT})
+    assert detail.json()["avatar_preset"] == "orbit"
+
+    # 不传 = 沿用现有值（成员编辑弹窗只改成员时不该把头像抹掉）
+    kept = client.put(
+        f"{BASE}/{dispatcher_id}",
+        json={
+            "tenant_id": TENANT,
+            "members": [member_input(MEMBER_A), member_input(MEMBER_C)],
+        },
+    )
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["avatar_preset"] == "orbit"
+
+    # 传空串 = 清掉，回落默认图形
+    cleared = client.put(
+        f"{BASE}/{dispatcher_id}",
+        json={"tenant_id": TENANT, "avatar_preset": ""},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["avatar_preset"] is None
+
+
 def test_dirty_config_falls_back_to_defaults() -> None:
     """手改库里脏数据不许把路由链路炸掉。"""
     from app.dispatch.service import dispatch_config

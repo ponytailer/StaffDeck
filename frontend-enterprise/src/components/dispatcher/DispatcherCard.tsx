@@ -19,7 +19,7 @@ import {
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import type { DispatcherRead } from '../../lib/dispatcher';
 import { MAX_DISPATCH_MEMBERS, dispatchFallbackLabel } from '../../lib/dispatcher';
-import DispatcherGlyph from './DispatcherGlyph';
+import DispatcherAvatar from './DispatcherAvatar';
 
 export default function DispatcherCard({
   dispatcher,
@@ -53,9 +53,7 @@ export default function DispatcherCard({
   return (
     <div className="group relative flex h-full flex-col rounded-[20px] border border-black/[0.05] bg-white p-[18px] shadow-[0_6px_20px_rgba(17,17,17,0.04)] transition-shadow hover:shadow-[0_12px_28px_rgba(17,17,17,0.08)]">
       <div className="flex items-start gap-[10px]">
-        <span className="grid size-[38px] shrink-0 place-items-center rounded-[12px] bg-[#e1f1ed] text-[#0f7268]">
-          <DispatcherGlyph className="size-[20px]" />
-        </span>
+        <DispatcherAvatar preset={dispatcher.avatar_preset} size={38} radius={12} />
         <div className="flex min-w-0 flex-1 flex-col">
           {/* 名称与徽标同行：名称可截断（min-w-0 + truncate），徽标 flex-none 不许被压。
               反过来写（徽标也参与收缩）时，长名字会把「路由/广场」挤成两行。 */}

@@ -36,6 +36,7 @@ from app.dispatch.service import (
     DispatchValidationError,
     bind_dispatcher_model,
     dispatch_config,
+    dispatcher_avatar_preset,
     dispatcher_model_config_id,
     list_dispatcher_members,
     list_dispatchers_for_member,
@@ -43,6 +44,7 @@ from app.dispatch.service import (
     replace_members,
     validate_member_inputs,
     write_dispatch_config,
+    write_dispatcher_avatar_preset,
 )
 from app.security.auth import get_current_user
 
@@ -113,6 +115,7 @@ def _read(
         config=dispatch_config(dispatcher),
         usage_count=dispatcher.usage_count,
         published_to_gallery=_published_to_gallery(dispatcher),
+        avatar_preset=dispatcher_avatar_preset(dispatcher),
         created_at=dispatcher.created_at.isoformat() if dispatcher.created_at else None,
         updated_at=dispatcher.updated_at.isoformat() if dispatcher.updated_at else None,
     )
@@ -237,6 +240,7 @@ def create_dispatcher(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     bind_dispatcher_model(db, row, model_config_id)
     write_dispatch_config(row, request.config)
+    write_dispatcher_avatar_preset(row, request.avatar_preset)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -337,6 +341,10 @@ def update_dispatcher(
 
     if request.config is not None:
         write_dispatch_config(row, request.config)
+
+    # 头像：不传 = 沿用现有值；传空串 = 清掉、回落默认图形。
+    if request.avatar_preset is not None:
+        write_dispatcher_avatar_preset(row, request.avatar_preset)
 
     row.updated_at = utc_now()
     db.add(row)

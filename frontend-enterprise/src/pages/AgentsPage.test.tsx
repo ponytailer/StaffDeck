@@ -71,7 +71,7 @@ describe('AgentsPage team scope compatibility', () => {
         <TooltipProvider>
           <MemoryRouter>
             <AgentsPage
-              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo',               username: 'demo', role: 'admin' }}
             />
           </MemoryRouter>
         </TooltipProvider>
@@ -228,7 +228,7 @@ describe('AgentsPage 页面级 tab', () => {
     expect(seen).toContain('/enterprise/general-skills/new?scope=gallery&return=employee_tab');
   });
 
-it('tab 顺序为 数字员工 / 员工小队 / 技能管理 / 知识库 / 工具管理 / 静态资源', async () => {
+it('tab 顺序为 数字员工 / 技能管理 / 知识库 / 工具管理 / 静态资源（小队已升为一级菜单）', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
@@ -239,17 +239,16 @@ it('tab 顺序为 数字员工 / 员工小队 / 技能管理 / 知识库 / 工�
     await screen.findByText('小艾');
     const labels = screen.getAllByRole('tab').map((tab) => tab.textContent?.trim());
 // 页面级 tab 在前，员工筛选 tab 紧随其后。
-    // 「员工小队」与员工并列（不是员工的一种），且必须排在「技能管理」之前；
     // 「静态资源」与技能/工具面板同构，排在最后。
-    expect(labels.slice(0, 6)).toEqual([
+    // 「员工小队」已升为侧栏一级菜单「我的小队」，不再是这里的页内 tab。
+    expect(labels.slice(0, 5)).toEqual([
       '数字员工',
-      '员工小队',
       '技能管理',
       '知识库',
       '工具管理',
       '静态资源',
     ]);
-    expect(labels.indexOf('员工小队')).toBeLessThan(labels.indexOf('技能管理'));
+    expect(labels).not.toContain('员工小队');
     const importTabIndex = labels.indexOf('知识库');
     expect(importTabIndex).toBeLessThan(labels.indexOf('工具管理'));
   });
@@ -290,19 +289,38 @@ it('tab 顺序为 数字员工 / 员工小队 / 技能管理 / 知识库 / 工�
     window.location.hash = '';
   });
 
-  it('hash 带 #dispatchers 时默认落在员工小队 tab', async () => {
-    window.location.hash = '#dispatchers';
+  it('旧深链 #dispatchers 重定向到「我的小队」一级页面', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/enterprise/agents')) return jsonResponse([agent]);
       return jsonResponse([]);
     }));
-    renderAgentsPage();
+    function LocationEcho() {
+      const location = useLocation();
+      return <div data-testid="nav-target">{location.pathname}</div>;
+    }
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter initialEntries={['/enterprise/agents#dispatchers']}>
+            <Routes>
+              <Route
+                path="/enterprise/agents"
+                element={
+                  <AgentsPage
+                    currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+                  />
+                }
+              />
+              <Route path="*" element={<LocationEcho />} />
+            </Routes>
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
 
-    // 侧栏「成员与路由规则」用这个深链直达员工小队 tab
-    expect(await screen.findByLabelText('员工小队')).toBeTruthy();
-    expect(screen.queryByText('员工总数')).toBeNull();
-    window.location.hash = '';
+    // 老书签 / 侧栏旧入口仍要能用：直接落到 /enterprise/squads
+    expect((await screen.findByTestId('nav-target')).textContent).toBe('/enterprise/squads');
   });
 });
 
@@ -400,6 +418,7 @@ describe('AgentsPage 新建小队的入口可见性', () => {
           <MemoryRouter>
             <AgentsPage
               currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+              mode="dispatchers"
             />
           </MemoryRouter>
         </TooltipProvider>
@@ -407,16 +426,15 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     );
   }
 
-  it('创建入口只出现在「员工小队」tab，且页面上只有这一个', async () => {
+  it('「我的小队」页只有顶部一个创建入口，且不渲染员工网格', async () => {
     vi.stubGlobal('fetch', mockAgents([agent, { ...agent, id: 'agent-2', name: '小新' }]));
     renderPage();
 
-    // 数字员工 tab 里不该再有创建入口（原先那张 teal 卡已随员工小队一起搬走）
-    expect(await screen.findByText('小艾')).toBeTruthy();
-    expect(screen.queryByText('新建小队')).toBeNull();
-
-    await userEvent.click(screen.getByRole('tab', { name: '员工小队' }));
+    expect(await screen.findByText('我的小队')).toBeTruthy();
     expect(await screen.findAllByText('新建小队')).toHaveLength(1);
+    // 小队页不渲染数字员工的统计与网格
+    expect(screen.queryByText('员工总数')).toBeNull();
+    expect(screen.queryByText('小艾')).toBeNull();
     // 旧的页尾引导条必须彻底消失
     expect(screen.queryByLabelText('调度入口引导')).toBeNull();
     expect(screen.queryByText(/还没有调度入口/)).toBeNull();
@@ -427,7 +445,6 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     renderPage();
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole('tab', { name: '员工小队' }));
     // 入口卡片与弹窗标题现在同名，所以点完要按 dialog 作用域内的
     // [data-slot="dialog-title"] 断言，直接 findByText 会同时命中卡片上的文字
     await user.click(await screen.findByText('新建小队'));
@@ -441,8 +458,6 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     vi.stubGlobal('fetch', mockAgents([agent]));
     renderPage();
 
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('tab', { name: '员工小队' }));
     expect(await screen.findByText('还没有员工小队')).toBeTruthy();
   });
 
@@ -469,8 +484,6 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     );
     renderPage();
 
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('tab', { name: '员工小队' }));
     expect(await screen.findByLabelText('员工小队')).toBeTruthy();
   });
 });

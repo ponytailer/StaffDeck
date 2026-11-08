@@ -22,13 +22,14 @@ import { cn } from '@/lib/utils';
 import EmployeeAvatar from './EmployeeAvatar';
 import BrandLogo from './BrandLogo';
 import StaffdeckIcon from './StaffdeckIcon';
-import DispatcherGlyph from './dispatcher/DispatcherGlyph';
+import DispatcherAvatar from './dispatcher/DispatcherAvatar';
 import { employeeDisplayNameWithCreator, employeeProfile, staffdeckDisplayText } from '../employee';
 import { EnterpriseRoute } from '../enums/routes';
 import { MAX_DISPATCH_MEMBERS, dispatchFallbackLabel, type DispatcherRead } from '../lib/dispatcher';
 import type { AgentProfileRead, ChatSession } from '../types';
 import IconPlatform from '../assets/icons/nav-platform.svg?react';
 import IconAgents from '../assets/icons/nav-agents.svg?react';
+import IconSquads from '../assets/icons/nav-squads.svg?react';
 import IconFile from '../assets/icons/profile-file.svg?react';
 import IconAlarm from '../assets/icons/profile-alarm.svg?react';
 import IconHistory from '../assets/icons/profile-history.svg?react';
@@ -80,6 +81,8 @@ const WORKSPACE_NAV: NavItem[] = [
   // 站点首页已下线（2026-10-13）：开放广场「全部」tab 成为默认落地（热门总览/快捷访问/新闻并入）
   { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform, hot: true },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
+  // 员工小队已从「我的数字员工」的页内 tab 升为一级菜单（2026-11-08）
+  { route: EnterpriseRoute.Squads, label: '我的小队', Icon: IconSquads },
 ];
 
 const PLATFORM_NAV: NavItem[] = [
@@ -117,9 +120,15 @@ const DISPATCHER_PROFILE_NAV: NavItem[] = [
   { route: EnterpriseRoute.Feedback, label: '对话日志', Icon: IconCalendar },
 ];
 
-/** 多智能体的成员/模型配置都落在「我的数字员工」页的多智能体 tab 里，没有独立路由。 */
+/**
+ * 员工小队作用域下的「结构」块。
+ *
+ * 小队已升为一级菜单「我的小队」（`/enterprise/squads`），不再挂在「我的数字员工」
+ * 的页内 tab 上；这里直接给一级页面的落点，不再用 `#dispatchers` 深链
+ * （旧深链仍由 AgentsPage 重定向兼容）。
+ */
 const DISPATCHER_STRUCTURE_NAV: NavItem[] = [
-  { route: EnterpriseRoute.Agents, label: '成员与路由规则', Icon: IconAgents, hash: 'dispatchers' },
+  { route: EnterpriseRoute.Squads, label: '成员与路由规则', Icon: IconSquads },
 ];
 
 const SYSTEM_NAV: NavItem[] = [
@@ -382,9 +391,7 @@ function AgentSwitcher({
           {currentDispatcher ? (
             <div className="w-[60px] h-[30px] relative">
               <div className="absolute inset-0 flex items-end justify-center">
-                <span className="flex h-[71px] w-[60px] items-center justify-center rounded-[10px] border-[0.5px] border-[#cfe3de] bg-[#e1f1ed] text-[#0f7268]">
-                  <DispatcherGlyph className="size-[26px]" />
-                </span>
+                <DispatcherAvatar preset={currentDispatcher.avatar_preset} size={54} radius={14} />
               </div>
             </div>
           ) : currentAgent ? (
@@ -473,9 +480,7 @@ function DispatcherScopeItems({
           onSelect={() => onSelectAgent(dispatcher.id)}
           className="shrink-0 gap-2 rounded-[14px] cursor-pointer focus:bg-[#F6F6F6] focus:[&_strong]:text-foreground! focus:[&_small]:text-muted-foreground! data-[active=true]:bg-[#F6F6F6] data-[active=true]:[&_strong]:text-foreground!"
         >
-          <span className="grid size-[28px] shrink-0 place-items-center rounded-[8px] border-[0.5px] border-[#cfe3de] bg-[#e1f1ed] text-[#0f7268]">
-            <DispatcherGlyph className="size-[16px]" />
-          </span>
+          <DispatcherAvatar preset={dispatcher.avatar_preset} size={28} radius={8} />
           <span className="flex min-w-0 flex-col">
             <strong className="truncate text-[12px] font-medium">{dispatcher.name}</strong>
             <small className="truncate text-[10px] text-muted-foreground">
@@ -608,9 +613,7 @@ function CollapsedAgentSwitcher({
           className="flex flex-col items-center gap-[2px] pt-[8px]"
         >
           {currentDispatcher ? (
-            <span className="grid h-[38px] w-[32px] place-items-center rounded-[8px] border-[0.5px] border-[#cfe3de] bg-[#e1f1ed] text-[#0f7268]">
-              <DispatcherGlyph className="size-[18px]" />
-            </span>
+            <DispatcherAvatar preset={currentDispatcher.avatar_preset} size={34} radius={8} />
           ) : currentAgent ? (
             <EmployeeAvatar agent={currentAgent} width={32} height={38} radius={8} />
           ) : (

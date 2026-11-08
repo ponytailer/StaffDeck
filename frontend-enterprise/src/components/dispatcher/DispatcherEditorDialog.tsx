@@ -38,6 +38,10 @@ import type { AgentProfileRead, ModelConfigRead } from '../../types';
 import { employeeDisplayName, employeeProfile } from '../../employee';
 import EmployeeAvatar from '../EmployeeAvatar';
 import DispatcherTopology, { type TopologyMember } from './DispatcherTopology';
+import DispatcherAvatar, {
+  DEFAULT_DISPATCHER_AVATAR,
+  DISPATCHER_AVATAR_PRESETS,
+} from './DispatcherAvatar';
 
 type DraftMember = {
   /** 本地 uuid，仅用于 React key（成员还没保存时没有稳定 id） */
@@ -113,6 +117,8 @@ export default function DispatcherEditorDialog({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [modelConfigId, setModelConfigId] = useState('');
+  /** 小队头像预设 key；未选择时用默认图形（历史小队都没有这个值）。 */
+  const [avatarPreset, setAvatarPreset] = useState<string>(DEFAULT_DISPATCHER_AVATAR);
   const [members, setMembers] = useState<DraftMember[]>([]);
   const [fallback, setFallback] = useState<DraftFallback>(BLANK_FALLBACK);
   const [saving, setSaving] = useState(false);
@@ -143,6 +149,7 @@ export default function DispatcherEditorDialog({
       setName(dispatcher.name);
       setDescription(dispatcher.description || '');
       setModelConfigId(dispatcher.model_config_id || '');
+      setAvatarPreset(dispatcher.avatar_preset || DEFAULT_DISPATCHER_AVATAR);
       setMembers(dispatcher.members.map(memberFromRead));
       setFallback({
         mode: dispatcher.config.fallback_mode,
@@ -154,6 +161,7 @@ export default function DispatcherEditorDialog({
     } else {
       setName('');
       setDescription('');
+      setAvatarPreset(DEFAULT_DISPATCHER_AVATAR);
       // 新建时预选一条默认模型：模型必填，让用户少点一次
       const preferred = models.find((item) => item.is_default && item.enabled) || models.find((item) => item.enabled);
       setModelConfigId(preferred?.id || '');
@@ -401,6 +409,7 @@ export default function DispatcherEditorDialog({
               : {}),
             members: payloadMembers,
             config,
+            avatar_preset: avatarPreset,
           })
         : await createDispatcher({
             name: name.trim(),
@@ -408,6 +417,7 @@ export default function DispatcherEditorDialog({
             model_config_id: modelConfigId,
             members: payloadMembers,
             config,
+            avatar_preset: avatarPreset,
           });
 
       notify.success(dispatcher ? '员工小队已更新' : '员工小队已创建');
@@ -470,6 +480,35 @@ export default function DispatcherEditorDialog({
 
           {/* ① 基础信息 */}
           <Section index={1} title="基础信息">
+            {/* 头像：左侧大预览 + 右侧一排可选预设。小队不是一个「人」，但只有一个
+                固定拓扑图标太单调（用户反馈），这里给 6 个几何图形 × 色调可选。 */}
+            <div className="mt-[14px] flex flex-wrap items-center gap-[14px]">
+              <DispatcherAvatar preset={avatarPreset} size={54} radius={16} decorative={false} />
+              <div className="flex min-w-0 flex-col gap-[7px]">
+                <span className="text-[12px] font-medium text-[#464c5e]">小队头像</span>
+                <div className="flex flex-wrap gap-[7px]" role="radiogroup" aria-label="选择小队头像">
+                  {DISPATCHER_AVATAR_PRESETS.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      role="radio"
+                      aria-checked={avatarPreset === item.key}
+                      aria-label={item.label}
+                      title={item.label}
+                      onClick={() => setAvatarPreset(item.key)}
+                      className={cn(
+                        'rounded-[12px] p-[2px] transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0f7268]/40',
+                        avatarPreset === item.key
+                          ? 'ring-2 ring-[#0f7268]'
+                          : 'ring-1 ring-transparent hover:ring-[#dfe3ea]',
+                      )}
+                    >
+                      <DispatcherAvatar preset={item.key} size={34} radius={10} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
             <div className="mt-[14px] grid gap-[12px] sm:grid-cols-2">
               <Field label="入口名称" required>
                 <Input

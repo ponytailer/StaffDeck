@@ -8,7 +8,7 @@
  * - AgentsPage 把 dispatcher 单独成组，不混进员工网格。
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -342,13 +342,14 @@ const model: ModelConfigRead = {
   is_default: true,
 } as ModelConfigRead;
 
-function renderPage() {
+function renderPage(mode?: 'all' | 'dispatchers') {
   return render(
     <I18nProvider>
       <TooltipProvider>
         <MemoryRouter>
           <AgentsPage
             currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+            mode={mode}
           />
         </MemoryRouter>
       </TooltipProvider>
@@ -357,7 +358,9 @@ function renderPage() {
 }
 
 describe('AgentsPage dispatcher grouping', () => {
-  it('员工小队单独成组，不混进员工卡片网格', async () => {
+  // 员工小队已从「我的数字员工」的页内 tab 升为左侧一级菜单「我的小队」
+  // （路由 /enterprise/squads，复用 AgentsPage mode="dispatchers"）。
+  it('「我的数字员工」页里不再有员工小队 tab / 分区 / 卡片', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -371,17 +374,34 @@ describe('AgentsPage dispatcher grouping', () => {
 
     renderPage();
 
-    // 员工与入口都要出现，但入口在独立的「员工小队」tab 里，不混进员工网格。
     expect((await screen.findAllByText('小艾')).length).toBeGreaterThan(0);
     expect(screen.queryByText('人事服务台')).toBeNull();
     expect(screen.queryByLabelText('员工小队')).toBeNull();
+    expect(screen.queryByRole('tab', { name: '员工小队' })).toBeNull();
+    // 员工区照常渲染
+    expect(screen.getByLabelText('数字员工统计')).toBeTruthy();
+  });
 
-    fireEvent.click(screen.getByRole('tab', { name: '员工小队' }));
-    expect(await screen.findByText('人事服务台')).toBeTruthy();
+  it('「我的小队」页只渲染小队卡片，不再渲染员工区', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([dispatcherRow]);
+        if (url.includes('/api/enterprise/model-configs')) return jsonResponse([model]);
+        if (url.includes('/api/enterprise/agents')) return jsonResponse([employee]);
+        return jsonResponse([]);
+      }),
+    );
+
+    renderPage('dispatchers');
+
+    expect((await screen.findByText('人事服务台')).textContent).toBeTruthy();
     const section = screen.getByLabelText('员工小队');
     expect(section.textContent).toContain('人事服务台');
-    // 员工统计卡也不该把入口算进去（切 tab 后员工区已不渲染）
+    // 员工网格、统计卡、员工搜索框都不该出现在小队页
     expect(screen.queryByLabelText('数字员工统计')).toBeNull();
+    expect(screen.queryByLabelText('搜索员工')).toBeNull();
   });
 
   it('没有员工小队时给创建引导，而不是空分区', async () => {
@@ -394,11 +414,7 @@ describe('AgentsPage dispatcher grouping', () => {
       }),
     );
 
-    renderPage();
-    expect((await screen.findByText('小艾')).textContent).toBeTruthy();
-    expect(screen.queryByLabelText('员工小队')).toBeNull();
-
-    fireEvent.click(screen.getByRole('tab', { name: '员工小队' }));
+    renderPage('dispatchers');
     expect(await screen.findByText('还没有员工小队')).toBeTruthy();
     expect(screen.getByText('新建小队')).toBeTruthy();
   });
@@ -418,8 +434,7 @@ describe('AgentsPage dispatcher grouping', () => {
       }),
     );
 
-    renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: '员工小队' }));
+    renderPage('dispatchers');
     expect(await screen.findByText('缺规则')).toBeTruthy();
   });
 });

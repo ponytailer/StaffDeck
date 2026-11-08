@@ -12,8 +12,10 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
+import type { DispatcherRead } from '@/lib/dispatcher';
 import type { AgentProfileRead, ModelConfigRead } from '@/types';
 
+import { DISPATCHER_AVATAR_PRESETS } from './DispatcherAvatar';
 import DispatcherEditorDialog from './DispatcherEditorDialog';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -285,4 +287,90 @@ describe('DispatcherEditorDialog 提交载荷', () => {
       expect(dialog.querySelector(`[data-dispatch-section="${focusSection}"]`)).toBeTruthy();
     },
   );
+});
+
+/**
+ * 用户原话「小队头像搞几个可选的，不要只有一个」：编辑器里要有多个可选几何头像，
+ * 选中的 key 走 `avatar_preset` 落到 AgentProfile.metadata_json，编辑时要回填。
+ */
+describe('DispatcherEditorDialog 小队头像', () => {
+  function dispatcherFixture(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'agent_disp_1',
+      tenant_id: 'tenant_demo',
+      name: '人事服务台',
+      description: null,
+      kind: 'dispatcher',
+      status: 'active',
+      model_config_id: 'model-1',
+      members: [],
+      config: {
+        fallback_mode: 'clarify',
+        fallback_reply: '换个说法再试一次？',
+        default_member_agent_id: null,
+        offer_candidates: true,
+        min_confidence: 0.6,
+      },
+      usage_count: 0,
+      avatar_preset: null,
+      ...overrides,
+    } as unknown as DispatcherRead;
+  }
+
+  it('给出 6 个预设且默认选中「拓扑」', () => {
+    renderEditor();
+
+    // 「无法匹配时怎么办」那段也有 radio，所以只数头像这一组
+    const group = screen.getByRole('radiogroup', { name: '选择小队头像' });
+    expect(group.querySelectorAll('[role="radio"]')).toHaveLength(DISPATCHER_AVATAR_PRESETS.length);
+    expect(screen.getByRole('radio', { name: '拓扑' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: '环轨' }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('切换头像后提交的 avatar_preset 跟着变', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        id: 'agent_disp',
+        tenant_id: 'tenant_demo',
+        name: '人事服务台',
+        kind: 'dispatcher',
+        status: 'active',
+        members: [],
+        config: {},
+        usage_count: 0,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole('radio', { name: '守门' }));
+    expect(screen.getByRole('radio', { name: '守门' }).getAttribute('aria-checked')).toBe('true');
+
+    await user.type(screen.getByPlaceholderText('例如：人事服务台'), '人事服务台');
+    await addMember(user, '小王');
+    await addMember(user, '小李');
+    const ruleInputs = screen.getAllByPlaceholderText(/员工咨询入职材料/);
+    await user.type(ruleInputs[0], '入职流程');
+    await user.type(ruleInputs[1], '薪资核算');
+
+    await user.click(screen.getByRole('button', { name: '新建小队' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(call[1].body)).avatar_preset).toBe('shield');
+  });
+
+  it('编辑已有小队时回填已保存的头像', () => {
+    renderEditor({ dispatcher: dispatcherFixture({ avatar_preset: 'layers' }) });
+
+    expect(screen.getByRole('radio', { name: '分层' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: '拓扑' }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('历史小队没有 avatar_preset 时回落到「拓扑」', () => {
+    renderEditor({ dispatcher: dispatcherFixture() });
+
+    expect(screen.getByRole('radio', { name: '拓扑' }).getAttribute('aria-checked')).toBe('true');
+  });
 });

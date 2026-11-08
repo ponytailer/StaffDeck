@@ -89,6 +89,8 @@ class DispatcherCreateRequest(BaseModel):
     model_config_id: Optional[str] = None
     members: list[DispatcherMemberInput] = Field(default_factory=list)
     config: DispatchConfig = Field(default_factory=DispatchConfig)
+    # 小队头像预设（前端 DISPATCHER_AVATAR_PRESETS 的 key）。不传 = 用默认图形。
+    avatar_preset: Optional[str] = None
 
 
 class DispatcherUpdateRequest(BaseModel):
@@ -100,6 +102,8 @@ class DispatcherUpdateRequest(BaseModel):
     model_config_id: Optional[str] = None
     members: Optional[list[DispatcherMemberInput]] = None
     config: Optional[DispatchConfig] = None
+    # 不传 = 沿用；传空串 = 清掉、回落默认图形。
+    avatar_preset: Optional[str] = None
 
 
 class DispatchPreviewRequest(BaseModel):
@@ -141,5 +145,7 @@ class DispatcherRead(BaseModel):
     usage_count: int = 0
     # 是否已发布到开放广场的「员工小队」。发布/下架只改 metadata，不动成员与模型。
     published_to_gallery: bool = False
+    # 小队头像预设；缺省时前端用默认图形。
+    avatar_preset: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

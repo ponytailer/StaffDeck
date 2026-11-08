@@ -321,11 +321,11 @@ describe('DashboardPage dispatcher profile tabs', () => {
     // 两者共享同一个父容器 —— 同一行
     expect(chat.parentElement).toBe(config.parentElement);
 
-    // 这个容器与拓扑图标同属一个 flex-col 列（即「头像列」），而不是信息区
+    // 这个容器与头像块同属一个 flex-col 列（即「头像列」），而不是信息区
     const avatarColumn = chat.parentElement?.parentElement;
     expect(avatarColumn).toBeTruthy();
-    // 该列里包含拓扑图标所在的圆角底块
-    expect(avatarColumn?.querySelector('span[class*="bg-[#e1f1ed]"]')).toBeTruthy();
+    // 该列里包含小队头像块（多预设几何头像，默认 network）
+    expect(avatarColumn?.querySelector('[data-dispatcher-avatar]')).toBeTruthy();
   });
 
   /**
