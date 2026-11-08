@@ -25,9 +25,11 @@ from app.dispatch.schema import (
     MIN_DISPATCH_MEMBERS,
     DispatchPreviewRequest,
     DispatchPreviewResponse,
+    DispatcherActivityRead,
     DispatcherCreateRequest,
     DispatcherMemberInput,
     DispatcherMemberRead,
+    DispatcherOverviewRead,
     DispatcherRead,
     DispatcherUpdateRequest,
 )
@@ -42,6 +44,7 @@ from app.dispatch.service import (
     list_dispatchers_for_member,
     member_has_own_model,
     replace_members,
+    summarize_dispatch_activity,
     validate_member_inputs,
     write_dispatch_config,
     write_dispatcher_avatar_preset,
@@ -247,6 +250,27 @@ def create_dispatcher(
     return _read(db, request.tenant_id, row)
 
 
+def _visible_dispatcher_rows(
+    db: Session, tenant_id: str, current_user: User
+) -> list[AgentProfile]:
+    """当前用户可见的小队行（列表与概览共用同一份可见性口径）。
+
+    管理员看全部；普通用户只看自己建的 —— 与 ``/api/enterprise/agents`` 一致。
+    两个接口各写一份的话，早晚会出现「概览数字比列表多一个」这种账对不上的情况。
+    """
+    rows = db.exec(
+        select(AgentProfile)
+        .where(
+            AgentProfile.tenant_id == tenant_id,
+            AgentProfile.kind == DISPATCH_KIND,
+        )
+        .order_by(AgentProfile.created_at.desc())  # type: ignore[attr-defined]
+    ).all()
+    if _is_admin_user(current_user):
+        return list(rows)
+    return [row for row in rows if _agent_visible_to_user(row, current_user)]
+
+
 @router.get("", response_model=list[DispatcherRead])
 def list_dispatchers(
     tenant_id: str = Query(...),
@@ -258,26 +282,77 @@ def list_dispatchers(
     current_user: User = Depends(get_current_user),
 ) -> list[DispatcherRead]:
     _ensure_request_tenant(tenant_id, current_user)
-    statement = select(AgentProfile).where(
-        AgentProfile.tenant_id == tenant_id,
-        AgentProfile.kind == DISPATCH_KIND,
-    )
-    if gallery_only:
-        statement = statement.where(AgentProfile.status == "active")
-    rows = db.exec(statement.order_by(AgentProfile.created_at.desc())).all()
     if gallery_only:
         # 广场口径：只认 published_to_gallery，且不再按归属过滤 —— 广场本来就是
         # 「别人的东西我看看能不能用」。
+        rows = db.exec(
+            select(AgentProfile)
+            .where(
+                AgentProfile.tenant_id == tenant_id,
+                AgentProfile.kind == DISPATCH_KIND,
+                AgentProfile.status == "active",
+            )
+            .order_by(AgentProfile.created_at.desc())  # type: ignore[attr-defined]
+        ).all()
         return [
             _read(db, tenant_id, row)
             for row in rows
             if _published_to_gallery(row)
         ]
-    # 可见性口径与 /api/enterprise/agents 保持一致：管理员看全部，
-    # 普通用户只看自己建的（调度入口是「会路由的同事」，混进别人的入口没意义）。
-    if not _is_admin_user(current_user):
-        rows = [row for row in rows if _agent_visible_to_user(row, current_user)]
+    rows = _visible_dispatcher_rows(db, tenant_id, current_user)
     return [_read(db, tenant_id, row) for row in rows]
+
+
+@router.get("/overview", response_model=DispatcherOverviewRead)
+def dispatcher_overview(
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> DispatcherOverviewRead:
+    """「我的小队」页首屏概览：统计卡 + 配置健康度 + 每队活动汇总。
+
+    **必须注册在 ``/{agent_id}`` 之前**：否则 ``GET /dispatchers/overview`` 会被
+    当成一位 agent 的 id 命中详情接口，返回 404「小队不存在」。
+
+    健康度只统计**真的会出问题的配置**（缺路由规则 / 模型已被删或停用 / 只有 1 位成员）。
+    「还没发布到广场」不算问题 —— 大部分入口根本不需要对外发布。
+    """
+    _ensure_request_tenant(tenant_id, current_user)
+    reads = [
+        _read(db, tenant_id, row)
+        for row in _visible_dispatcher_rows(db, tenant_id, current_user)
+    ]
+
+    member_ids: set[str] = set()
+    missing_rule_members = 0
+    single_member_squads = 0
+    broken_models = 0
+    for read in reads:
+        for member in read.members:
+            member_ids.add(member.member_agent_id)
+            if not (member.routing_rule or "").strip():
+                missing_rule_members += 1
+        if len(read.members) <= 1:
+            single_member_squads += 1
+        # 绑了模型但解析不出名字 = 那条 ModelConfig 已被删除或停用，这一轮对话会直接失败
+        if read.model_config_id and not read.model_name:
+            broken_models += 1
+
+    activity_map = summarize_dispatch_activity(db, tenant_id, [read.id for read in reads])
+    activity = [
+        DispatcherActivityRead(id=read.id, **activity_map.get(read.id, {}))
+        for read in reads
+    ]
+    return DispatcherOverviewRead(
+        squads=len(reads),
+        members=len(member_ids),
+        transfers=sum(item.transfers for item in activity),
+        published=sum(1 for read in reads if read.published_to_gallery),
+        missing_rule_members=missing_rule_members,
+        broken_models=broken_models,
+        single_member_squads=single_member_squads,
+        activity=activity,
+    )
 
 
 @router.get("/{agent_id}", response_model=DispatcherRead)

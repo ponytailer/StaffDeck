@@ -105,6 +105,43 @@ export function dispatchFallbackShortLabel(mode?: string | null): string {
 
 const BASE = '/api/enterprise/dispatchers';
 
+/** 单个小队的转接活动汇总（后端口径见 summarize_dispatch_activity）。 */
+export type DispatcherActivityRead = {
+  id: string;
+  /** 该小队的父会话数 */
+  sessions: number;
+  /** 近 7 天有更新的父会话数（转接记录本身没有时间戳，只能按会话近似） */
+  sessions_7d: number;
+  /**
+   * 各父会话 dispatch_log 条数之和。
+   * **每个会话最多记 10 条**（后端 DISPATCH_LOG_LIMIT），所以它是下限而不是精确总次数。
+   */
+  transfers: number;
+  top_members: { name: string; count: number }[];
+};
+
+/** 「我的小队」页首屏概览：统计卡 + 配置健康度 + 每队活动。 */
+export type DispatcherOverviewRead = {
+  squads: number;
+  /** 去重后的成员数（同一位同事被两个小队引用只算一次） */
+  members: number;
+  transfers: number;
+  published: number;
+  missing_rule_members: number;
+  /** 绑了模型但解析不出名字 = 那条 ModelConfig 已被删除或停用 */
+  broken_models: number;
+  single_member_squads: number;
+  activity: DispatcherActivityRead[];
+};
+
+export async function fetchDispatcherOverview(
+  tenantId: string = TENANT_ID,
+): Promise<DispatcherOverviewRead> {
+  return api.get<DispatcherOverviewRead>(
+    `${BASE}/overview?tenant_id=${encodeURIComponent(tenantId)}`,
+  );
+}
+
 export async function listDispatchers(
   tenantId: string = TENANT_ID,
   options?: { galleryOnly?: boolean },
@@ -219,6 +256,20 @@ export async function listDispatcherReferences(
 /** 成员数量是否合法（保存/试跑前统一用这个判，避免前后端两套口径）。 */
 export function isMemberCountValid(count: number): boolean {
   return count >= MIN_DISPATCH_MEMBERS && count <= MAX_DISPATCH_MEMBERS;
+}
+
+/**
+ * 这个入口有几项**配置问题**（真的会出问题的那几类，不含「未发布到广场」）。
+ *
+ * 与后端 `/dispatchers/overview` 的健康度口径一致，但这里按「单个入口」算，
+ * 用于左列表打点与「只看需要处理的」筛选 —— 概览接口只回全局数字，
+ * 不为了筛选再跑一次接口。
+ */
+export function dispatcherIssueCount(row: DispatcherRead): number {
+  const missingRule = row.members.filter((member) => !member.routing_rule.trim()).length;
+  const brokenModel = row.model_config_id && !row.model_name ? 1 : 0;
+  const singleMember = row.members.length <= 1 ? 1 : 0;
+  return missingRule + brokenModel + singleMember;
 }
 
 export function memberCountHint(count: number): string | null {

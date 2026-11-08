@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -398,13 +398,28 @@ describe('AgentsPage 新建小队的入口可见性', () => {
    *   → 改成 teal 语义色区分（这条靠人眼验收，单测只钉文案）。
    * 2.「点击调度入口的弹窗位置偏下，看不见」→ DialogContent 的 className 里写了
    *   `relative`，tailwind-merge 把它和 `fixed` 归为同组直接覆盖掉 → 弹窗被
-   *   `top: 50%` 推到 body 高度一半，底部溢出视口。那条在 DispatcherEditorDialog 里修，
-   *   这里只钉「页面上只有一个创建入口」。
-   * 3.「删除页面最下方的创建调度入口」→ 页尾引导条整个删掉，创建入口只在顶部。
+   *   `top: 50%` 推到 body 高度一半，底部溢出视口。那条在 DispatcherEditorDialog 里修。
+   * 3.「删除页面最下方的创建调度入口」→ 页尾引导条整个删掉。
+   * 4.「这个页面有点太空旷」→ 改 master-detail（左列表 + 右详情），创建入口
+   *   因此出现在两处：页头一处、左列表底部一处。**不再断言「只能有一个」**，
+   *   改为断言「两处都是同一个动作、且没有页尾引导条」。
    */
   function mockAgents(agentRows: AgentProfileRead[], dispatcherRows: unknown[] = []) {
     return vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      // 概览必须先判：/dispatchers/overview 也包含 /dispatchers
+      if (url.includes('/api/enterprise/dispatchers/overview')) {
+        return jsonResponse({
+          squads: dispatcherRows.length,
+          members: 0,
+          transfers: 0,
+          published: 0,
+          missing_rule_members: 0,
+          broken_models: 0,
+          single_member_squads: 0,
+          activity: [],
+        });
+      }
       if (url.includes('/api/enterprise/dispatchers')) return jsonResponse(dispatcherRows);
       if (url.includes('/api/enterprise/agents')) return jsonResponse(agentRows);
       return jsonResponse([]);
@@ -426,12 +441,13 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     );
   }
 
-  it('「我的小队」页只有顶部一个创建入口，且不渲染员工网格', async () => {
+  it('「我的小队」页不渲染员工网格，创建入口只在页内两处（无页尾引导条）', async () => {
     vi.stubGlobal('fetch', mockAgents([agent, { ...agent, id: 'agent-2', name: '小新' }]));
     renderPage();
 
     expect(await screen.findByText('我的小队')).toBeTruthy();
-    expect(await screen.findAllByText('新建小队')).toHaveLength(1);
+    // 空态下只有页头那一个入口
+    expect(screen.getAllByText('新建小队').length).toBeGreaterThanOrEqual(1);
     // 小队页不渲染数字员工的统计与网格
     expect(screen.queryByText('员工总数')).toBeNull();
     expect(screen.queryByText('小艾')).toBeNull();
@@ -445,9 +461,9 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     renderPage();
 
     const user = userEvent.setup();
-    // 入口卡片与弹窗标题现在同名，所以点完要按 dialog 作用域内的
-    // [data-slot="dialog-title"] 断言，直接 findByText 会同时命中卡片上的文字
-    await user.click(await screen.findByText('新建小队'));
+    // 页头入口与左列表底部入口同名，取第一个；弹窗标题另按 dialog 作用域断言
+    const [firstCreate] = await screen.findAllByText('新建小队');
+    await user.click(firstCreate);
 
     const dialog = await screen.findByRole('dialog');
     const title = dialog.querySelector('[data-slot="dialog-title"]');
@@ -461,7 +477,7 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     expect(await screen.findByText('还没有员工小队')).toBeTruthy();
   });
 
-  it('已有入口时显示的是「员工小队」分区', async () => {
+  it('已有入口时左列表 + 右详情都渲染出来', async () => {
     vi.stubGlobal(
       'fetch',
       mockAgents([agent, { ...agent, id: 'agent-2', name: '小新' }], [
@@ -485,6 +501,216 @@ describe('AgentsPage 新建小队的入口可见性', () => {
     renderPage();
 
     expect(await screen.findByLabelText('员工小队')).toBeTruthy();
+    // 左列表一项 + 右详情标题，名字会出现两次
+    expect(screen.getByLabelText('小队列表')).toBeTruthy();
+    expect(screen.getAllByText('前台调度').length).toBeGreaterThanOrEqual(2);
+    // 详情里的操作入口
+    expect(screen.getByRole('button', { name: /去对话/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '员工小队档案' })).toBeTruthy();
+  });
+});
+
+describe('AgentsPage 「我的小队」master-detail', () => {
+  /**
+   * 用户反馈「/enterprise/squads 这个页面有点太空旷了」后的口径：
+   * - 顶部加统计卡 + 健康度条（数字来自 /dispatchers/overview 聚合接口）
+   * - 主体改左列表 + 右详情，1 个入口时也不再是「一张卡 + 一大片空白」
+   *
+   * 这里钉的是「数据接得上 + 选中会切换 + 概览挂了不影响主流程」，
+   * 视觉效果靠截图验收。
+   */
+  function squadRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'agent_disp_1',
+      tenant_id: 'tenant_demo',
+      name: '前台调度',
+      kind: 'dispatcher',
+      status: 'active',
+      model_config_id: 'model-1',
+      model_name: 'deepseek-v4-flash',
+      usage_count: 3,
+      published_to_gallery: false,
+      config: {
+        fallback_mode: 'clarify',
+        fallback_reply: '换个说法再试一次？',
+        default_member_agent_id: null,
+        offer_candidates: true,
+        min_confidence: 0.6,
+      },
+      members: [
+        {
+          member_agent_id: 'agent-a',
+          agent_name: '入职小助手',
+          routing_rule: '入职、离职、考勤异常',
+          example_queries: [],
+          sort_order: 0,
+          status: 'active',
+          agent_status: 'active',
+          free_model_enabled: false,
+          has_own_model: false,
+        },
+        {
+          member_agent_id: 'agent-b',
+          agent_name: 'IT 支持',
+          routing_rule: '电脑、网络、账号权限',
+          example_queries: [],
+          sort_order: 1,
+          status: 'active',
+          agent_status: 'active',
+          free_model_enabled: false,
+          has_own_model: true,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  const emptyOverview = {
+    squads: 2,
+    members: 3,
+    transfers: 21,
+    published: 1,
+    missing_rule_members: 0,
+    broken_models: 0,
+    single_member_squads: 0,
+    // 左列表的「N 次转接」也吃这份数据（不用 usage_count，那是会话计数器）
+    activity: [
+      { id: 'agent_disp_1', sessions: 4, sessions_7d: 3, transfers: 21, top_members: [] },
+    ],
+  };
+
+  function mockFetch(
+    squadRows: unknown[],
+    overview: unknown = emptyOverview,
+  ) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/dispatchers/overview')) return jsonResponse(overview);
+      if (url.includes('/api/enterprise/dispatchers')) return jsonResponse(squadRows);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([]);
+      return jsonResponse([]);
+    });
+  }
+
+  function renderSquadsPage() {
+    render(
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentsPage
+              currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }}
+              mode="dispatchers"
+            />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>,
+    );
+  }
+
+  it('统计卡用 overview 接口的数字', async () => {
+    vi.stubGlobal('fetch', mockFetch([squadRow()]));
+    renderSquadsPage();
+
+    const stats = await screen.findByLabelText('小队统计');
+    expect(within(stats).getByText('2')).toBeTruthy(); // 小队
+    expect(within(stats).getByText('3')).toBeTruthy(); // 覆盖同事
+    expect(within(stats).getByText('21')).toBeTruthy(); // 累计转接
+    expect(within(stats).getByText('1')).toBeTruthy(); // 已发布
+    // 左列表一行同样显示转接次数（与概览同源，不用 usage_count）
+    const list = screen.getByLabelText('小队列表');
+    expect(within(list).getByText(/21 次转接/)).toBeTruthy();
+  });
+
+  it('点左列表的另一个入口，右详情跟着换', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch([
+        squadRow(),
+        squadRow({
+          id: 'agent_disp_2',
+          name: '财务报销台',
+          usage_count: 1,
+          description: '报销、发票、打款',
+        }),
+      ]),
+    );
+    renderSquadsPage();
+
+    const list = await screen.findByLabelText('小队列表');
+    // 默认选中第一个
+    expect(within(list).getByText('前台调度').closest('button')?.getAttribute('aria-current')).toBe('true');
+
+    const user = userEvent.setup();
+    await user.click(within(list).getByText('财务报销台'));
+
+    expect(
+      within(list).getByText('财务报销台').closest('button')?.getAttribute('aria-current'),
+    ).toBe('true');
+    // 右详情里出现第二个入口的描述（第一个入口的描述是空的 → 走占位文案）
+    expect(await screen.findByText('报销、发票、打款')).toBeTruthy();
+  });
+
+  it('健康度有问题时给出提示，可一键只看需要处理的', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch(
+        [
+          squadRow(),
+          squadRow({
+            id: 'agent_disp_2',
+            name: '配置不全的入口',
+            members: [
+              {
+                member_agent_id: 'agent-a',
+                agent_name: '入职小助手',
+                routing_rule: '',
+                example_queries: [],
+                sort_order: 0,
+                status: 'active',
+                agent_status: 'active',
+                free_model_enabled: false,
+                has_own_model: false,
+              },
+              {
+                member_agent_id: 'agent-b',
+                agent_name: 'IT 支持',
+                routing_rule: '电脑、网络',
+                example_queries: [],
+                sort_order: 1,
+                status: 'active',
+                agent_status: 'active',
+                free_model_enabled: false,
+                has_own_model: false,
+              },
+            ],
+          }),
+        ],
+        { ...emptyOverview, missing_rule_members: 1 },
+      ),
+    );
+    renderSquadsPage();
+
+    const health = await screen.findByLabelText('配置健康度');
+    expect(within(health).getByText('1 位同事没写路由规则')).toBeTruthy();
+
+    const user = userEvent.setup();
+    await user.click(within(health).getByRole('button', { name: /只看需要处理的/ }));
+
+    const list = screen.getByLabelText('小队列表');
+    expect(within(list).queryByText('前台调度')).toBeNull();
+    expect(within(list).getByText('配置不全的入口')).toBeTruthy();
+    // 右详情自动跟到有问题的那个
+    expect(screen.getAllByText('配置不全的入口').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('overview 接口返回异常形状时不炸页面，列表照常可用', async () => {
+    vi.stubGlobal('fetch', mockFetch([squadRow()], []));
+    renderSquadsPage();
+
+    expect(await screen.findByLabelText('小队列表')).toBeTruthy();
+    // 数字拿不到就显示占位，不显示 0 也不抛错
+    const stats = screen.getByLabelText('小队统计');
+    expect(within(stats).getAllByText('—').length).toBeGreaterThan(0);
   });
 });
 

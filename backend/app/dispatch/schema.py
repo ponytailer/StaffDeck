@@ -149,3 +149,43 @@ class DispatcherRead(BaseModel):
     avatar_preset: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+class DispatcherActivityMemberRead(BaseModel):
+    """「最常转给谁」的一行：只按名字聚合，够用且不暴露 id。"""
+
+    name: str
+    count: int = 0
+
+
+class DispatcherActivityRead(BaseModel):
+    """单个小队的转接活动汇总。
+
+    口径（同时写进前端 title，别偷偷把数字做大）：
+    - ``transfers``：各父会话 ``dispatch_log`` 条数之和。**每个会话最多记 10 条**
+      （``DISPATCH_LOG_LIMIT``），所以它是下限而不是精确总次数。
+    - ``sessions_7d``：近 7 天有更新的父会话数。转接记录本身**没有时间戳**，
+      只能拿会话活动时间近似「最近还在用」。
+    """
+
+    id: str
+    sessions: int = 0
+    sessions_7d: int = 0
+    transfers: int = 0
+    top_members: list[DispatcherActivityMemberRead] = Field(default_factory=list)
+
+
+class DispatcherOverviewRead(BaseModel):
+    """「我的小队」页首屏概览：统计卡 + 配置健康度 + 每个小队的活动汇总。
+
+    只做一个聚合接口的原因：页面冷启动已经要等远程 PG 3~8s，不想再多几次往返。
+    """
+
+    squads: int = 0
+    members: int = 0
+    transfers: int = 0
+    published: int = 0
+    # 配置健康度（真实的坏配置，不是「未发布」这种中性状态）
+    missing_rule_members: int = 0
+    broken_models: int = 0
+    single_member_squads: int = 0
+    activity: list[DispatcherActivityRead] = Field(default_factory=list)

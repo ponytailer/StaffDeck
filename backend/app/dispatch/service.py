@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Iterable
 
 from sqlmodel import Session, select
@@ -553,3 +554,87 @@ def candidates_text(
         suffix = f"：{description}" if description else ""
         lines.append(f"{index}. {agent.name}{suffix}")
     return "\n".join(lines)
+
+ACTIVITY_SESSION_LIMIT = 600
+ACTIVITY_TOP_MEMBERS = 2
+ACTIVITY_WINDOW_DAYS = 7
+
+
+def summarize_dispatch_activity(
+    db: Session,
+    tenant_id: str,
+    squad_ids: Iterable[str],
+    *,
+    now: Any | None = None,
+    session_limit: int = ACTIVITY_SESSION_LIMIT,
+) -> dict[str, dict[str, Any]]:
+    """按小队汇总转接活动（「我的小队」页右栏与统计卡用）。
+
+    **为什么只读 sessions 的 `context_state_json`**：转接记录本来就写在父会话的
+    `dispatch_log` 里（`append_dispatch_log`），不碰消息表 —— 一次查询即可，
+    远程 PG 下也不会变成 N 次往返。
+
+    口径（前端会原样标注，不要在这里偷偷放大）：
+    - ``transfers``：该小队各父会话 `dispatch_log` 条数之和。每会话最多 10 条
+      （`DISPATCH_LOG_LIMIT`）→ 它是**下限**。
+    - ``sessions_7d``：近 7 天有更新的父会话数。记录本身没有时间戳，只能拿会话
+      活动时间近似「最近还在用」。
+    - ``top_members``：按 `member_name` 聚合的前 2 名。
+    """
+    ids = [str(item) for item in squad_ids if item]
+    if not ids:
+        return {}
+    reference = now or utc_now()
+    window_start = reference - timedelta(days=ACTIVITY_WINDOW_DAYS)
+    rows = db.exec(
+        select(
+            ChatSession.agent_id,
+            ChatSession.context_state_json,
+            ChatSession.updated_at,
+        )
+        .where(
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.agent_id.in_(ids),  # type: ignore[attr-defined]
+        )
+        .order_by(ChatSession.updated_at.desc())  # type: ignore[attr-defined]
+        .limit(session_limit)
+    ).all()
+
+    summary: dict[str, dict[str, Any]] = {
+        squad_id: {
+            "sessions": 0,
+            "sessions_7d": 0,
+            "transfers": 0,
+            "top_members": [],
+            "_counter": {},
+        }
+        for squad_id in ids
+    }
+    for agent_id, context_state, updated_at in rows:
+        bucket = summary.get(str(agent_id or ""))
+        if bucket is None:
+            continue
+        bucket["sessions"] += 1
+        if isinstance(updated_at, datetime) and updated_at >= window_start:
+            bucket["sessions_7d"] += 1
+        log = (context_state or {}).get(DISPATCH_LOG_KEY)
+        if not isinstance(log, list):
+            continue
+        cache: dict[str, int] = bucket["_counter"]
+        for entry in log:
+            if not isinstance(entry, dict):
+                continue
+            bucket["transfers"] += 1
+            name = str(entry.get("member_name") or "").strip()
+            if name:
+                cache[name] = cache.get(name, 0) + 1
+
+    for bucket in summary.values():
+        counter: dict[str, int] = bucket.pop("_counter", {})
+        bucket["top_members"] = [
+            {"name": name, "count": count}
+            for name, count in sorted(
+                counter.items(), key=lambda pair: (-pair[1], pair[0])
+            )[:ACTIVITY_TOP_MEMBERS]
+        ]
+    return summary

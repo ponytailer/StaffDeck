@@ -357,6 +357,21 @@ function renderPage(mode?: 'all' | 'dispatchers') {
   );
 }
 
+/** 概览接口的最小返回（小队页首屏统计卡要用，缺了会走「没拿到」分支）。 */
+function overviewFor(count: number, extra: Record<string, unknown> = {}) {
+  return {
+    squads: count,
+    members: 0,
+    transfers: 0,
+    published: 0,
+    missing_rule_members: 0,
+    broken_models: 0,
+    single_member_squads: 0,
+    activity: [],
+    ...extra,
+  };
+}
+
 describe('AgentsPage dispatcher grouping', () => {
   // 员工小队已从「我的数字员工」的页内 tab 升为左侧一级菜单「我的小队」
   // （路由 /enterprise/squads，复用 AgentsPage mode="dispatchers"）。
@@ -365,6 +380,7 @@ describe('AgentsPage dispatcher grouping', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.includes('/api/enterprise/dispatchers/overview')) return jsonResponse(overviewFor(1));
         if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([dispatcherRow]);
         if (url.includes('/api/enterprise/model-configs')) return jsonResponse([model]);
         if (url.includes('/api/enterprise/agents')) return jsonResponse([employee]);
@@ -382,11 +398,12 @@ describe('AgentsPage dispatcher grouping', () => {
     expect(screen.getByLabelText('数字员工统计')).toBeTruthy();
   });
 
-  it('「我的小队」页只渲染小队卡片，不再渲染员工区', async () => {
+  it('「我的小队」页只渲染小队列表 + 详情，不再渲染员工区', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.includes('/api/enterprise/dispatchers/overview')) return jsonResponse(overviewFor(1));
         if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([dispatcherRow]);
         if (url.includes('/api/enterprise/model-configs')) return jsonResponse([model]);
         if (url.includes('/api/enterprise/agents')) return jsonResponse([employee]);
@@ -396,9 +413,12 @@ describe('AgentsPage dispatcher grouping', () => {
 
     renderPage('dispatchers');
 
-    expect((await screen.findByText('人事服务台')).textContent).toBeTruthy();
+    // 左列表一行 + 右详情标题（详情是选中后第二帧渲染，等标题出现再断言总数）
+    expect(await screen.findByRole('heading', { name: '人事服务台' })).toBeTruthy();
+    expect(screen.getAllByText('人事服务台').length).toBeGreaterThanOrEqual(2);
     const section = screen.getByLabelText('员工小队');
     expect(section.textContent).toContain('人事服务台');
+    expect(screen.getByLabelText('小队列表')).toBeTruthy();
     // 员工网格、统计卡、员工搜索框都不该出现在小队页
     expect(screen.queryByLabelText('数字员工统计')).toBeNull();
     expect(screen.queryByLabelText('搜索员工')).toBeNull();
@@ -409,6 +429,7 @@ describe('AgentsPage dispatcher grouping', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.includes('/api/enterprise/dispatchers/overview')) return jsonResponse(overviewFor(0));
         if (url.includes('/api/enterprise/agents')) return jsonResponse([employee]);
         return jsonResponse([]);
       }),
@@ -416,10 +437,10 @@ describe('AgentsPage dispatcher grouping', () => {
 
     renderPage('dispatchers');
     expect(await screen.findByText('还没有员工小队')).toBeTruthy();
-    expect(screen.getByText('新建小队')).toBeTruthy();
+    expect(screen.getAllByText('新建小队').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('缺规则的成员在卡片上标出来', async () => {
+  it('缺规则的成员在详情里标出来', async () => {
     const broken = {
       ...dispatcherRow,
       members: [{ ...dispatcherRow.members[0], routing_rule: '' , example_queries: [] }],
@@ -428,6 +449,9 @@ describe('AgentsPage dispatcher grouping', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.includes('/api/enterprise/dispatchers/overview')) {
+          return jsonResponse(overviewFor(1, { missing_rule_members: 1 }));
+        }
         if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([broken]);
         if (url.includes('/api/enterprise/agents')) return jsonResponse([employee]);
         return jsonResponse([]);
@@ -435,6 +459,7 @@ describe('AgentsPage dispatcher grouping', () => {
     );
 
     renderPage('dispatchers');
-    expect(await screen.findByText('缺规则')).toBeTruthy();
+    // 成员行上的「缺规则」标签 + 页头健康度条都会出现这个词
+    expect((await screen.findAllByText('缺规则')).length).toBeGreaterThanOrEqual(1);
   });
 });

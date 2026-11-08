@@ -19,8 +19,10 @@ import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import AgentShareDialog from '../components/AgentShareDialog';
 import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
-import DispatcherCard from '../components/dispatcher/DispatcherCard';
+import DispatcherDetailPanel from '../components/dispatcher/DispatcherDetailPanel';
 import DispatcherEditorDialog from '../components/dispatcher/DispatcherEditorDialog';
+import DispatcherListRow from '../components/dispatcher/DispatcherListRow';
+import DispatcherOverviewBar from '../components/dispatcher/DispatcherOverviewBar';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
 import MyCreatedToolsPanel from '../components/MyCreatedToolsPanel';
 import MyStaticAssetsPanel from '../components/MyStaticAssetsPanel';
@@ -46,9 +48,13 @@ import type { AgentProfileRead, ModelConfigRead } from '../types';
 import { EnterpriseRoute } from '../enums/routes';
 import {
   deleteDispatcher,
+  dispatcherIssueCount,
+  fetchDispatcherOverview,
   listDispatchers,
   publishDispatcher,
   unpublishDispatcher,
+  type DispatcherActivityRead,
+  type DispatcherOverviewRead,
   type DispatcherRead,
 } from '../lib/dispatcher';
 
@@ -84,6 +90,14 @@ export default function AgentsPage({
   const [deletingDispatcher, setDeletingDispatcher] = useState(false);
   // 正在发布/下架的多智能体 id（同一时刻只处理一个，按钮显示「处理中…」）
   const [publishingDispatcherId, setPublishingDispatcherId] = useState<string | null>(null);
+  // 「我的小队」页的 master-detail：左列表选中谁，右详情就显示谁。
+  // 单独存 id 而不是对象：列表刷新（增删改）后不会拿到过期快照。
+  const [selectedDispatcherId, setSelectedDispatcherId] = useState<string | null>(null);
+  // 概览（统计卡 + 转接活动）走独立聚合接口，慢一点也不能挡住列表渲染
+  const [dispatcherOverview, setDispatcherOverview] = useState<DispatcherOverviewRead | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  // 「只看需要处理的」：健康度条点进来时打开，左列表只留配置有问题的入口
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const [models, setModels] = useState<ModelConfigRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
@@ -138,6 +152,26 @@ export default function AgentsPage({
     else if (hash.startsWith('tools')) setPageTab('tools');
   }, [location.hash, location.search, navigate]);
 
+  async function loadOverview() {
+    setOverviewLoading(true);
+    try {
+      const payload = await fetchDispatcherOverview();
+      // 保守校验：接口异常/网关拦截时可能回来一个形状不对的东西（数组、null、HTML），
+      // 直接塞进 state 会让 `overview.activity.find` 抛错并整棵树卸载 —— 宁可当没拿到。
+      const valid =
+        payload &&
+        typeof payload === 'object' &&
+        typeof payload.squads === 'number' &&
+        Array.isArray(payload.activity);
+      setDispatcherOverview(valid ? payload : null);
+    } catch {
+      // 概览是「锦上添花」：拿不到就退回列表已知的数字，不弹错误打断主流程
+      setDispatcherOverview(null);
+    } finally {
+      setOverviewLoading(false);
+    }
+  }
+
   async function load() {
     setLoading(true);
     try {
@@ -152,6 +186,7 @@ export default function AgentsPage({
       setAgents(rows);
       setDispatchers(dispatchRows);
       setModels(modelRows);
+      if (mode === 'dispatchers') void loadOverview();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载员工失败');
     } finally {
@@ -162,6 +197,34 @@ export default function AgentsPage({
   useEffect(() => {
     void load();
   }, []);
+
+  // master-detail 的选中项：列表到货后自动选中第一个；选中的被删掉/被筛掉时回落。
+  // 不存整行对象 —— 列表刷新后会拿到过期快照（改了名字详情不更新）。
+  useEffect(() => {
+    if (mode !== 'dispatchers') return;
+    if (selectedDispatcherId && dispatchers.some((row) => row.id === selectedDispatcherId)) return;
+    setSelectedDispatcherId(dispatchers[0]?.id ?? null);
+  }, [mode, dispatchers, selectedDispatcherId]);
+
+  const dispatchersWithIssues = useMemo(
+    () => dispatchers.filter((row) => dispatcherIssueCount(row) > 0),
+    [dispatchers],
+  );
+  const visibleDispatchers = attentionOnly ? dispatchersWithIssues : dispatchers;
+  const selectedDispatcher = dispatchers.find((row) => row.id === selectedDispatcherId) || null;
+  const selectedActivity: DispatcherActivityRead | undefined =
+    (dispatcherOverview?.activity || []).find((item) => item.id === selectedDispatcherId);
+  const activityById = useMemo(() => {
+    const map = new Map<string, DispatcherActivityRead>();
+    for (const item of dispatcherOverview?.activity || []) map.set(item.id, item);
+    return map;
+  }, [dispatcherOverview]);
+
+  /** 健康度条 → 只看需要处理的（同时选中第一个有问题的入口，右栏立刻有内容）。 */
+  function focusAttention() {
+    setAttentionOnly(true);
+    setSelectedDispatcherId(dispatchersWithIssues[0]?.id ?? selectedDispatcherId);
+  }
 
   // 员工列表是每个页面各自拉取的，创建 / 编辑 / 上下线 / 删除发生在别的页面
   // 或 App 侧边栏弹窗时，本页收不到任何信号。订阅花名册广播，避免新建员工后
@@ -495,28 +558,18 @@ export default function AgentsPage({
               新建小队
             </UIButton>
           </div>
-          {dispatchers.length > 0 ? (
-            <RevealGroup
-              className="grid auto-rows-[minmax(240px,auto)] grid-cols-1 content-start gap-[24px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]"
-              itemCount={dispatchers.length}
-            >
-              {dispatchers.map((row) => (
-                <DispatcherCard
-                  key={row.id}
-                  dispatcher={row}
-                  busy={selectingAgentId === row.id}
-                  publishing={publishingDispatcherId === row.id}
-                  onChat={() => void selectDispatcher(row)}
-                  onEdit={() => openDispatcherEditor(row)}
-                  onDelete={() => setDispatcherDeleteTarget(row)}
-                  onGallery={(published) => void updateDispatcherGalleryState(row, published)}
-                  onOpenProfile={() => void openDispatcherProfile(row)}
-                />
-              ))}
-            </RevealGroup>
-          ) : (
+
+          <DispatcherOverviewBar
+            overview={dispatcherOverview}
+            loading={overviewLoading || loading}
+            squadCount={dispatchers.length}
+            squadWithIssues={dispatchersWithIssues.length}
+            onAttention={focusAttention}
+          />
+
+          {dispatchers.length === 0 ? (
             <SearchEmptyState
-              height="h-[240px]"
+              height="h-[280px]"
               title="还没有员工小队"
               description="点右上角「新建小队」，选 2~3 位同事并写清各自负责什么"
               icon={
@@ -528,6 +581,82 @@ export default function AgentsPage({
                 </svg>
               }
             />
+          ) : (
+            // master-detail：左列表永远是窄栏（1 个入口时也就一行 + 新建按钮），
+            // 右详情撑满剩余宽度 —— 这样「只有 1 个入口 → 卡片下面一大片空白」不再出现。
+            <div className="flex flex-col gap-[14px] lg:flex-row lg:items-start">
+              <aside className="w-full shrink-0 rounded-[18px] border border-black/[0.05] bg-white p-[8px] shadow-[0_6px_20px_rgba(17,17,17,0.04)] lg:sticky lg:top-[16px] lg:w-[276px]">
+                {attentionOnly && (
+                  <div className="mb-[6px] flex items-center justify-between gap-[6px] rounded-[10px] bg-[#fdf8ee] px-[9px] py-[6px]">
+                    <span className="text-[11px] text-[#8a5a12]">
+                      只看需要处理的（{dispatchersWithIssues.length}）
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setAttentionOnly(false)}
+                      className="shrink-0 text-[11px] text-[#8a5a12] underline-offset-2 hover:underline"
+                    >
+                      清除
+                    </button>
+                  </div>
+                )}
+                <div
+                  className="flex flex-col gap-[2px] lg:max-h-[calc(100vh-320px)] lg:overflow-y-auto"
+                  role="listbox"
+                  aria-label="小队列表"
+                >
+                  {visibleDispatchers.map((row) => (
+                    <DispatcherListRow
+                      key={row.id}
+                      dispatcher={row}
+                      selected={row.id === selectedDispatcherId}
+                      busy={selectingAgentId === row.id}
+                      issueCount={dispatcherIssueCount(row)}
+                      transferCount={activityById.get(row.id)?.transfers}
+                      onSelect={() => setSelectedDispatcherId(row.id)}
+                    />
+                  ))}
+                  {visibleDispatchers.length === 0 && (
+                    <p className="m-0 px-[10px] py-[8px] text-[11.5px] leading-[17px] text-[#858b9c]">
+                      没有需要处理的入口 —— 都配好了。
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openDispatcherEditor(null)}
+                  className="mt-[6px] flex w-full items-center justify-center gap-[5px] rounded-[12px] border border-dashed border-[#dfe3ea] py-[8px] text-[12px] text-[#757f9c] transition-colors hover:border-[#cfe7e2] hover:bg-[#f4faf8] hover:text-[#0f5f57]"
+                >
+                  <IconPlus className="size-[13px]" />
+                  新建小队
+                </button>
+              </aside>
+
+              <div className="min-w-0 flex-1">
+                <DispatcherDetailPanel
+                  dispatcher={selectedDispatcher}
+                  activity={selectedActivity}
+                  busy={Boolean(selectedDispatcher && selectingAgentId === selectedDispatcher.id)}
+                  publishing={Boolean(selectedDispatcher && publishingDispatcherId === selectedDispatcher.id)}
+                  onCreate={() => openDispatcherEditor(null)}
+                  onChat={() => {
+                    if (selectedDispatcher) void selectDispatcher(selectedDispatcher);
+                  }}
+                  onEdit={() => {
+                    if (selectedDispatcher) openDispatcherEditor(selectedDispatcher);
+                  }}
+                  onProfile={() => {
+                    if (selectedDispatcher) void openDispatcherProfile(selectedDispatcher);
+                  }}
+                  onDelete={() => {
+                    if (selectedDispatcher) setDispatcherDeleteTarget(selectedDispatcher);
+                  }}
+                  onGallery={(published) => {
+                    if (selectedDispatcher) void updateDispatcherGalleryState(selectedDispatcher, published);
+                  }}
+                />
+              </div>
+            </div>
           )}
         </div>
       ) : pageTab === 'employees' ? (
