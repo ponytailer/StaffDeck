@@ -171,6 +171,7 @@ export type ChatStreamHandlers = {
   onDelta: (piece: string) => void;
   onReplace: (content: string) => void;
   onTerminal: (info: { ok: boolean; error?: ApiError }) => void;
+  onDispatchNotice?: (info: { memberName: string; intent: string }) => void;
 };
 
 /** POST /api/chat/stream（SSE）。协议与 frontend useChatSession 对齐。 */
@@ -224,6 +225,13 @@ export async function streamChatTurn(
       return;
     }
     if (item.event === 'heartbeat' || item.event === 'user_message_received') return;
+    if (item.event === 'dispatch_notice') {
+      // 小队调度转接：路由说完「已转交给 X」，成员答案随后才到
+      const memberName = typeof item.data.member_name === 'string' ? item.data.member_name : '';
+      const intent = typeof item.data.intent === 'string' ? item.data.intent : '';
+      if (memberName) handlers.onDispatchNotice?.({ memberName, intent });
+      return;
+    }
     if (item.event === 'stream_replace') {
       const content = typeof item.data.content === 'string' ? item.data.content : '';
       if (content) handlers.onReplace(content);

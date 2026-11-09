@@ -13,6 +13,9 @@ type ChatMessage = {
   role: 'me' | 'ai';
   content: string;
   streaming?: boolean;
+  /** 小队调度转接通知：独立旁白行，不是答案 */
+  kind?: 'text' | 'notice';
+  notice?: { memberName: string; intent: string };
 };
 
 function newId(): string {
@@ -75,6 +78,7 @@ export function ChatView(props: {
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(props.getSessionId(agent.id));
   const activeTurnIdRef = useRef<string | null>(null);
+  const turnNoticesRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { tone, glyph } = (() => {
@@ -124,6 +128,7 @@ export function ChatView(props: {
     abortRef.current = controller;
     const clientTurnId = newId();
     activeTurnIdRef.current = clientTurnId;
+    turnNoticesRef.current = new Set();
 
     const patchAi = (fn: (content: string) => string) => {
       setMessages((prev) => prev.map((m) => (m.id === aiId ? { ...m, content: fn(m.content) } : m)));
@@ -144,6 +149,25 @@ export function ChatView(props: {
           },
           onDelta: (piece) => patchAi((prev) => prev + piece),
           onReplace: (content) => patchAi(() => content),
+          onDispatchNotice: ({ memberName, intent }) => {
+            // 转接通知独立成行，插在流式答案气泡之前；同一轮同一成员只插一次
+            if (turnNoticesRef.current.has(memberName)) return;
+            turnNoticesRef.current.add(memberName);
+            setMessages((prev) => {
+              const aiIdx = prev.findIndex((m) => m.id === aiId);
+              const notice: ChatMessage = {
+                id: newId(),
+                role: 'ai',
+                content: '',
+                kind: 'notice',
+                notice: { memberName, intent },
+              };
+              if (aiIdx === -1) return [...prev, notice];
+              const copy = [...prev];
+              copy.splice(aiIdx, 0, notice);
+              return copy;
+            });
+          },
           onTerminal: ({ ok, error: termError }) => {
             setMessages((prev) => prev.map((m) => (m.id === aiId ? { ...m, streaming: false } : m)));
             if (!ok && termError) {
@@ -223,12 +247,39 @@ export function ChatView(props: {
             <p>{agent.description || '我可以帮你处理工作问题，直接开始对话吧。'}</p>
           </div>
         )}
-        {messages.map((m) => (
-          <div key={m.id} className={`sd-msg ${m.role === 'me' ? 'me' : 'ai'}`}>
-            {m.role === 'ai' && <div className={`sd-m-avatar ${tone}`}>{glyph}</div>}
-            <div className="sd-bubble">{renderBubbleContent(m.content, Boolean(m.streaming))}</div>
-          </div>
-        ))}
+        {messages.map((m) =>
+          m.kind === 'notice' && m.notice ? (
+            <div key={m.id} className="sd-notice">
+              <div className="sd-notice-card">
+                <span className="sd-notice-badge">路由</span>
+                <span>
+                  已转交给
+                  <span className="sd-notice-target"> {m.notice.memberName}</span>
+                </span>
+                {m.notice.intent && <span className="sd-notice-intent">{m.notice.intent}</span>}
+              </div>
+            </div>
+          ) : (
+            <div key={m.id} className={`sd-msg ${m.role === 'me' ? 'me' : 'ai'}`}>
+              {m.role === 'ai' && <div className={`sd-m-avatar ${tone}`}>{glyph}</div>}
+              <div className="sd-bubble">
+                {m.streaming && !m.content ? (
+                  <span className="sd-waiting">
+                    <span className="sd-waiting-dots">
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                    {agent.kind === 'dispatcher' ? '正在分派成员…' : '正在思考…'}
+                    <span className="sd-typing-cursor" />
+                  </span>
+                ) : (
+                  renderBubbleContent(m.content, Boolean(m.streaming))
+                )}
+              </div>
+            </div>
+          ),
+        )}
       </div>
 
       {error && <div className={`sd-chat-error${error.quota ? ' quota' : ''}`}>{error.text}</div>}

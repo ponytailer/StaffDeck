@@ -215,6 +215,36 @@
 .sd-bubble .sd-link:hover { color: #0d6a63; }
 .sd-msg.me .sd-bubble .sd-link { color: #fff; text-decoration-color: rgba(255, 255, 255, 0.6); }
 .sd-msg.me .sd-bubble .sd-link:hover { text-decoration-color: #fff; }
+
+/* ---------- 小队调度「转接通知」（对齐平台 chatPageStyles 旁白卡） ---------- */
+.sd-notice { display: flex; justify-content: flex-start; }
+.sd-notice-card {
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 7px;
+  max-width: 92%; border: 0.5px solid #d8ece7; background: #f2faf8;
+  border-radius: 12px; padding: 9px 13px;
+  font-size: 13px; line-height: 1.6; color: #40615b;
+}
+.sd-notice-badge {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  background: var(--accent-soft); color: #0f7268; border-radius: 6px;
+  padding: 1px 6px; font-size: 11px; font-weight: 500; line-height: 1.5;
+}
+.sd-notice-target { color: #0f7268; font-weight: 600; }
+.sd-notice-intent { font-size: 11.5px; color: #8b9c98; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+
+/* ---------- 等待中（首 token 前的思考/分派指示） ---------- */
+.sd-waiting { display: inline-flex; align-items: center; gap: 7px; color: var(--muted-fg); font-size: 12.5px; }
+.sd-waiting-dots { display: inline-flex; align-items: center; gap: 3.5px; }
+.sd-waiting-dots span {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  display: inline-block; animation: sd-bounce 1.2s ease-in-out infinite;
+}
+.sd-waiting-dots span:nth-child(2) { animation-delay: 0.15s; }
+.sd-waiting-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes sd-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
 .sd-chat-welcome { text-align: center; padding: 28px 20px 10px; }
 .sd-chat-welcome .sd-wa {
   width: 52px; height: 52px; border-radius: 16px; margin: 0 auto 12px;
