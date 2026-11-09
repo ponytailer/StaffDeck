@@ -31,6 +31,13 @@ function parseErrorPayload(status: number, text: string): ApiError {
       const d = parsed.detail;
       if (typeof d === 'string') {
         detail = d;
+      } else if (Array.isArray(d)) {
+        // FastAPI 422 校验错误：detail 是 [{loc, msg, type}, ...]
+        code = 'validation_error';
+        detail = d
+          .map((item) => (isRecord(item) && typeof item.msg === 'string' ? item.msg : ''))
+          .filter(Boolean)
+          .join('; ') || '请求参数校验失败';
       } else if (isRecord(d)) {
         code = typeof d.code === 'string' ? d.code : '';
         detail = typeof d.message === 'string' ? d.message : '';
@@ -98,24 +105,36 @@ export async function fetchMe(): Promise<import('../types').UserRead> {
   return request('/api/auth/me');
 }
 
+async function tenantId(): Promise<string> {
+  return storage.getTenantId();
+}
+
 /* ---------------- Agents ---------------- */
 
 export async function fetchChatAgents(): Promise<AgentProfileRead[]> {
-  const list = await request<AgentProfileRead[]>('/api/chat/agents');
+  const list = await request<AgentProfileRead[]>(
+    `/api/chat/agents?tenant_id=${encodeURIComponent(await tenantId())}`,
+  );
   return Array.isArray(list) ? list : [];
 }
 
 export async function useAgent(agentId: string): Promise<void> {
   try {
-    await request(`/api/chat/agents/${encodeURIComponent(agentId)}/use`, { method: 'POST' });
+    await request(
+      `/api/chat/agents/${encodeURIComponent(agentId)}/use?tenant_id=${encodeURIComponent(await tenantId())}`,
+      { method: 'POST' },
+    );
   } catch {
     // 用量计数失败不阻塞对话
   }
 }
 
-export async function cancelSession(sessionId: string): Promise<void> {
+export async function cancelSession(sessionId: string, turnId: string): Promise<void> {
   try {
-    await request(`/api/chat/sessions/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST' });
+    await request(`/api/chat/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ tenant_id: await tenantId(), turn_id: turnId }),
+    });
   } catch {
     // 会话可能已结束
   }
@@ -185,7 +204,7 @@ export async function streamChatTurn(
     });
   } catch (e) {
     if ((e as Error).name === 'AbortError') return;
-    throw new ApiError(0, 'network_error', '无法连接 StaffDeck 服务');
+    throw new ApiError(0, 'network_error', '无法连接 AIStaff 服务');
   }
 
   if (!response.ok) {

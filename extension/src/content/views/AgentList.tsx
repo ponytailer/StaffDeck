@@ -86,10 +86,10 @@ export function AgentListView(props: {
   return (
     <>
       <div className="sd-topbar">
-        <div className="sd-brand-mark">SD</div>
+        <div className="sd-brand-mark">AI</div>
         <div>
           <div className="sd-title">数字员工</div>
-          <div className="sd-subtitle">StaffDeck · 已连接</div>
+          <div className="sd-subtitle">AIStaff · 已连接</div>
         </div>
         <div className="sd-spacer" />
         <button className="sd-icon-btn" title="退出登录" onClick={props.onLogout}>

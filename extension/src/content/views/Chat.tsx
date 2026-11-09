@@ -21,6 +21,44 @@ function newId(): string {
     : `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** 把文本按 http/https 链接切分；URL 只匹配 http(s) 前缀，剥掉尾部标点避免误入链接 */
+const URL_RE = /https?:\/\/[^\s<>"']+/g;
+const TRAILING_PUNCT_RE = /[)\]},.;:!?、。，；：！？）」』】》”’"']+$/;
+
+function splitLinks(text: string): Array<{ type: 'text' | 'link'; value: string }> {
+  const parts: Array<{ type: 'text' | 'link'; value: string }> = [];
+  let last = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    const idx = m.index ?? 0;
+    if (idx > last) parts.push({ type: 'text', value: text.slice(last, idx) });
+    let url = m[0];
+    const trailing = url.match(TRAILING_PUNCT_RE);
+    if (trailing) url = url.slice(0, url.length - trailing[0].length);
+    parts.push({ type: 'link', value: url });
+    if (url.length < m[0].length) parts.push({ type: 'text', value: m[0].slice(url.length) });
+    last = idx + m[0].length;
+  }
+  if (last < text.length) parts.push({ type: 'text', value: text.slice(last) });
+  return parts;
+}
+
+function renderBubbleContent(text: string, streaming: boolean) {
+  return (
+    <>
+      {splitLinks(text).map((p, i) =>
+        p.type === 'text' ? (
+          p.value
+        ) : (
+          <a key={i} className="sd-link" href={p.value} target="_blank" rel="noopener noreferrer">
+            {p.value}
+          </a>
+        ),
+      )}
+      {streaming && <span className="sd-typing-cursor" />}
+    </>
+  );
+}
+
 export function ChatView(props: {
   agent: AgentProfileRead;
   getSessionId: (agentId: string) => string | null;
@@ -36,6 +74,7 @@ export function ChatView(props: {
   const [error, setError] = useState<{ text: string; quota: boolean } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(props.getSessionId(agent.id));
+  const activeTurnIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { tone, glyph } = (() => {
@@ -57,7 +96,10 @@ export function ChatView(props: {
   const stop = () => {
     abortRef.current?.abort();
     abortRef.current = null;
-    if (sessionIdRef.current) void cancelSession(sessionIdRef.current);
+    if (sessionIdRef.current && activeTurnIdRef.current) {
+      void cancelSession(sessionIdRef.current, activeTurnIdRef.current);
+    }
+    activeTurnIdRef.current = null;
     setMessages((prev) =>
       prev.map((m) => (m.streaming ? { ...m, streaming: false, content: m.content || '（已停止）' } : m)),
     );
@@ -81,6 +123,7 @@ export function ChatView(props: {
     const controller = new AbortController();
     abortRef.current = controller;
     const clientTurnId = newId();
+    activeTurnIdRef.current = clientTurnId;
 
     const patchAi = (fn: (content: string) => string) => {
       setMessages((prev) => prev.map((m) => (m.id === aiId ? { ...m, content: fn(m.content) } : m)));
@@ -140,6 +183,7 @@ export function ChatView(props: {
       );
     } finally {
       abortRef.current = null;
+      activeTurnIdRef.current = null;
       setBusy(false);
     }
   };
@@ -182,10 +226,7 @@ export function ChatView(props: {
         {messages.map((m) => (
           <div key={m.id} className={`sd-msg ${m.role === 'me' ? 'me' : 'ai'}`}>
             {m.role === 'ai' && <div className={`sd-m-avatar ${tone}`}>{glyph}</div>}
-            <div className="sd-bubble">
-              {m.content}
-              {m.streaming && <span className="sd-typing-cursor" />}
-            </div>
+            <div className="sd-bubble">{renderBubbleContent(m.content, Boolean(m.streaming))}</div>
           </div>
         ))}
       </div>
@@ -225,7 +266,7 @@ export function ChatView(props: {
           )}
         </div>
         <div className="sd-input-note">
-          由 <b>StaffDeck</b> 平台模型驱动 · 回复仅供参考
+          由 <b>AIStaff</b> 平台模型驱动 · 回复仅供参考
         </div>
       </div>
     </>

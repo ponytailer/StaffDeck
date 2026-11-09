@@ -49,9 +49,9 @@ export function LoginView(props: { onLoggedIn: (u: UserRead) => void; notice: st
   return (
     <>
       <div className="sd-login-head">
-        <div className="sd-eyebrow">StaffDeck Assistant</div>
+        <div className="sd-eyebrow">AIStaff Assistant</div>
         <h2>把数字员工<br />装进每一个网页</h2>
-        <p>登录 StaffDeck 企业账号，与你配置的数字员工和小队随时对话。</p>
+        <p>登录 AIStaff 企业账号，与你配置的数字员工和小队随时对话。</p>
       </div>
 
       {props.notice && <div className="sd-error">{props.notice}</div>}

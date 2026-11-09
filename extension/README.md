@@ -1,6 +1,6 @@
-# StaffDeck 浏览器助手（Chrome 插件）
+# AIStaff 浏览器助手（Chrome 插件）
 
-把 StaffDeck 数字员工装进每一个网页：注入式悬浮球 + 面板（登录 → 员工列表 → 流式聊天）。
+把 AIStaff 数字员工装进每一个网页：注入式悬浮球 + 面板（登录 → 员工列表 → 流式聊天）。
 
 正式方案见 `../docs/chrome-extension-plan.md`；视觉基准 Demo 见 `../docs/chrome-extension-demo.html`。
 
@@ -27,7 +27,7 @@ npm run typecheck # tsc --noEmit
 - 无 background service worker：token 存 `chrome.storage.local`，SSE 由 content script 直连后端（MV3 background 30s 空闲会被杀，故不挂网络请求）；
 - API 契约与 `frontend-enterprise/src/api/client.ts` 一致：`POST /api/auth/login`、`GET /api/chat/agents`、`POST /api/chat/stream`（SSE 事件：`session_created` / `stream_delta` / `token` / `stream_replace` / 终态事件集）、`POST /api/chat/sessions/{id}/cancel`；
 - 免费配额错误码 `free_model_quota_exhausted` 由后端返回，插件展示配额提示；
-- 会话与平台 Web 共享（同一 `ChatSession`），`channel: "extension"` 用于区分来源。
+- 会话与平台 Web 共享（同一 `ChatSession`），`channel: "extension"` 用于区分来源；对外品牌名为 AIStaff。
 
 ## 上线前 TODO
 

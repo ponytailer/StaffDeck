@@ -208,6 +208,13 @@
   margin-left: 2px; vertical-align: -2px; animation: sd-blink 0.8s step-end infinite;
 }
 @keyframes sd-blink { 50% { opacity: 0; } }
+.sd-bubble .sd-link {
+  color: var(--accent); text-decoration: underline; text-underline-offset: 2px;
+  word-break: break-all;
+}
+.sd-bubble .sd-link:hover { color: #0d6a63; }
+.sd-msg.me .sd-bubble .sd-link { color: #fff; text-decoration-color: rgba(255, 255, 255, 0.6); }
+.sd-msg.me .sd-bubble .sd-link:hover { text-decoration-color: #fff; }
 .sd-chat-welcome { text-align: center; padding: 28px 20px 10px; }
 .sd-chat-welcome .sd-wa {
   width: 52px; height: 52px; border-radius: 16px; margin: 0 auto 12px;

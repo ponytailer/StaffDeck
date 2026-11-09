@@ -180,7 +180,7 @@ export function App() {
         onPointerDown={onBallPointerDown}
         onPointerMove={onBallPointerMove}
         onPointerUp={onBallPointerUp}
-        title="StaffDeck 浏览器助手"
+        title="AIStaff 浏览器助手"
       >
         <svg viewBox="0 0 24 24" fill="none">
           <path d="M12 2.5L3.5 7v10L12 21.5 20.5 17V7L12 2.5z" stroke="#fff" strokeWidth="1.6" strokeLinejoin="round" />
@@ -211,6 +211,7 @@ export function App() {
         <div className={`sd-view${view === 'chat' ? ' active' : ''}`}>
           {activeAgent && (
             <ChatView
+              key={activeAgent.id}
               agent={activeAgent}
               getSessionId={getSessionId}
               saveSessionId={saveSessionId}
