@@ -217,40 +217,9 @@ export async function streamChatTurn(
   const apiBase = await storage.getApiBase();
   const tenantId = await storage.getTenantId();
   let buffer = '';
-  let response: Awaited<ReturnType<typeof proxyFetch>>;
-  try {
-    response = await proxyFetch(`${apiBase}/api/chat/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
-      body: JSON.stringify({
-        tenant_id: tenantId,
-        session_id: body.sessionId,
-        agent_id: body.agentId,
-        message: body.message,
-        client_turn_id: body.clientTurnId,
-        channel: 'extension',
-        client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || undefined,
-      }),
-      signal,
-      onChunk: (chunk) => {
-        buffer += chunk;
-        const blocks = buffer.split('\n\n');
-        buffer = blocks.pop() || '';
-        blocks.forEach((block) => {
-          const parsed = parseSseBlock(block);
-          if (parsed) handleEvent(parsed);
-        });
-      },
-    });
-  } catch (e) {
-    if ((e as Error).name === 'AbortError') return;
-    throw new ApiError(0, 'network_error', '无法连接 AIStaff 服务');
-  }
 
-  if (!response.ok) {
-    throw parseErrorPayload(response.status, response.body);
-  }
-
+  // 必须先于 proxyFetch 声明：onChunk 在流式期间（await 未返回时）就会被调用，
+  // 若声明在后面会因 TDZ 在每个 chunk 上抛 ReferenceError，表现为「永远等待、无回复」
   const handleEvent = (item: StreamEvent) => {
     if (item.event === 'session_created') {
       const sid = String(item.data.newSessionId ?? item.data.sessionId ?? '');
@@ -296,6 +265,40 @@ export async function streamChatTurn(
       }
     }
   };
+
+  let response: Awaited<ReturnType<typeof proxyFetch>>;
+  try {
+    response = await proxyFetch(`${apiBase}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
+      body: JSON.stringify({
+        tenant_id: tenantId,
+        session_id: body.sessionId,
+        agent_id: body.agentId,
+        message: body.message,
+        client_turn_id: body.clientTurnId,
+        channel: 'extension',
+        client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || undefined,
+      }),
+      signal,
+      onChunk: (chunk) => {
+        buffer += chunk;
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        blocks.forEach((block) => {
+          const parsed = parseSseBlock(block);
+          if (parsed) handleEvent(parsed);
+        });
+      },
+    });
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') return;
+    throw new ApiError(0, 'network_error', '无法连接 AIStaff 服务');
+  }
+
+  if (!response.ok) {
+    throw parseErrorPayload(response.status, response.body);
+  }
 
   // 流已读完（onChunk 期间已实时解析），flush 残余的不完整块
   const tail = parseSseBlock(buffer);

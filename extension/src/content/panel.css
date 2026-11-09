@@ -158,17 +158,99 @@
 .sd-badge.squad { background: #eceff3; color: #4b5563; }
 .sd-emp-arrow { color: var(--border); flex: none; }
 .sd-emp-card:hover .sd-emp-arrow { color: var(--accent); }
-.sd-oa-jump {
-  flex: none;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 999px;
-  padding: 3px 9px;
-  transition: filter 0.15s ease;
+
+/* ---------- 顶部 tab 栏（员工 | 单据助手） ---------- */
+.sd-topbar-tabs { flex-direction: column; align-items: stretch; gap: 0; padding: 14px 16px 0; }
+.sd-topbar-row { display: flex; align-items: center; gap: 10px; }
+.sd-live-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); margin-right: 4px; vertical-align: 1px;
 }
-.sd-emp-card:hover .sd-oa-jump { filter: brightness(0.94); }
+.sd-tabs { display: flex; gap: 2px; margin-top: 12px; }
+.sd-tab {
+  flex: 1; appearance: none; border: none; background: transparent;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--muted-soft);
+  padding: 9px 0 11px; cursor: pointer; position: relative;
+  transition: color 0.15s ease; display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+.sd-tab:hover { color: var(--ink-soft); }
+.sd-tab.on { color: var(--foreground); }
+.sd-tab.on::after {
+  content: ''; position: absolute; left: 26%; right: 26%; bottom: -1px;
+  height: 2px; border-radius: 2px 2px 0 0; background: var(--accent);
+}
+.sd-tab-badge {
+  font-size: 9.5px; font-weight: 700;
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: 999px; padding: 1px 7px;
+}
+
+/* ---------- OA 单据助手视图 ---------- */
+.sd-oa-status {
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: 14px; padding: 14px 15px; margin: 4px 0 14px;
+}
+.sd-oa-status.on { border-color: #cbe7e0; background: var(--accent-soft); filter: brightness(1.02); }
+.sd-oa-status-row { display: flex; align-items: flex-start; gap: 10px; }
+.sd-oa-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--muted-soft); flex: none; margin-top: 5px;
+}
+.sd-oa-status.on .sd-oa-dot {
+  background: var(--accent); box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15);
+}
+.sd-oa-status-title { font-size: 13px; font-weight: 650; }
+.sd-oa-status-desc { font-size: 11.5px; color: var(--muted-fg); margin-top: 3px; line-height: 1.55; }
+.sd-oa-error { font-size: 11.5px; color: #b45309; margin-top: 8px; }
+
+.sd-btn {
+  appearance: none; border: none; font: inherit;
+  font-size: 12.5px; font-weight: 650; border-radius: 11px;
+  padding: 9px 16px; cursor: pointer; transition: filter 0.15s ease, transform 0.1s ease;
+}
+.sd-btn:active { transform: scale(0.98); }
+.sd-btn:disabled { opacity: 0.6; cursor: default; }
+.sd-btn-primary { background: var(--accent); color: #fff; }
+.sd-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.sd-btn-ghost { background: var(--surface); color: var(--ink-soft); border: 1px solid var(--border); }
+.sd-btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.sd-btn.btn-block { width: 100%; margin-top: 12px; }
+
+.sd-oa-scene {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 14px; padding: 13px 14px; margin-bottom: 8px;
+  cursor: pointer; text-align: left; font: inherit; color: var(--foreground);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.sd-oa-scene:hover { border-color: var(--accent); box-shadow: var(--shadow-soft); }
+.sd-scene-glyph {
+  width: 36px; height: 36px; border-radius: 11px; flex: none;
+  background: var(--accent-soft); color: var(--accent);
+  display: grid; place-items: center;
+}
+.sd-scene-name { font-size: 13px; font-weight: 650; }
+.sd-scene-meta {
+  font-size: 11px; color: var(--muted-fg); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;
+}
+.sd-scene-go {
+  flex: none; color: var(--accent); font-size: 11px; font-weight: 700;
+  background: var(--accent-soft); border-radius: 999px; padding: 4px 10px;
+}
+.sd-oa-steps {
+  background: var(--accent-soft); border: 1px solid #d8ece7;
+  border-radius: 14px; padding: 13px 15px;
+}
+.sd-oa-steps li {
+  list-style: none; display: flex; gap: 10px;
+  font-size: 12px; color: var(--ink-soft); line-height: 1.6; margin-bottom: 8px;
+}
+.sd-oa-steps li:last-child { margin-bottom: 0; }
+.sd-step-n {
+  flex: none; width: 17px; height: 17px; border-radius: 50%;
+  background: var(--accent); color: #fff; font-size: 10px; font-weight: 700;
+  display: grid; place-items: center; margin-top: 2px;
+}
 .sd-user-strip {
   flex: none; display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; border-top: 1px solid var(--line); background: var(--surface);

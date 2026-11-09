@@ -17,7 +17,7 @@ export type OaScenarioLite = {
 };
 
 type OaConfig = {
-  scenarios?: Array<{ id?: string; name?: string; enabled?: boolean; url?: string }>;
+  scenarios?: Array<{ id?: string; name?: string; summary?: string; enabled?: boolean; url?: string }>;
 };
 
 let configPromise: Promise<OaConfig | null> | null = null;
@@ -118,4 +118,28 @@ export async function oaEntryUrl(): Promise<string> {
     if (sc.enabled !== false && sc.url) return sc.url;
   }
   return '';
+}
+
+export type OaScenarioInfo = {
+  id: string;
+  name: string;
+  summary: string;
+  url: string;
+};
+
+/** 单据助手 tab 的场景清单（仅启用项；配置加载失败返回 null 以示区分） */
+export async function oaScenarios(): Promise<OaScenarioInfo[] | null> {
+  const config = await fetchConfig();
+  if (!config) return null;
+  const items: OaScenarioInfo[] = [];
+  for (const sc of config.scenarios ?? []) {
+    if (sc.enabled === false || !sc.url) continue;
+    items.push({
+      id: sc.id || sc.url,
+      name: sc.name || '未命名场景',
+      summary: sc.summary || '',
+      url: sc.url,
+    });
+  }
+  return items;
 }

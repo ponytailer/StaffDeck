@@ -4,11 +4,12 @@ import type { AgentProfileRead, UserRead } from '../types';
 import { LoginView } from './views/Login';
 import { AgentListView } from './views/AgentList';
 import { ChatView } from './views/Chat';
+import { OaView } from './views/OaView';
 
 const BALL_SIZE = 56;
 const PANEL_WIDTH = 396;
 
-type View = 'login' | 'list' | 'chat';
+type View = 'login' | 'list' | 'oa' | 'chat';
 
 export function App() {
   const [view, setView] = useState<View>('login');
@@ -195,12 +196,25 @@ export function App() {
           <LoginView onLoggedIn={handleLoggedIn} notice={loginNotice} />
         </div>
 
-        {/* 员工列表 */}
+        {/* 员工列表（tab: 员工） */}
         <div className={`sd-view${view === 'list' ? ' active' : ''}`}>
           {user && (
             <AgentListView
               user={user}
               onOpenAgent={openAgent}
+              onTab={(tab) => setView(tab === 'agents' ? 'list' : 'oa')}
+              onLogout={handleLogout}
+              onCollapse={() => setOpen(false)}
+            />
+          )}
+        </div>
+
+        {/* OA 单据助手（tab: 单据助手） */}
+        <div className={`sd-view${view === 'oa' ? ' active' : ''}`}>
+          {user && (
+            <OaView
+              user={user}
+              onTab={(tab) => setView(tab === 'agents' ? 'list' : 'oa')}
               onLogout={handleLogout}
               onCollapse={() => setOpen(false)}
             />
