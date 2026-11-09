@@ -458,6 +458,58 @@ def test_recovery_repairs_terminal_run_session(monkeypatch) -> None:
         assert event.payload_json["code"] == "SERVICE_RESTARTED"
 
 
+def test_recovery_requeues_queued_jobs_without_detached_instances(monkeypatch) -> None:
+    """重启恢复：queued 任务要能重新入队，且不触发 DetachedInstanceError。
+
+    真实踩过：``_commit_and_dispatch`` 的 commit 会 expire 全部实例，session
+    关闭后再读 ``job.kind`` 就是 DetachedInstanceError——启动恢复阶段必崩。
+    """
+    _client_value, engine, _token = _client(monkeypatch)
+    with Session(engine) as db:
+        api_client = APIClient(
+            id="client_recovery_queued",
+            tenant_id="tenant_api",
+            name="recovery-queued-client",
+            scopes_json=["runs:*"],
+            created_by_user_id="user_api_admin",
+        )
+        credential = APICredential(
+            id="credential_recovery_queued",
+            tenant_id="tenant_api",
+            client_id=api_client.id,
+            name="runtime",
+            key_prefix="sd_live_recovery_queued",
+            key_digest="digest",
+            scopes_json=["runs:create", "runs:read"],
+        )
+        job = APIJob(
+            id="apijob_recovery_queued",
+            tenant_id="tenant_api",
+            credential_id=credential.id,
+            agent_id="agent_api",
+            kind="run",
+            status="queued",
+        )
+        db.add(api_client)
+        db.add(credential)
+        db.add(job)
+        db.commit()
+
+    enqueued: list[tuple[str, object, str]] = []
+
+    def _capture_enqueue(queue_name: str, func: object, job_id: str) -> str:
+        enqueued.append((queue_name, func, job_id))
+        return "queued"
+
+    monkeypatch.setattr("app.public_api.jobs.engine", engine)
+    monkeypatch.setattr("app.public_api.jobs.enqueue_async_job", _capture_enqueue)
+
+    # 修复前这里直接抛 DetachedInstanceError
+    recover_public_jobs()
+
+    assert ("public_api.run", run_job, "apijob_recovery_queued") in enqueued
+
+
 def test_sop_changes_remain_isolated_until_publish(monkeypatch) -> None:
     client, engine, admin_token = _client(monkeypatch)
     key = _tenant_key(client, admin_token, ["sops:read", "sops:write", "sops:publish"])

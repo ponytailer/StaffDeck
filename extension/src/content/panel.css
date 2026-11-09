@@ -158,6 +158,17 @@
 .sd-badge.squad { background: #eceff3; color: #4b5563; }
 .sd-emp-arrow { color: var(--border); flex: none; }
 .sd-emp-card:hover .sd-emp-arrow { color: var(--accent); }
+.sd-oa-jump {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 3px 9px;
+  transition: filter 0.15s ease;
+}
+.sd-emp-card:hover .sd-oa-jump { filter: brightness(0.94); }
 .sd-user-strip {
   flex: none; display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; border-top: 1px solid var(--line); background: var(--surface);

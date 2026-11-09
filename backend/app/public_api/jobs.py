@@ -717,9 +717,13 @@ def recover_public_jobs() -> None:
             emit_job_event(db, recovered, f"{recovered.kind}.failed", error)
         _reconcile_terminal_run_sessions(db)
         queued = db.exec(select(APIJob).where(APIJob.status == "queued")).all()
+        # commit（_commit_and_dispatch）会 expire 全部实例，session 关闭后 ORM 对象
+        # 已 detach——出会话前必须把入队需要的字段拷成纯数据，否则 job.kind 触发
+        # 属性刷新直接 DetachedInstanceError（真实踩过：重启恢复 queued 任务必现）。
+        queued_payloads = [(job.id, job.kind) for job in queued]
         _commit_and_dispatch(db)
-    for job in queued:
-        enqueue_async_job(f"public_api.{job.kind}", run_job, job.id)
+    for job_id, job_kind in queued_payloads:
+        enqueue_async_job(f"public_api.{job_kind}", run_job, job_id)
 
 
 def cleanup_public_api_records() -> None:

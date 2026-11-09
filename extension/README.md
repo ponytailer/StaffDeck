@@ -24,7 +24,7 @@ npm run typecheck # tsc --noEmit
 ## 架构速记
 
 - 单文件 content script（IIFE，React 18 打包在内），Shadow DOM 隔离样式；
-- 无 background service worker：token 存 `chrome.storage.local`，SSE 由 content script 直连后端（MV3 background 30s 空闲会被杀，故不挂网络请求）；
+- background service worker 是**唯一网络层**：content script 与宿主页面同源，跨源 fetch 会被页面 CORS 卡死（生产网关对 OPTIONS 返回 400）；SW 凭 host_permissions 豁免 CORS。content script 通过 `chrome.runtime.connect({ name: 'sd-proxy' })` 端口代理请求（JSON 一次性回传，SSE 逐块转发，断开端口即 abort）；token 存 `chrome.storage.local`；
 - API 契约与 `frontend-enterprise/src/api/client.ts` 一致：`POST /api/auth/login`、`GET /api/chat/agents`、`POST /api/chat/stream`（SSE 事件：`session_created` / `stream_delta` / `token` / `stream_replace` / 终态事件集）、`POST /api/chat/sessions/{id}/cancel`；
 - 免费配额错误码 `free_model_quota_exhausted` 由后端返回，插件展示配额提示；
 - 会话与平台 Web 共享（同一 `ChatSession`），`channel: "extension"` 用于区分来源；对外品牌名为 AIStaff。

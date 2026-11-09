@@ -151,6 +151,17 @@ def list_scenarios() -> JSONResponse:
     return JSONResponse({"ok": True, "items": items}, headers=CORS_HEADERS)
 
 
+@router.get("/config")
+def get_config() -> JSONResponse:
+    """整份 OA 代填配置原样下发（JSON），供 AIStaff 浏览器插件使用。
+
+    书签版把配置内嵌进 /panel.js 的 JS 文本；插件版拉不了 JS 内嵌配置
+    （MV3 content script 禁 eval），改为拉纯 JSON、面板代码随插件包内置。
+    公开端点（与 /panel.js 同口径）：内容是表单定位器与场景配置，不含用户数据。
+    """
+    return JSONResponse({"ok": True, "config": _load_config()}, headers=CORS_HEADERS)
+
+
 @router.get("/usage")
 def read_usage() -> JSONResponse:
     """读「OA 单据助手」当前使用次数（不改计数，给排障/前端核对用）。"""

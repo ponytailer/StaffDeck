@@ -1,18 +1,37 @@
 {
   "manifest_version": 3,
   "name": "AIStaff 浏览器助手",
-  "version": "0.1.0",
-  "description": "把 AIStaff 数字员工装进每一个网页：登录后即可与免费员工、模型员工和小队随时对话。",
-  "permissions": ["storage"],
+  "version": "0.2.1",
+  "description": "把 AIStaff 数字员工装进每一个网页：登录后即可与免费员工、模型员工和小队随时对话，在 OA 页面还可一键代填报销单。",
+  "permissions": [
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "host_permissions": [
     "https://ai-staff.folidaymall.com/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*"
   ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "oa-panel.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }

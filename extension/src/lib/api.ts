@@ -1,5 +1,10 @@
-/** StaffDeck API 客户端：契约与 frontend-enterprise/src/api/client.ts 保持一致 */
+/** StaffDeck API 客户端：契约与 frontend-enterprise/src/api/client.ts 保持一致。
+ *
+ * 网络层走 background service worker 代理（MV3 content script 与页面同源，
+ * 跨源请求会被页面 CORS 卡死；SW 凭 host_permissions 豁免）。
+ */
 import { storage } from './storage';
+import { proxyFetch } from './proxy';
 import type { AgentProfileRead, LoginResponse, StreamEvent } from '../types';
 
 export class ApiError extends Error {
@@ -62,18 +67,32 @@ async function request<T>(path: string, init: RequestInit = {}, opts: FetchOptio
   const apiBase = await storage.getApiBase();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(init.headers as Record<string, string> | undefined),
+    ...((init.headers as Record<string, string> | undefined) ?? {}),
     ...(await authHeader()),
   };
-  const response = await fetch(`${apiBase}${path}`, { ...init, headers, signal: opts.signal });
-  if (!response.ok) {
-    const text = await response.text();
-    const err = parseErrorPayload(response.status, text);
-    if (response.status === 401) err.code = err.code || 'unauthorized';
+  let result: Awaited<ReturnType<typeof proxyFetch>>;
+  try {
+    result = await proxyFetch(`${apiBase}${path}`, {
+      method: init.method || 'GET',
+      headers,
+      body: typeof init.body === 'string' ? init.body : undefined,
+      signal: opts.signal,
+    });
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw e;
+    throw new ApiError(0, 'network_error', '无法连接 AIStaff 服务');
+  }
+  if (!result.ok) {
+    const err = parseErrorPayload(result.status, result.body);
+    if (result.status === 401) err.code = err.code || 'unauthorized';
     throw err;
   }
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  if (result.status === 204) return undefined as T;
+  try {
+    return JSON.parse(result.body) as T;
+  } catch {
+    throw new ApiError(result.status, 'bad_response', '服务响应格式异常');
+  }
 }
 
 /* ---------------- Auth ---------------- */
@@ -85,20 +104,30 @@ export async function login(params: {
   remember: boolean;
 }): Promise<LoginResponse> {
   const apiBase = await storage.getApiBase();
-  const response = await fetch(`${apiBase}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      tenant_id: params.tenantId,
-      username: params.username,
-      password: params.password,
-      remember: params.remember,
-    }),
-  });
-  if (!response.ok) {
-    throw parseErrorPayload(response.status, await response.text());
+  let result: Awaited<ReturnType<typeof proxyFetch>>;
+  try {
+    result = await proxyFetch(`${apiBase}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tenant_id: params.tenantId,
+        username: params.username,
+        password: params.password,
+        remember: params.remember,
+      }),
+    });
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw e;
+    throw new ApiError(0, 'network_error', '无法连接 AIStaff 服务');
   }
-  return (await response.json()) as LoginResponse;
+  if (!result.ok) {
+    throw parseErrorPayload(result.status, result.body);
+  }
+  try {
+    return JSON.parse(result.body) as LoginResponse;
+  } catch {
+    throw new ApiError(result.status, 'bad_response', '服务响应格式异常');
+  }
 }
 
 export async function fetchMe(): Promise<import('../types').UserRead> {
@@ -187,9 +216,10 @@ export async function streamChatTurn(
 ): Promise<void> {
   const apiBase = await storage.getApiBase();
   const tenantId = await storage.getTenantId();
-  let response: Response;
+  let buffer = '';
+  let response: Awaited<ReturnType<typeof proxyFetch>>;
   try {
-    response = await fetch(`${apiBase}/api/chat/stream`, {
+    response = await proxyFetch(`${apiBase}/api/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
       body: JSON.stringify({
@@ -202,6 +232,15 @@ export async function streamChatTurn(
         client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || undefined,
       }),
       signal,
+      onChunk: (chunk) => {
+        buffer += chunk;
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        blocks.forEach((block) => {
+          const parsed = parseSseBlock(block);
+          if (parsed) handleEvent(parsed);
+        });
+      },
     });
   } catch (e) {
     if ((e as Error).name === 'AbortError') return;
@@ -209,15 +248,9 @@ export async function streamChatTurn(
   }
 
   if (!response.ok) {
-    throw parseErrorPayload(response.status, await response.text());
-  }
-  if (!response.body) {
-    throw new ApiError(0, 'no_body', '当前浏览器不支持流式响应');
+    throw parseErrorPayload(response.status, response.body);
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
   const handleEvent = (item: StreamEvent) => {
     if (item.event === 'session_created') {
       const sid = String(item.data.newSessionId ?? item.data.sessionId ?? '');
@@ -264,18 +297,7 @@ export async function streamChatTurn(
     }
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.split('\n\n');
-    buffer = blocks.pop() || '';
-    blocks.forEach((block) => {
-      const parsed = parseSseBlock(block);
-      if (parsed) handleEvent(parsed);
-    });
-  }
-  buffer += decoder.decode();
+  // 流已读完（onChunk 期间已实时解析），flush 残余的不完整块
   const tail = parseSseBlock(buffer);
   if (tail) handleEvent(tail);
 }
