@@ -719,6 +719,46 @@ describe('AgentsPage 「我的小队」master-detail', () => {
     const stats = screen.getByLabelText('小队统计');
     expect(within(stats).getAllByText('—').length).toBeGreaterThan(0);
   });
+
+  it('从数字员工页切到小队页（组件复用、mode 变化）时也要拉概览', async () => {
+    /**
+     * 回归：/enterprise/agents 与 /enterprise/squads 渲染同一个 AgentsPage，
+     * react-router 复用实例只更新 props，mount-only effect 不会重跑 ——
+     * 曾经导致侧栏切到「我的小队」后三张统计卡一直是「—」，刷新浏览器才恢复。
+     */
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/dispatchers/overview')) return jsonResponse(emptyOverview);
+      if (url.includes('/api/enterprise/dispatchers')) return jsonResponse([squadRow()]);
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([]);
+      return jsonResponse([]);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = { id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' as const };
+    const ui = (mode: 'all' | 'dispatchers') => (
+      <I18nProvider>
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentsPage currentUser={user} mode={mode} />
+          </MemoryRouter>
+        </TooltipProvider>
+      </I18nProvider>
+    );
+    const view = render(ui('all'));
+    // 模拟 react-router 的复用行为：同一组件实例，mode 'all' → 'dispatchers'
+    view.rerender(ui('dispatchers'));
+
+    // 概览是慢一拍返回的：直接等数字出现，别先断言占位条
+    expect(await within(await screen.findByLabelText('小队统计')).findByText('3')).toBeTruthy(); // 覆盖同事（overview.members）
+    const stats = screen.getByLabelText('小队统计');
+    expect(within(stats).getByText('21')).toBeTruthy(); // 累计转接
+    expect(within(stats).getByText('1')).toBeTruthy(); // 已发布到广场
+    // mode 切换触发了重新加载：概览请求确实发出去了
+    expect(
+      fetchMock.mock.calls.filter((call) => String(call[0]).includes('/dispatchers/overview')).length,
+    ).toBeGreaterThan(0);
+  });
 });
 
 describe('AgentsPage 静态资源', () => {

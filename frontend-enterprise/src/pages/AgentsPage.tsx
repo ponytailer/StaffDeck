@@ -163,8 +163,10 @@ export default function AgentsPage({
         typeof payload.squads === 'number' &&
         Array.isArray(payload.activity);
       setDispatcherOverview(valid ? payload : null);
-    } catch {
-      // 概览是「锦上添花」：拿不到就退回列表已知的数字，不弹错误打断主流程
+    } catch (error) {
+      // 概览是「锦上添花」：拿不到就退回列表已知的数字，不弹错误打断主流程。
+      // 但别完全吞掉——控制台留一行，排查「统计卡一直是 —」时有用。
+      console.warn('[squads] overview 加载失败', error);
       setDispatcherOverview(null);
     } finally {
       setOverviewLoading(false);
@@ -195,7 +197,11 @@ export default function AgentsPage({
 
   useEffect(() => {
     void load();
-  }, []);
+    // 依赖 mode：/enterprise/agents 与 /enterprise/squads 复用同一个 AgentsPage 实例
+    // （react-router 对同类型元素只换 props 不重挂载），mount-only 的 effect 不会重跑。
+    // 曾经的 bug：在数字员工页侧栏切到「我的小队」时概览永远不拉（mode 当时是 'all'，
+    // loadOverview 被门住了），三张统计卡一直显示「—」，要手动刷新浏览器才有数字。
+  }, [mode]);
 
   // master-detail 的选中项：列表到货后自动选中第一个；选中的被删掉/被筛掉时回落。
   // 不存整行对象 —— 列表刷新后会拿到过期快照（改了名字详情不更新）。
