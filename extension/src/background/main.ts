@@ -94,3 +94,17 @@ chrome.runtime.onConnect.addListener((port) => {
     void runProxyFetch(port, msg);
   });
 });
+
+/** content script 里没有 chrome.tabs（仅 background 可用），新开 tab 由 SW 代劳 */
+chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
+  if (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as { type?: unknown }).type === 'open-tab' &&
+    typeof (msg as { url?: unknown }).url === 'string'
+  ) {
+    void chrome.tabs.create({ url: (msg as { url: string }).url });
+    sendResponse({ ok: true });
+  }
+  return false; // 同步响应
+});

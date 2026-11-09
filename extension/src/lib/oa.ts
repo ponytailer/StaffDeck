@@ -127,6 +127,20 @@ export type OaScenarioInfo = {
   url: string;
 };
 
+/**
+ * 新 tab 打开 url。content script 没有 chrome.tabs API（仅 background 可用），
+ * 发消息让 service worker 代开；SW 不可用时回退 window.open（用户手势内不会被拦）。
+ */
+export function openInNewTab(url: string): void {
+  if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+    chrome.runtime.sendMessage({ type: 'open-tab', url }, () => {
+      void chrome.runtime.lastError; // SW 唤醒失败时静默，走不了就算了
+    });
+  } else {
+    window.open(url, '_blank', 'noopener');
+  }
+}
+
 /** 单据助手 tab 的场景清单（仅启用项；配置加载失败返回 null 以示区分） */
 export async function oaScenarios(): Promise<OaScenarioInfo[] | null> {
   const config = await fetchConfig();

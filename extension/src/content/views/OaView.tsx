@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { isOaPage, oaEntryUrl, oaScenarios, toggleOaPanel, type OaScenarioInfo } from '../../lib/oa';
+import { isOaPage, oaEntryUrl, oaScenarios, openInNewTab, toggleOaPanel, type OaScenarioInfo } from '../../lib/oa';
 import type { UserRead } from '../../types';
 import { PanelHeader } from './PanelHeader';
 
@@ -46,7 +46,7 @@ export function OaView(props: {
       setError('OA 场景配置加载失败，请稍后重试');
       return;
     }
-    void chrome.tabs.create({ url });
+    openInNewTab(url);
     props.onCollapse();
   };
 
