@@ -1,5 +1,5 @@
 /**
- * StaffDeck OA 代填面板（书签注入版）。
+ * AIStaff OA 代填面板（书签/插件注入版）。
  *
  * 运行位置：用户浏览器里的 OA 页面（由书签把本文件以 <script> 注入）。
  * 因此：
@@ -17,7 +17,7 @@
   var PANEL_CFG = CFG.panel || {};
   var TODO = '__TODO__';
 
-  // 用当前脚本的真实 src 反推 StaffDeck 源站：书签在 OA 页里加载本文件，这个 origin 一定可达。
+  // 用当前脚本的真实 src 反推 AIStaff 源站：书签在 OA 页里加载本文件，这个 origin 一定可达。
   var scriptEl = document.currentScript;
   var BASE = '';
   try {
@@ -1444,33 +1444,57 @@
   (document.body || document.documentElement).appendChild(host);
   var root = host.attachShadow ? host.attachShadow({ mode: 'open' }) : host;
 
-  var CARD = 'position:fixed;top:14px;right:14px;width:340px;max-height:calc(100vh - 28px);' +
-    'display:flex;flex-direction:column;background:#ffffff;color:#1f2333;' +
-    'border:1px solid #e3e7f1;border-radius:14px;box-shadow:0 16px 40px rgba(20,28,60,.22);' +
-    'font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;' +
+  // 面板样式微调层（仅 Shadow DOM 内生效，不会泄漏到 OA 页面；无 Shadow DOM 的老浏览器跳过）。
+  // 颜色 token 对齐 frontend-enterprise SD1：纸白 #fbfbfa / 墨黑 #20201d / 青绿 #0f766e。
+  var SD_CSS = [
+    '* { box-sizing: border-box; }',
+    'input, select, button, textarea { font-family: inherit; }',
+    'input[type="checkbox"], input[type="radio"] { accent-color: #0f766e; }',
+    'input:focus, select:focus, textarea:focus { border-color: #0f766e !important; box-shadow: 0 0 0 3px rgba(15,118,110,.09) !important; }',
+    'button:disabled { opacity: .6; cursor: default !important; }',
+    'button[data-role="company-option"]:hover, button[data-role="company-custom"]:hover { background: #f2faf8; }',
+    'button[data-role="panel-close"]:hover { background: #eeece4; color: #20201d; }',
+    '::-webkit-scrollbar { width: 4px; height: 4px; }',
+    '::-webkit-scrollbar-thumb { background: #e7dfd3; border-radius: 4px; }'
+  ].join('\n');
+  if (root !== host) {
+    var styleEl = document.createElement('style');
+    styleEl.textContent = SD_CSS;
+    root.appendChild(styleEl);
+  }
+
+  var CARD = 'position:fixed;top:14px;right:14px;width:348px;max-height:calc(100vh - 28px);' +
+    'display:flex;flex-direction:column;background:#fbfbfa;color:#20201d;' +
+    'border:1px solid rgba(17,17,17,.07);border-radius:16px;box-shadow:0 18px 52px rgba(17,17,17,.2);' +
+    'font:12px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;' +
     'overflow:hidden;';
-  var HEAD = 'display:flex;align-items:center;justify-content:space-between;gap:8px;' +
-    'padding:10px 12px;border-bottom:1px solid #eef0f5;background:#fafbfd;cursor:move;user-select:none;-webkit-user-select:none;';
-  var BODY = 'display:flex;flex-direction:column;gap:10px;padding:12px;overflow:auto;flex:1 1 auto;min-height:0;';
+  var HEAD = 'display:flex;align-items:center;gap:9px;' +
+    'padding:12px 14px;border-bottom:1px solid #e7dfd3;background:#ffffff;cursor:move;user-select:none;-webkit-user-select:none;';
+  var BODY = 'display:flex;flex-direction:column;gap:10px;padding:12px 14px;overflow:auto;flex:1 1 auto;min-height:0;';
   var ROW = 'display:flex;flex-direction:column;gap:4px;';
-  var LABEL = 'font-size:11.5px;color:#5b6274;';
-  var INPUT = 'height:30px;border:1px solid #e3e7f1;border-radius:8px;padding:0 8px;font-size:12px;' +
-    'color:#1f2333;background:#fff;box-sizing:border-box;width:100%;outline:none;';
-  var BTN = 'height:30px;border:1px solid #e3e7f1;border-radius:8px;background:#fff;color:#464c5e;' +
+  var LABEL = 'font-size:11px;color:#6d726e;';
+  var INPUT = 'height:30px;border:1px solid #ded7cc;border-radius:9px;padding:0 9px;font-size:12px;' +
+    'color:#20201d;background:#fff;box-sizing:border-box;width:100%;outline:none;';
+  var BTN = 'height:30px;border:1px solid #ded7cc;border-radius:9px;background:#fff;color:#343633;' +
     'font-size:12px;cursor:pointer;padding:0 10px;';
-  var BTN_PRIMARY = 'height:32px;border:0;border-radius:9px;background:#18181a;color:#fff;' +
-    'font-size:12px;cursor:pointer;flex:1;';
-  var LOG = 'max-height:170px;overflow:auto;background:#fafbfd;border:1px solid #eef0f5;border-radius:8px;' +
-    'padding:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;' +
-    'line-height:1.6;white-space:pre-wrap;color:#5b6274;';
+  var BTN_PRIMARY = 'height:34px;border:0;border-radius:11px;background:#0f766e;color:#fff;' +
+    'font-size:12.5px;font-weight:700;cursor:pointer;flex:1;font-family:inherit;';
+  var LOG = 'max-height:170px;overflow:auto;background:#ffffff;border:1px solid #e7dfd3;border-radius:9px;' +
+    'padding:8px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10.5px;' +
+    'line-height:1.7;white-space:pre-wrap;color:#6d726e;';
 
   var card = el('div', CARD);
   var head = el('div', HEAD);
-  var titleWrap = el('div', 'display:flex;flex-direction:column;gap:1px;min-width:0;');
-  titleWrap.appendChild(el('div', 'font-size:13px;font-weight:600;color:#18181a;', PANEL_CFG.title || 'AI报销代填'));
-  titleWrap.appendChild(el('div', 'font-size:10.5px;color:#a3aaba;', '在当前 OA 页面直接填报 · 按住标题可拖动'));
-  var closeBtn = el('button', 'border:0;background:transparent;font-size:16px;line-height:1;cursor:pointer;color:#858b9c;padding:4px;', '×');
+  var mark = el('div', 'width:26px;height:26px;border-radius:8px;flex:none;'
+    + 'background:linear-gradient(145deg,#155e57,#0f766e);color:#fff;'
+    + 'font-size:10px;font-weight:800;display:grid;place-items:center;', 'AI');
+  var titleWrap = el('div', 'display:flex;flex-direction:column;gap:1px;min-width:0;flex:1;');
+  titleWrap.appendChild(el('div', 'font-size:13px;font-weight:700;color:#20201d;line-height:1.3;', PANEL_CFG.title || 'AI 单据助手'));
+  titleWrap.appendChild(el('div', 'font-size:10px;color:#9a9b95;', '在当前 OA 页面直接填报 · 按住标题可拖动'));
+  var closeBtn = el('button', 'border:0;background:transparent;font-size:15px;line-height:1;cursor:pointer;color:#9a9b95;padding:4px 6px;border-radius:7px;flex:none;', '×');
   closeBtn.type = 'button';
+  closeBtn.setAttribute('data-role', 'panel-close');
+  head.appendChild(mark);
   head.appendChild(titleWrap);
   head.appendChild(closeBtn);
   card.appendChild(head);
@@ -1498,7 +1522,7 @@
   scenarioSelect.style.flex = '1 1 auto';
   scenarioSelect.style.minWidth = '0';
   scenarioCtrl.appendChild(scenarioSelect);
-  var scenarioLink = el('a', 'flex:0 0 auto;font-size:11px;color:#1a56db;text-decoration:none;white-space:nowrap;cursor:pointer;', '去报销');
+  var scenarioLink = el('a', 'flex:0 0 auto;font-size:11px;color:#0f766e;font-weight:600;text-decoration:none;white-space:nowrap;cursor:pointer;', '去报销 ↗');
   scenarioLink.title = '在当前页面跳转到所选场景的 OA 报销表单';
   scenarioCtrl.appendChild(scenarioLink);
   var scenarioRow = field('报销场景', scenarioCtrl);
@@ -1511,7 +1535,7 @@
   body.appendChild(noticeBox);
 
   // 报销场景二选一（如交通报销：飞机 / 火车·汽车·船）
-  var sceneSeg = el('div', 'display:flex;border:1px solid #e3e7f1;border-radius:8px;overflow:hidden;');
+  var sceneSeg = el('div', 'display:flex;border:1px solid #ded7cc;border-radius:9px;overflow:hidden;');
   var sceneSegRow = field('报销场景', sceneSeg);
   sceneSegRow.style.display = 'none';
   sceneSegRow.style.order = '2';
@@ -1552,10 +1576,10 @@
   var companyTrigger = el('button', INPUT + 'display:flex;align-items:center;gap:6px;text-align:left;cursor:pointer;font-family:inherit;', '');
   companyTrigger.type = 'button';
   companyTrigger.setAttribute('data-role', 'company-trigger');
-  var companyTriggerText = el('span', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' + (companyName ? '#1f2333' : '#a3aaba') + ';', companyName || '请选择或输入公司全称');
+  var companyTriggerText = el('span', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' + (companyName ? '#20201d' : '#9a9b95') + ';', companyName || '请选择或输入公司全称');
   companyTrigger.appendChild(companyTriggerText);
-  companyTrigger.appendChild(el('span', 'color:#a3aaba;font-size:10px;flex:0 0 auto;', '▾'));
-  var companyPanel = el('div', 'display:none;flex-direction:column;gap:5px;border:1px solid #e3e7f1;border-radius:9px;background:#fff;padding:6px;');
+  companyTrigger.appendChild(el('span', 'color:#9a9b95;font-size:10px;flex:0 0 auto;', '▾'));
+  var companyPanel = el('div', 'display:none;flex-direction:column;gap:5px;border:1px solid #ded7cc;border-radius:10px;background:#fff;padding:6px;box-shadow:0 10px 30px rgba(17,17,17,.12);');
   var companySearch = el('input', INPUT);
   companySearch.placeholder = '其它公司可输入公司名称，支持模糊匹配, 回车确认';
   companySearch.setAttribute('data-role', 'company-search');
@@ -1565,15 +1589,15 @@
   companyWrap.appendChild(companyTrigger);
   companyWrap.appendChild(companyPanel);
 
-  var COMPANY_OPT = 'border:0;background:transparent;text-align:left;font-size:12px;color:#1f2333;'
+  var COMPANY_OPT = 'border:0;background:transparent;text-align:left;font-size:12px;color:#20201d;'
     + 'padding:6px 7px;border-radius:7px;cursor:pointer;font-family:inherit;width:100%;'
     + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  var COMPANY_OPT_CUSTOM = COMPANY_OPT + 'color:#0f6b4f;font-weight:600;border-top:1px solid #eef0f5;';
+  var COMPANY_OPT_CUSTOM = COMPANY_OPT + 'color:#0f766e;font-weight:600;border-top:1px solid #e7dfd3;border-radius:0;';
 
   function setCompany(name) {
     companyName = String(name || '').trim();
     companyTriggerText.textContent = companyName || '请选择或输入公司全称';
-    companyTriggerText.style.color = companyName ? '#1f2333' : '#a3aaba';
+    companyTriggerText.style.color = companyName ? '#20201d' : '#9a9b95';
     companyPanel.style.display = 'none';
     companySearch.value = '';
   }
@@ -1600,7 +1624,7 @@
       companyListBox.appendChild(custom);
     }
     if (!filtered.length && !query) {
-      companyListBox.appendChild(el('div', 'font-size:11.5px;color:#a3aaba;padding:6px 7px;', '没有常用选项，直接输入公司全称即可'));
+      companyListBox.appendChild(el('div', 'font-size:11.5px;color:#9a9b95;padding:6px 7px;', '没有常用选项，直接输入公司全称即可'));
     }
   }
 
@@ -1650,7 +1674,7 @@
   // 是否全为电子票
   var radioWrap = el('div', 'display:flex;gap:16px;align-items:center;height:26px;');
   function radio(value, text, checked) {
-    var wrap = el('label', 'display:flex;align-items:center;gap:5px;cursor:pointer;color:#464c5e;');
+    var wrap = el('label', 'display:flex;align-items:center;gap:5px;cursor:pointer;color:#343633;');
     var input = document.createElement('input');
     input.type = 'radio';
     input.name = 'sd-oa-eticket';
@@ -1671,7 +1695,7 @@
   // 报销金额（下方 hint 用于显示自动计算/取整的原始金额）
   var amountInput = el('input', INPUT);
   amountInput.value = String(PANEL_CFG.default_amount || '100.00');
-  var amountHint = el('div', 'font-size:11px;color:#a4650a;line-height:1.6;display:none;');
+  var amountHint = el('div', 'font-size:11px;color:#8a4b00;line-height:1.6;display:none;');
   amountInput.addEventListener('input', function () { amountHint.textContent = ''; amountHint.style.display = 'none'; });
   var amountBox = el('div', 'display:flex;flex-direction:column;gap:4px;');
   amountBox.appendChild(amountInput);
@@ -1682,12 +1706,12 @@
 
   // 附件（全为电子票才需要）：本地多选 PDF → 直接搬进 OA，同时可自动算金额
   var attachmentFiles = [];
-  var attachBox = el('div', 'display:flex;flex-direction:column;gap:8px;border:1px dashed #dfe3ec;border-radius:10px;padding:10px;background:#fafbfd;');
+  var attachBox = el('div', 'display:flex;flex-direction:column;gap:8px;border:1.5px dashed #ded7cc;border-radius:11px;padding:10px;background:#fbfaf6;');
   var attachTop = el('div', 'display:flex;align-items:center;gap:8px;');
   var pickBtn = el('button', BTN, '选择附件');
   pickBtn.type = 'button';
-  var attachHint = el('span', 'font-size:10.5px;color:#a3aaba;flex:1;', '仅限 PDF（电子发票），可多选');
-  var clearFilesBtn = el('button', 'border:0;background:transparent;color:#a3aaba;font-size:11.5px;cursor:pointer;padding:0;', '清空');
+  var attachHint = el('span', 'font-size:10.5px;color:#9a9b95;flex:1;', '仅限 PDF（电子发票），可多选');
+  var clearFilesBtn = el('button', 'border:0;background:transparent;color:#9a9b95;font-size:11.5px;cursor:pointer;padding:0;', '清空');
   clearFilesBtn.type = 'button';
   attachTop.appendChild(pickBtn);
   attachTop.appendChild(attachHint);
@@ -1707,7 +1731,7 @@
   var lastCalcTotal = null;
   var lastInvoiceRate = '';
 
-  var calcWrap = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;color:#464c5e;font-size:11.5px;');
+  var calcWrap = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;color:#343633;font-size:11.5px;');
   var calcCheck = document.createElement('input');
   calcCheck.type = 'checkbox';
   calcCheck.checked = PANEL_CFG.auto_calc_amount !== false;
@@ -1715,7 +1739,7 @@
   calcWrap.appendChild(el('span', '', '自动计算发票总金额'));
   attachBox.appendChild(calcWrap);
 
-  var floorWrap = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;color:#464c5e;font-size:11.5px;');
+  var floorWrap = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;color:#343633;font-size:11.5px;');
   var floorCheck = document.createElement('input');
   floorCheck.type = 'checkbox';
   floorCheck.checked = PANEL_CFG.floor_amount_to_hundred === true;
@@ -1729,12 +1753,12 @@
 
   // 发票明细（出差报销）：与附件同区，一张发票一行（发票类型按该票税率，可改）
   var rowsBox = el('div', 'display:flex;flex-direction:column;gap:7px;');
-  var rowsHint = el('div', 'font-size:11px;color:#a3aaba;', '选择发票后自动生成：一张发票一行');
+  var rowsHint = el('div', 'font-size:11px;color:#9a9b95;', '选择发票后自动生成：一张发票一行');
   var rowsWrap = el('div', 'display:none;flex-direction:column;gap:7px;');
 
   // 明细合并开关：勾选 = 同一「报销场景 + 税率」合并为一行、金额累计；
   // 不勾选 = 一张发票一行，各自金额。默认值随场景配置（line_items.group_by）走。
-  var mergeWrap = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;color:#464c5e;font-size:11.5px;');
+  var mergeWrap = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;color:#343633;font-size:11.5px;');
   mergeWrap.title = '不勾选时：一张发票一行明细（各自金额、发票类型可单独改）';
   var mergeCheck = document.createElement('input');
   mergeCheck.type = 'checkbox';
@@ -1757,12 +1781,12 @@
   otherRefInput.multiple = true;
   otherRefInput.style.display = 'none';
   var otherRefList = el('div', 'display:flex;flex-direction:column;gap:3px;');
-  var otherRefsBox = el('div', 'display:flex;flex-direction:column;gap:8px;border:1px dashed #dfe3ec;border-radius:10px;padding:10px;background:#fafbfd;');
+  var otherRefsBox = el('div', 'display:flex;flex-direction:column;gap:8px;border:1.5px dashed #ded7cc;border-radius:11px;padding:10px;background:#fbfaf6;');
   var otherRefTop = el('div', 'display:flex;align-items:center;gap:8px;');
   var otherRefPick = el('button', BTN, '选择附件');
   otherRefPick.type = 'button';
-  var otherRefHint = el('span', 'font-size:10.5px;color:#a3aaba;flex:1;', '可多选');
-  var otherRefClear = el('button', 'border:0;background:transparent;color:#a3aaba;font-size:11.5px;cursor:pointer;padding:0;', '清空');
+  var otherRefHint = el('span', 'font-size:10.5px;color:#9a9b95;flex:1;', '可多选');
+  var otherRefClear = el('button', 'border:0;background:transparent;color:#9a9b95;font-size:11.5px;cursor:pointer;padding:0;', '清空');
   otherRefClear.type = 'button';
   otherRefTop.appendChild(otherRefPick);
   otherRefTop.appendChild(otherRefHint);
@@ -1777,14 +1801,14 @@
 
   function renderOtherRefs() {
     otherRefList.textContent = '';
-    if (!otherRefFiles.length) { otherRefList.appendChild(el('div', 'font-size:11px;color:#a3aaba;', '尚未选择附件')); return; }
+    if (!otherRefFiles.length) { otherRefList.appendChild(el('div', 'font-size:11px;color:#9a9b95;', '尚未选择附件')); return; }
     otherRefFiles.forEach(function (file, index) {
-      var row = el('div', 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#464c5e;');
-      row.appendChild(el('span', 'color:#0f6b4f;', '✓'));
+      var row = el('div', 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#343633;');
+      row.appendChild(el('span', 'color:#0f766e;', '✓'));
       var nameEl = el('span', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', file.name);
       nameEl.title = file.name;
       row.appendChild(nameEl);
-      var del = el('button', 'border:0;background:transparent;color:#a3aaba;cursor:pointer;padding:0 2px;', '×');
+      var del = el('button', 'border:0;background:transparent;color:#9a9b95;cursor:pointer;padding:0 2px;', '×');
       del.type = 'button';
       del.addEventListener('click', function () { otherRefFiles.splice(index, 1); renderOtherRefs(); });
       row.appendChild(del);
@@ -1879,12 +1903,12 @@
     var li = (currentScenario() || {}).line_items || {};
     var sceneOpts = li.scene_options || (li.scene_value ? [li.scene_value] : []);
     panelRows.forEach(function (row, i) {
-      var item = el('div', 'border:1px solid #e3e7f1;border-radius:9px;background:#fff;padding:7px;display:flex;flex-direction:column;gap:6px;');
+      var item = el('div', 'border:1px solid #e7dfd3;border-radius:9px;background:#fff;padding:7px;display:flex;flex-direction:column;gap:6px;');
       var head = el('div', 'display:flex;align-items:center;gap:6px;');
       if (!sceneOpts.length) {
-        head.appendChild(el('span', 'font-size:11.5px;font-weight:600;color:#464c5e;white-space:nowrap;', row.scene || row.category || '明细'));
+        head.appendChild(el('span', 'font-size:11.5px;font-weight:600;color:#343633;white-space:nowrap;', row.scene || row.category || '明细'));
       }
-      head.appendChild(el('span', 'font-size:10px;color:#a3aaba;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', row.filename || ('第 ' + (i + 1) + ' 行')));
+      head.appendChild(el('span', 'font-size:10px;color:#9a9b95;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', row.filename || ('第 ' + (i + 1) + ' 行')));
       item.appendChild(head);
 
       // 报销场景：下拉，默认选中（如境内公司付款默认「IT服务外包」，还能选「IT硬件设备」）
@@ -1952,7 +1976,7 @@
 
   async function parseForRows() {
     if (!attachmentFiles.length) { panelRows = []; renderRows(); return; }
-    if (!BASE) { logLine('无法定位 StaffDeck 服务地址，跳过发票解析。', 'warn'); return; }
+    if (!BASE) { logLine('无法定位 AIStaff 服务地址，跳过发票解析。', 'warn'); return; }
     logLine('正在解析 ' + attachmentFiles.length + ' 张发票…', 'dim');
     try {
       var fd = new FormData();
@@ -2041,17 +2065,17 @@
   function renderFiles() {
     fileList.textContent = '';
     if (!attachmentFiles.length) {
-      fileList.appendChild(el('div', 'font-size:11px;color:#a3aaba;', '尚未选择附件'));
+      fileList.appendChild(el('div', 'font-size:11px;color:#9a9b95;', '尚未选择附件'));
       return;
     }
     attachmentFiles.forEach(function (file, index) {
-      var row = el('div', 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#464c5e;');
-      row.appendChild(el('span', 'color:#0f6b4f;', '✓'));
+      var row = el('div', 'display:flex;align-items:center;gap:6px;font-size:11.5px;color:#343633;');
+      row.appendChild(el('span', 'flex:none;min-width:26px;height:18px;padding:0 4px;border-radius:5px;background:#e1f1ed;color:#0f766e;font-size:9px;font-weight:800;display:grid;place-items:center;letter-spacing:.02em;', 'PDF'));
       var nameEl = el('span', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', file.name);
       nameEl.title = file.name;
       row.appendChild(nameEl);
-      row.appendChild(el('span', 'color:#a3aaba;font-size:10.5px;', fmtSize(file.size)));
-      var del = el('button', 'border:0;background:transparent;color:#a3aaba;cursor:pointer;padding:0 2px;', '×');
+      row.appendChild(el('span', 'color:#9a9b95;font-size:10.5px;flex:none;font-variant-numeric:tabular-nums;', fmtSize(file.size)));
+      var del = el('button', 'border:0;background:transparent;color:#9a9b95;cursor:pointer;padding:0 2px;font-size:13px;', '×');
       del.type = 'button';
       del.addEventListener('click', function () {
         attachmentFiles.splice(index, 1);
@@ -2091,7 +2115,7 @@
   async function calcAmounts() {
     if (!attachmentFiles.length) return;
     if (!BASE) {
-      logLine('无法定位 StaffDeck 服务地址，跳过自动计算（请手动填金额）。', 'warn');
+      logLine('无法定位 AIStaff 服务地址，跳过自动计算（请手动填金额）。', 'warn');
       return;
     }
     calcCheck.disabled = true;
@@ -2180,7 +2204,7 @@
   syncAttachVisibility();
 
   // 填完是否点保存
-  var saveWrap = el('label', 'display:flex;align-items:center;gap:7px;cursor:pointer;color:#464c5e;');
+  var saveWrap = el('label', 'display:flex;align-items:center;gap:7px;cursor:pointer;color:#343633;');
   var saveCheck = document.createElement('input');
   saveCheck.type = 'checkbox';
   saveCheck.checked = PANEL_CFG.auto_save_default === true;
@@ -2190,17 +2214,17 @@
   body.appendChild(saveWrap);
 
   // 执行过程日志：放在「代填」按钮正上方的固定一层（不随表单滚动，单独可滚）
-  var logBox = el('div', LOG + 'margin:0 12px 10px;flex:0 0 auto;display:none;', '');
+  var logBox = el('div', LOG + 'margin:0 14px 10px;flex:0 0 auto;display:none;', '');
 
-  var footer = el('div', 'display:flex;gap:8px;padding:0 12px 12px;align-items:center;');
-  var runBtn = el('button', BTN_PRIMARY, '代填');
+  var footer = el('div', 'display:flex;gap:8px;padding:10px 14px 12px;align-items:center;border-top:1px solid #e7dfd3;background:#ffffff;');
+  var runBtn = el('button', BTN_PRIMARY, '开始代填');
   runBtn.type = 'button';
   footer.appendChild(runBtn);
 
   // 一键清理（只清不填）：验证 / 补救「附件 ×→确认」「勾选 → - →确认」这两步。
   // 调试用 → 默认隐藏，只有开了调试开关（见 debugEnabled）才显示。
-  var clearOaBtn = el('button', 'border:1px solid #e3e7f1;background:#fff;color:#5b6274;font-size:12px;'
-    + 'cursor:pointer;font-family:inherit;padding:6px 10px;border-radius:8px;white-space:nowrap;', '清空 附件/明细');
+  var clearOaBtn = el('button', 'border:1px solid #ded7cc;background:#fff;color:#6d726e;font-size:12px;'
+    + 'cursor:pointer;font-family:inherit;padding:6px 10px;border-radius:11px;white-space:nowrap;', '清空 附件/明细');
   clearOaBtn.type = 'button';
   clearOaBtn.title = '只做两件事：点掉相关票据里每个附件的「×」（含二次确认）、'
     + '勾选明细行后点「-」（含二次确认）——不填任何字段。用来验证这两步在真实 OA 上通不通。';
@@ -2213,7 +2237,7 @@
   footer.appendChild(clearOaBtn);
 
   // 定位器对不上真实 OA 时的排查入口：一键注入录制器，把点「X / -」这些操作录下来
-  var recordBtn = el('button', 'border:0;background:transparent;color:#858b9c;font-size:11px;cursor:pointer;font-family:inherit;padding:4px;text-decoration:underline;', '录制排查');
+  var recordBtn = el('button', 'border:0;background:transparent;color:#9a9b95;font-size:11px;cursor:pointer;font-family:inherit;padding:4px;text-decoration:underline;', '录制排查');
   recordBtn.type = 'button';
   recordBtn.title = '记录一次你的操作（点附件的 ×、点明细行的 - 等），导出 JSON 发回即可';
   if (!debugEnabled()) recordBtn.style.display = 'none';
@@ -2284,7 +2308,7 @@
 
   function logLine(text, tone) {
     logBox.style.display = 'block';
-    var color = { ok: '#0f6b4f', warn: '#a4650a', err: '#a4342c', dim: '#858b9c' }[tone] || '#5b6274';
+    var color = { ok: '#0f766e', warn: '#8a4b00', err: '#a4342c', dim: '#9a9b95' }[tone] || '#6d726e';
     var line = el('div', 'color:' + color + ';', text);
     logBox.appendChild(line);
     logBox.scrollTop = logBox.scrollHeight;
@@ -2353,7 +2377,9 @@
       if (!options.some(function (o) { return o.value === sceneChoice; })) sceneChoice = options[0].value;
       options.forEach(function (o, idx) {
         var on = o.value === sceneChoice;
-        var btn = el('button', 'flex:1;border:0;padding:6px 4px;font-size:12px;cursor:pointer;font-family:inherit;background:' + (on ? '#18181a' : '#fff') + ';color:' + (on ? '#fff' : '#5b6274') + ';' + (idx > 0 ? 'border-left:1px solid #e3e7f1;' : ''), o.label);
+        var btn = el('button', 'flex:1;border:0;padding:6px 4px;font-size:12px;cursor:pointer;font-family:inherit;'
+          + 'background:' + (on ? '#e1f1ed' : '#fff') + ';color:' + (on ? '#0f766e' : '#6d726e') + ';font-weight:' + (on ? '650' : '400') + ';'
+          + (idx > 0 ? 'border-left:1px solid #ded7cc;' : ''), o.label);
         btn.type = 'button';
         btn.addEventListener('click', function () { sceneChoice = o.value; syncScenarioFields(); });
         sceneSeg.appendChild(btn);
@@ -2957,7 +2983,7 @@
     if (isLoginPage()) {
       logLine('当前看起来是 OA 登录页：请先登录，回到报销表单页后再点「代填」。', 'warn');
       runBtn.disabled = false;
-    runBtn.textContent = '代填';
+    runBtn.textContent = '开始代填';
       return;
     }
 
@@ -2965,7 +2991,7 @@
     if (isTrip && !panelRows.length) {
       logLine('请先选择发票，自动生成报销明细后再点「代填」。', 'err');
       runBtn.disabled = false;
-    runBtn.textContent = '代填';
+    runBtn.textContent = '开始代填';
       return;
     }
     // 未归类提醒要在「执行日志」里再说一次：解析完成后用户往往会再点「代填」，
@@ -2982,7 +3008,7 @@
     if (!isTrip && (!amountValue || isNaN(Number(amountValue)))) {
       logLine('报销金额未填写或格式不对（应为数字），已中止。', 'err');
       runBtn.disabled = false;
-    runBtn.textContent = '代填';
+    runBtn.textContent = '开始代填';
       return;
     }
 
@@ -3095,7 +3121,7 @@
       failed.length ? 'err' : 'ok');
     report({ kind: 'run', scenario_id: scenario.id, url: location.href, steps: steps, at: new Date().toISOString() });
     runBtn.disabled = false;
-    runBtn.textContent = '代填';
+    runBtn.textContent = '开始代填';
   }
 
   runBtn.addEventListener('click', function () { run(); });
