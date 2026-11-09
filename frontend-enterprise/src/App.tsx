@@ -57,6 +57,7 @@ import ShareChatPage from "./pages/ShareChatPage";
 import ShareSkillPage from "./pages/ShareSkillPage";
 import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
+import BrowserExtensionPage from "./pages/BrowserExtensionPage";
 import ApiKeyApprovalsPage from "./pages/ApiKeyApprovalsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
 import PlatformUpdatesPage from "./pages/PlatformUpdatesPage";
@@ -832,6 +833,12 @@ function Shell({
                   ) : (
                     <Navigate to={EnterpriseRoute.Platform} replace />
                   )
+                }
+              />
+              <Route
+                path="/enterprise/browser-extension"
+                element={
+                  <BrowserExtensionPage currentUser={auth.user} onLogout={onLogout} />
                 }
               />
               <Route

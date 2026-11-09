@@ -21,4 +21,5 @@ export enum EnterpriseRoute {
   ApiKeyApprovals = '/enterprise/api-key-approvals',
   DecisionAssistant = '/enterprise/decision-assistant',
   AiReviewer = '/enterprise/ai-reviewer',
+  BrowserExtension = '/enterprise/browser-extension',
 }

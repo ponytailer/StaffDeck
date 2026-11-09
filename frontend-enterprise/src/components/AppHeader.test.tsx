@@ -3,6 +3,7 @@
 import { createElement } from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
@@ -19,13 +20,17 @@ describe('AppHeader', () => {
   it('allows simple page titles to opt into centered controls', () => {
     const { container } = render(
       createElement(
-        I18nProvider,
+        MemoryRouter,
         null,
-        createElement(AppHeader, {
-          title: '模型',
-          right: createElement('span', null, 'controls'),
-          className: 'items-center',
-        }),
+        createElement(
+          I18nProvider,
+          null,
+          createElement(AppHeader, {
+            title: '模型',
+            right: createElement('span', null, 'controls'),
+            className: 'items-center',
+          }),
+        ),
       ),
     );
     const header = container.querySelector('header');
@@ -48,9 +53,13 @@ describe('AppHeader', () => {
     const user = userEvent.setup();
     render(
       createElement(
-        I18nProvider,
+        MemoryRouter,
         null,
-        createElement(AppHeader, { title: '账号管理' }),
+        createElement(
+          I18nProvider,
+          null,
+          createElement(AppHeader, { title: '账号管理' }),
+        ),
       ),
     );
 

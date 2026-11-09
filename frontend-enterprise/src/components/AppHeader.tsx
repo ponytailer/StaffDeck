@@ -9,7 +9,10 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
-import { Bell, KeyRound } from 'lucide-react';
+import { Bell, KeyRound, Puzzle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+
+import { EnterpriseRoute } from '../enums/routes';
 
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconEdit from '../assets/icons/edit.svg?react';
@@ -93,6 +96,7 @@ export default function AppHeader({
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const navigate = useNavigate();
 
   const displayName = user?.display_name || user?.username || '';
   const initial = (displayName || userName || '').trim()?.[0]?.toUpperCase();
@@ -427,6 +431,15 @@ export default function AppHeader({
                 >
                   <KeyRound className="size-[16px]" />
                   API 全量密钥
+                </DropdownMenuItem>
+              )}
+              {user && (
+                <DropdownMenuItem
+                  onSelect={() => navigate(EnterpriseRoute.BrowserExtension)}
+                  className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
+                >
+                  <Puzzle className="size-[16px]" />
+                  Chrome 浏览器插件
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem

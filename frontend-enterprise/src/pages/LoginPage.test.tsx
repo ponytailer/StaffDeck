@@ -2,6 +2,7 @@
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -52,9 +53,11 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function renderLogin(onLogin = vi.fn()) {
   render(
-    <I18nProvider>
-      <LoginPage onLogin={onLogin} />
-    </I18nProvider>,
+    <MemoryRouter>
+      <I18nProvider>
+        <LoginPage onLogin={onLogin} />
+      </I18nProvider>
+    </MemoryRouter>,
   );
   return onLogin;
 }
