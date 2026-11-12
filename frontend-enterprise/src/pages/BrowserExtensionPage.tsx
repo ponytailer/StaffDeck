@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
  * 更新插件时：重新打包 extension/dist → 上传静态资源 → 替换这里的 URL 和版本号。
  */
 const EXTENSION_DOWNLOAD_URL =
-  'https://ai-staff.folidaymall.com/f/FK9aCdQDtiPN/aistaff-chrome-plugin.zip';
+  'https://ai-staff.folidaymall.com/f/Hhq9E9J1egcr/aistaff-extension.zip';
 const EXTENSION_VERSION = 'v0.2.3';
 const EXTENSION_UPDATED_AT = '2026-11-12';
 
@@ -23,7 +23,7 @@ type InstallStep = {
 const INSTALL_STEPS: InstallStep[] = [
   {
     title: '下载插件包并解压',
-    body: '点击上方按钮下载 aistaff-chrome-plugin.zip，解压到一个固定目录（解压后不要删除，插件直接从这个目录加载）。',
+    body: '点击上方按钮下载 aistaff-extension.zip，解压到一个固定目录（解压后不要删除，插件直接从这个目录加载）。',
   },
   {
     title: '打开 Chrome 扩展管理页',
