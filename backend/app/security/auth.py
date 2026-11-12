@@ -15,7 +15,7 @@ from sqlmodel import Session
 
 from app.config import get_settings
 from app.db import get_session
-from app.db.models import User
+from app.db.models import User, utc_now
 from app.object_cache import cached_model, invalidate_key, store_model
 
 
@@ -31,6 +31,11 @@ security = HTTPBearer(auto_error=False)
 # 用户对象 Redis 缓存 TTL（秒）：写路径（改资料/角色/密码/删除/LDAP 同步）
 # 必须调用 invalidate_user_cache 主动失效，否则最长该窗口内读到旧值
 USER_CACHE_TTL_SECONDS = 30
+
+# 「最近更新」= 最近活跃时间：用户带着有效 token 访问任意接口就刷新 users.updated_at。
+# 30 分钟节流：命中窗口零写库零缓存失效，高频请求不会因此变慢；
+# 真正的资料编辑（PUT /users/{id} 等）仍无条件覆盖 updated_at，口径一致。
+USER_ACTIVITY_TOUCH_INTERVAL_SECONDS = 30 * 60
 
 
 def hash_password(password: str) -> str:
@@ -190,7 +195,36 @@ def get_current_user(
             )
     if not user or user.tenant_id != payload.get("tenant_id"):
         raise HTTPException(status_code=401, detail="Invalid user token")
+    # 活跃打点：绝不影响主流程，失败时回滚并放行（统计口径而已，不值得让请求 500）
+    try:
+        _touch_user_activity(db, user)
+    except Exception:  # noqa: BLE001 —— 打点失败不能挡业务
+        db.rollback()
     return user
+
+
+def _touch_user_activity(db: Session, user: User) -> None:
+    """把 users.updated_at 当「最近活跃」刷新（30 分钟节流）。
+
+    节流判定先用认证缓存对象里的 updated_at（TTL 只有 30s，足够准），
+    命中窗口直接 return —— 大多数请求在此零成本通过。
+    注意：缓存对象是 detached 的，不能 db.add（会被当 INSERT 触发主键冲突），
+    必须直读 DB 再改；写前对 DB 值二次确认，多进程部署时也不会重复刷。
+    """
+    now = utc_now()
+    last = user.updated_at
+    if last is not None and (now - last).total_seconds() < USER_ACTIVITY_TOUCH_INTERVAL_SECONDS:
+        return
+    db_user = db.get(User, user.id)
+    if not db_user:
+        return
+    db_last = db_user.updated_at
+    if db_last is not None and (now - db_last).total_seconds() < USER_ACTIVITY_TOUCH_INTERVAL_SECONDS:
+        return
+    db_user.updated_at = now
+    db.add(db_user)
+    db.commit()
+    invalidate_user_cache(db_user.id)
 
 
 def invalidate_user_cache(user_id: str | None) -> None:
