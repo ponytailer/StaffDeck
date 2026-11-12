@@ -94,6 +94,68 @@ export function App() {
     dragState.current = { active: false, moved: false, sx: 0, sy: 0, ox: 0, oy: 0 };
   }, []);
 
+  /* ---- 面板拖动：按住窗口空白处（非交互控件、非滚动内容区）移动位置 ---- */
+  // 交互控件（按钮/输入框/链接等）仍要能正常点击，聊天与列表的滚动区要能选字滚动，
+  // 所以这两类目标不参与拖动；其余空白区域（顶栏、卡片间隙、登录页留白）都可当抓手。
+  const panelDrag = useRef({
+    active: false, pointerId: -1, sx: 0, sy: 0, ox: 0, oy: 0, moved: false,
+  });
+  // 用户手动拖过窗口后记住落点：再次打开就还在那儿（本页内有效，换页/刷新回到贴球弹出）
+  const panelPosRef = useRef<{ x: number; y: number } | null>(null);
+
+  const onPanelPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const panel = panelRef.current;
+    if (!panel || e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (
+      target.closest(
+        'button, a, input, textarea, select, label, summary, [contenteditable="true"], .sd-chat-scroll, .sd-list-scroll',
+      )
+    ) {
+      return;
+    }
+    panelDrag.current = {
+      active: true, pointerId: e.pointerId,
+      sx: e.clientX, sy: e.clientY,
+      ox: panel.offsetLeft, oy: panel.offsetTop, moved: false,
+    };
+    try {
+      panel.setPointerCapture(e.pointerId);
+    } catch {
+      // 少数环境（指针已释放/合成事件）不支持捕获：退化为普通事件流，拖动仍可用
+    }
+  }, []);
+
+  const onPanelPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const st = panelDrag.current;
+    const panel = panelRef.current;
+    if (!st.active || !panel || e.pointerId !== st.pointerId) return;
+    const dx = e.clientX - st.sx;
+    const dy = e.clientY - st.sy;
+    if (!st.moved && Math.abs(dx) + Math.abs(dy) > 4) {
+      st.moved = true;
+      panel.classList.add('dragging');
+    }
+    if (!st.moved) return;
+    // 整窗保持可见：不拖出屏幕（右下边距按实际尺寸算，窗口缩放后同样成立）
+    const maxX = Math.max(8, window.innerWidth - panel.offsetWidth - 8);
+    const maxY = Math.max(8, window.innerHeight - panel.offsetHeight - 8);
+    panel.style.left = `${Math.min(Math.max(8, st.ox + dx), maxX)}px`;
+    panel.style.top = `${Math.min(Math.max(8, st.oy + dy), maxY)}px`;
+  }, []);
+
+  const onPanelPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const st = panelDrag.current;
+    const panel = panelRef.current;
+    if (!st.active) return;
+    panel?.classList.remove('dragging');
+    if (panel?.hasPointerCapture(e.pointerId)) panel.releasePointerCapture(e.pointerId);
+    if (panel && st.moved) panelPosRef.current = { x: panel.offsetLeft, y: panel.offsetTop };
+    panelDrag.current = {
+      active: false, pointerId: -1, sx: 0, sy: 0, ox: 0, oy: 0, moved: false,
+    };
+  }, []);
+
   /* ---- 面板开合：贴球弹出，越界翻转 ---- */
   useEffect(() => {
     const ball = ballRef.current;
@@ -103,11 +165,20 @@ export function App() {
       const height = Math.min(640, window.innerHeight - 48);
       const bx = ball.offsetLeft;
       const by = ball.offsetTop;
-      let px = bx + BALL_SIZE + 14;
-      let py = by + BALL_SIZE - height;
-      if (px + PANEL_WIDTH > window.innerWidth - 12) px = bx - PANEL_WIDTH - 14;
-      if (px < 12) px = Math.max(12, (window.innerWidth - PANEL_WIDTH) / 2);
-      py = Math.min(Math.max(24, py), window.innerHeight - height - 24);
+      const dragged = panelPosRef.current;
+      let px: number;
+      let py: number;
+      if (dragged) {
+        // 用户拖过 → 回到落点（窗口变小后同样夹回可视区）
+        px = Math.min(Math.max(8, dragged.x), Math.max(8, window.innerWidth - PANEL_WIDTH - 8));
+        py = Math.min(Math.max(8, dragged.y), Math.max(8, window.innerHeight - height - 8));
+      } else {
+        px = bx + BALL_SIZE + 14;
+        py = by + BALL_SIZE - height;
+        if (px + PANEL_WIDTH > window.innerWidth - 12) px = bx - PANEL_WIDTH - 14;
+        if (px < 12) px = Math.max(12, (window.innerWidth - PANEL_WIDTH) / 2);
+        py = Math.min(Math.max(24, py), window.innerHeight - height - 24);
+      }
       panel.style.left = `${px}px`;
       panel.style.top = `${py}px`;
       panel.style.transformOrigin = px < bx ? 'bottom right' : 'bottom left';
@@ -190,7 +261,14 @@ export function App() {
         <span className="sd-dot" />
       </div>
 
-      <div ref={panelRef} className={`sd-panel${open ? ' open' : ''}`}>
+      <div
+        ref={panelRef}
+        className={`sd-panel${open ? ' open' : ''}`}
+        onPointerDown={onPanelPointerDown}
+        onPointerMove={onPanelPointerMove}
+        onPointerUp={onPanelPointerUp}
+        onPointerCancel={onPanelPointerUp}
+      >
         {/* 登录 */}
         <div className={`sd-view sd-login${view === 'login' ? ' active' : ''}`}>
           <LoginView onLoggedIn={handleLoggedIn} notice={loginNotice} />

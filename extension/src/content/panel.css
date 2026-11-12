@@ -56,6 +56,9 @@
   transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.3, 1.1, 0.5, 1);
 }
 .sd-panel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+/* 拖动抓手：顶栏/聊天头部等空白区显示抓手光标；拖动中禁用选中并显示抓紧 */
+.sd-topbar, .sd-topbar-row, .sd-chat-head, .sd-login-head { cursor: grab; }
+.sd-panel.dragging, .sd-panel.dragging * { cursor: grabbing !important; user-select: none !important; }
 
 .sd-view { display: none; flex: 1; flex-direction: column; min-height: 0; }
 .sd-view.active { display: flex; }

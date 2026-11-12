@@ -11,8 +11,8 @@ import { cn } from '@/lib/utils';
  */
 const EXTENSION_DOWNLOAD_URL =
   'https://ai-staff.folidaymall.com/f/FK9aCdQDtiPN/aistaff-chrome-plugin.zip';
-const EXTENSION_VERSION = 'v0.2.2';
-const EXTENSION_UPDATED_AT = '2026-11-09';
+const EXTENSION_VERSION = 'v0.2.3';
+const EXTENSION_UPDATED_AT = '2026-11-12';
 
 type InstallStep = {
   title: string;
