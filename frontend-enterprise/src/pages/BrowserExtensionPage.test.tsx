@@ -38,10 +38,10 @@ describe('BrowserExtensionPage', () => {
     expect(chromeLink).not.toBeNull();
     expect(chromeLink?.getAttribute('href')).toContain('aistaff-extension.zip');
 
-    // Firefox 包未上传时不能是死链，要走「上传后开放」的禁用态
-    const firefoxEntry = screen.getByText(/下载 Firefox 版/);
-    expect(firefoxEntry.closest('a')).toBeNull();
-    expect(firefoxEntry.textContent).toContain('上传后开放');
+    // Firefox 走 AMO 签名的 .xpi，必须是可点的真实链接
+    const firefoxLink = screen.getByText(/下载 Firefox 版/).closest('a');
+    expect(firefoxLink).not.toBeNull();
+    expect(firefoxLink?.getAttribute('href')).toContain('.xpi');
   });
 
   it('默认展示 Chrome 的安装步骤，并说明只支持 Chromium 系', () => {
@@ -49,20 +49,22 @@ describe('BrowserExtensionPage', () => {
 
     expect(screen.getByText('开启开发者模式并加载')).toBeTruthy();
     expect(screen.getAllByText(/chrome:\/\/extensions/).length).toBeGreaterThan(0);
-    expect(screen.queryByText('临时载入附加组件')).toBeNull();
+    expect(screen.queryByText('拖进 Firefox 窗口安装')).toBeNull();
   });
 
-  it('切到 Firefox 后换成 about:debugging 步骤，并提示临时载入的权限与失效问题', async () => {
+  it('切到 Firefox 后换成 .xpi 安装步骤，并提示授权与签名提示', async () => {
     const user = userEvent.setup();
     renderPage();
 
     await user.click(screen.getByRole('button', { name: 'Firefox' }));
 
-    expect(await screen.findByText('临时载入附加组件')).toBeTruthy();
-    expect(screen.getAllByText(/about:debugging/).length).toBeGreaterThan(0);
+    expect(await screen.findByText('拖进 Firefox 窗口安装')).toBeTruthy();
+    // 已给签名 xpi，不应再引导用户去临时载入
+    expect(screen.queryByText(/about:debugging/)).toBeNull();
+    expect(screen.getAllByText(/about:addons/).length).toBeGreaterThan(0);
     expect(screen.queryByText('开启开发者模式并加载')).toBeNull();
-    // Firefox 独有的两个坑必须写出来：授权所有网站 + 临时载入重启失效
+    // 两个坑必须写出来：授权所有网站 + 未签名/未监控提示
     expect(screen.getAllByText(/允许访问所有网站的数据/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/关闭浏览器后失效/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Mozilla 主动监控范围/).length).toBeGreaterThan(0);
   });
 });

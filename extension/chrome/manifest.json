@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AIStaff 浏览器助手",
-  "version": "0.2.5",
+  "version": "0.2.4",
   "description": "把 AIStaff 数字员工装进每一个网页：登录后即可与免费员工、模型员工和小队随时对话，在 OA 页面还可一键代填报销单。",
   "permissions": [
     "storage",

@@ -12,9 +12,12 @@ import { cn } from '@/lib/utils';
  */
 const EXTENSION_DOWNLOAD_URL =
   'https://ai-staff.folidaymall.com/f/JYQXUuNNzANu/aistaff-extension.zip';
-/** Firefox 版打包同上，上传后把链接填进来；空字符串时按钮走「待上传」态 */
-const EXTENSION_DOWNLOAD_URL_FIREFOX = '';
-const EXTENSION_VERSION = 'v0.2.5';
+/** Firefox 版是 AMO unlisted 签名后的 .xpi，可直接装进正式版 Firefox */
+const EXTENSION_DOWNLOAD_URL_FIREFOX =
+  'https://ai-staff.folidaymall.com/f/l3-3s5KQ6S-l/d6bf99793dc8430197b1-0.2.5.xpi';
+/** 两版各自独立发版，版本号可能不同步，标签跟随当前选中的浏览器 */
+const EXTENSION_VERSION_CHROME = 'v0.2.4';
+const EXTENSION_VERSION_FIREFOX = 'v0.2.5';
 const EXTENSION_UPDATED_AT = '2026-11-13';
 
 type BrowserId = 'chrome' | 'firefox';
@@ -23,6 +26,11 @@ const BROWSERS: Array<{ id: BrowserId; label: string; short: string }> = [
   { id: 'chrome', label: 'Chrome / Edge', short: 'Chromium' },
   { id: 'firefox', label: 'Firefox', short: 'Firefox' },
 ];
+
+const EXTENSION_VERSIONS: Record<BrowserId, string> = {
+  chrome: EXTENSION_VERSION_CHROME,
+  firefox: EXTENSION_VERSION_FIREFOX,
+};
 
 type InstallStep = {
   title: string;
@@ -56,23 +64,24 @@ const INSTALL_STEPS: Record<BrowserId, InstallStep[]> = {
   ],
   firefox: [
     {
-      title: '下载插件包并解压',
-      body: '点上方「下载 Firefox 版」拿到 aistaff-firefox-extension.zip，解压到一个固定目录。',
+      title: '下载 .xpi 安装包',
+      body: '点上方「下载 Firefox 版」拿到 .xpi 文件，不用解压、不用改后缀。',
     },
     {
-      title: '打开 Firefox 调试页',
-      body: '在地址栏输入 about:debugging#/runtime/this-firefox 并回车。',
-      copyValue: 'about:debugging#/runtime/this-firefox',
+      title: '拖进 Firefox 窗口安装',
+      body: '把下载好的 .xpi 直接拖到 Firefox 窗口里，弹出「添加附加组件？」时点「添加」。',
+      tip: '拖拽没反应时：地址栏输入 about:addons → 右上角齿轮图标 → 「从文件安装附加组件」，选中该 .xpi。',
+      copyValue: 'about:addons',
     },
     {
-      title: '临时载入附加组件',
-      body: '点「临时载入附加组件」，选中解压目录里的 manifest.json（也可以直接选 zip 包）。',
-      tip: 'Firefox 会询问「允许访问所有网站的数据」，必须点允许，否则脚本不会注入、悬浮球不会出现。',
+      title: '允许访问所有网站',
+      body: '安装时 Firefox 会询问是否「允许访问所有网站的数据」，必须点允许，否则脚本不会注入、悬浮球不会出现。',
+      tip: '这是 Mozilla 正式签名的安装包，装完常驻有效；仅在安装页可能提示「不在 Mozilla 主动监控范围内」，选允许即可。',
     },
     {
       title: '免密登录',
-      body: '打开任意网页，右下角会出现 AI 悬浮球。同一浏览器里已登录 AIStaff 平台时，面板会自动接管登录态。',
-      tip: '临时载入的插件在关闭浏览器后失效，需要重新载入一次；长期使用请走签名安装（见下方常见问题）。',
+      body: '打开任意网页，右下角会出现 AI 悬浮球。同一浏览器里已登录 AIStaff 平台时，面板会自动接管登录态，无需再输密码。',
+      tip: '未登录平台也不影响：面板里提供平台同款账号密码登录入口，登录一次即可长期免登。',
     },
   ],
 };
@@ -203,7 +212,7 @@ export default function BrowserExtensionPage({
                 AIStaff 浏览器助手
               </span>
               <span className="rounded-full bg-[#dcf0ec] px-[8px] py-[2px] text-[11px] leading-[16px] font-medium text-[#0f766e]">
-                {EXTENSION_VERSION}
+                {EXTENSION_VERSIONS[browser]}
               </span>
             </div>
             <p className="mt-[10px] max-w-[520px] text-[13px] leading-[22px] text-[#757f9c]">
@@ -213,10 +222,11 @@ export default function BrowserExtensionPage({
             </p>
             <div className="mt-[16px] flex flex-wrap items-center gap-[10px]">
               <DownloadButton label="下载 Chrome / Edge 版" url={EXTENSION_DOWNLOAD_URL} variant="solid" />
-              <DownloadButton label="下载 Firefox 版" url={EXTENSION_DOWNLOAD_URL_FIREFOX} variant="outline" />
+              <DownloadButton label="下载 Firefox 版（.xpi）" url={EXTENSION_DOWNLOAD_URL_FIREFOX} variant="outline" />
             </div>
             <div className="mt-[10px] text-[11px] text-[#a0a8bd]">
-              更新于 {EXTENSION_UPDATED_AT} · 两个版本安装包独立，按你常用的浏览器下载对应版本即可
+              更新于 {EXTENSION_UPDATED_AT} · Chrome / Edge {EXTENSION_VERSION_CHROME}、Firefox{' '}
+              {EXTENSION_VERSION_FIREFOX}，两版独立更新，按常用浏览器下载对应版本即可
             </div>
           </div>
           <ExtensionMock />
@@ -326,14 +336,16 @@ export default function BrowserExtensionPage({
               · 在插件内主动登出后不会自动接管；如需恢复免密，在平台网页端重新登录一次即可。
             </li>
             <li>
-              · Firefox 版的「临时载入」在关闭浏览器后失效，重开需重新载入一次；要长期安装需走签名：
-              把 zip 提交 addons.mozilla.org 做 unlisted 签名，或用 Firefox ESR 在 about:config
-              关闭 xpinstall.signatures.required 后从文件安装。
+              · Firefox 版提供 Mozilla 正式签名的 .xpi，装完常驻，重启浏览器依然生效；安装时提示
+              「不在 Mozilla 主动监控范围内」属于自签名包的正常提示，选允许即可。
             </li>
-            <li>· 更新插件版本：Chrome 解压覆盖原目录后在扩展管理页点刷新图标；Firefox 重新临时载入一次即可。</li>
+            <li>
+              · 更新插件版本：Chrome 解压覆盖原目录后在扩展管理页点刷新图标；Firefox 直接安装新的
+              .xpi 覆盖，登录态与设置会保留。
+            </li>
             <li>
               · 如悬浮球未出现，刷新网页一次；Chrome 请确认扩展已启用且页面非扩展商店等系统页，
-              Firefox 请确认已授予「访问所有网站的数据」权限。
+              Firefox 可在 about:addons 里确认插件已启用并已授予「访问所有网站的数据」权限。
             </li>
           </ul>
         </section>
