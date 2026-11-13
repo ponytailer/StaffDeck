@@ -217,6 +217,10 @@ export async function streamChatTurn(
   const apiBase = await storage.getApiBase();
   const tenantId = await storage.getTenantId();
   let buffer = '';
+  // assistant_message_created（完整 reply 先于分片到达）之后的正文状态：
+  // 非 null 表示气泡已由服务端正文整体替换，后续 stream_delta 只是同一
+  // reply 的分片回放，必须忽略，否则同一答案会在气泡里出现两遍。
+  let finalizedText: string | null = null;
 
   // 必须先于 proxyFetch 声明：onChunk 在流式期间（await 未返回时）就会被调用，
   // 若声明在后面会因 TDZ 在每个 chunk 上抛 ReferenceError，表现为「永远等待、无回复」
@@ -237,14 +241,31 @@ export async function streamChatTurn(
     if (item.event === 'stream_replace') {
       const content = typeof item.data.content === 'string' ? item.data.content : '';
       if (content) handlers.onReplace(content);
+      // 对账替换是新的正文基线：其后的增量（若有）应重新累计，而不是被丢掉
+      finalizedText = null;
+      return;
+    }
+    if (item.event === 'assistant_message_created') {
+      // 服务端在「回复已生成落库、开始分片回放」时发这个事件，完整 reply 随事件
+      // 先到。只替换显示、**不结束轮次**——终止由 stream_end/complete 负责。
+      // 此前在这里 onTerminal 且继续累加后续 delta：气泡先被 replace 成一遍
+      // 全文，回放分片又追加上去，同一答案显示两遍（平台端把它当同步信号处理，
+      // 所以只有插件复现）。
+      const reply = typeof item.data.reply === 'string' ? item.data.reply : '';
+      if (reply) {
+        handlers.onReplace(reply);
+        finalizedText = reply;
+      }
       return;
     }
     if (item.event === 'stream_delta' || item.event === 'token') {
+      if (finalizedText !== null) return; // 已是服务端认定的全文，忽略回放分片
       const piece = typeof item.data.content === 'string' ? item.data.content : '';
       if (piece) handlers.onDelta(piece);
       return;
     }
-    if (item.event === 'assistant_message_created') {
+    if (item.event === 'complete') {
+      // 终态对账：无论前面增量怎么拼，最终以服务端的 reply 为准
       const reply = typeof item.data.reply === 'string' ? item.data.reply : '';
       if (reply) handlers.onReplace(reply);
       handlers.onTerminal({ ok: true });
