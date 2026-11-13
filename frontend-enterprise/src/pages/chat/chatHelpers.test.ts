@@ -200,6 +200,25 @@ describe('chat history consumer contract', () => {
     expect(rendered).not.toContain('src="javascript:');
   });
 
+  it('renders same-origin knowledge asset images (signed URL) but not protocol-relative ones', () => {
+    const rendered = renderToStaticMarkup(
+      createElement(MarkdownMessage, {
+        content: [
+          '![行李寄存位置](/api/knowledge/assets/kasset_ab12?sig=deadbeef)',
+          '',
+          '![协议相对](//evil.example.com/x.png)',
+        ].join('\n'),
+      }),
+    );
+
+    // 知识库配图走同源相对路径 + 签名，<img> 带不了 Authorization 头，必须直出
+    expect(rendered).toContain('src="/api/knowledge/assets/kasset_ab12?sig=deadbeef"');
+    expect(rendered).toContain('alt="行李寄存位置"');
+    // 协议相对的 //host 仍然拒绝
+    expect(rendered).not.toContain('src="//evil.example.com');
+    expect(rendered).toContain('协议相对');
+  });
+
   it('prefers inline citations, deduplicates content, and falls back to source metadata', () => {
     const item = message({
       metadata: {

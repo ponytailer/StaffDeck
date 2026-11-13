@@ -575,6 +575,37 @@ class KnowledgeChunk(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class KnowledgeAsset(SQLModel, table=True):
+    """知识库二进制资产（目前只有原文档里的图片）。
+
+    图片不入 chunk 正文以外的任何结构：chunk 里以 markdown ``![alt](url)``
+    引用它，检索仍走文字，回答时把图片 markdown 原样带回。
+    """
+
+    __tablename__ = "knowledge_assets"
+
+    id: str = Field(default_factory=lambda: new_id("kasset"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
+    document_id: Optional[str] = Field(default=None, index=True)
+    chunk_id: Optional[str] = Field(default=None, index=True)
+    kind: str = Field(default="image", index=True)
+    mime: str = Field(default="image/png")
+    size_bytes: int = 0
+    # 同一张图在多个文档/多处出现时按内容去重，只落一份文件
+    sha256: str = Field(index=True)
+    storage_key: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    page: Optional[int] = None
+    section_path: Optional[str] = None
+    order_index: int = 0
+    alt: Optional[str] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class KnowledgeConcept(SQLModel, table=True):
     __tablename__ = "knowledge_concepts"
     __table_args__ = (

@@ -20,6 +20,7 @@ from app.capability_scope import normalize_capability_scope
 from app import paths
 from app.db import engine
 from app.db.models import (
+    KnowledgeAsset,
     KnowledgeBucket,
     KnowledgeBase,
     KnowledgeChunk,
@@ -33,11 +34,17 @@ from app.db.models import (
     utc_now,
 )
 from app.knowledge.ocr_fallback import extract_pdf_via_ocr, should_attempt_ocr
-from app.knowledge.parser import KnowledgeParseError, extract_text, sanitize_text
+from app.knowledge.parser import (
+    KnowledgeParseError,
+    extract_document,
+    extract_text,
+    sanitize_text,
+)
 from app.llm.model_config_resolver import (
     ResolvedModelConfig,
     resolve_model_config_for_runtime,
 )
+from app.knowledge.assets import materialize_image_placeholders, save_asset
 from app.knowledge.schema import (
     KnowledgeBucketRead,
     KnowledgeChunkRead,
@@ -583,7 +590,37 @@ class KnowledgeService:
             )
             metadata = job.metadata_json or {}
             content = base64.b64decode(str(metadata.get("content_base64") or ""))
-            text, file_type = extract_text(job.filename, content)
+            parsed = extract_document(job.filename, content)
+            file_type = parsed.file_type
+            text = parsed.text
+            # 原文档里的图片：单独落盘 + 正文里换成带签名的 markdown 引用，
+            # 之后的归一化/分块/检索都当普通文本处理（图片只是答案的补充）。
+            assets_by_index: dict[int, KnowledgeAsset] = {}
+            if parsed.images:
+                self._update_ingest_stage(
+                    job,
+                    "parsing",
+                    detail=f"已抽取 {len(parsed.images)} 张图片，正在保存引用",
+                    stats={"image_count": len(parsed.images), "file_type": file_type},
+                )
+                for index, image in enumerate(parsed.images):
+                    try:
+                        assets_by_index[index] = save_asset(
+                            self.db,
+                            tenant_id=job.tenant_id,
+                            knowledge_base_id=job.knowledge_base_id,
+                            data=image.data,
+                            mime=image.mime,
+                            alt=image.alt,
+                            width=image.width,
+                            height=image.height,
+                            order_index=index,
+                        )
+                    except (ValueError, OSError):
+                        # 单张图存不下不该让整篇文档失败：正文里退化成 [图片 N]
+                        continue
+                text = materialize_image_placeholders(text, assets_by_index)
+                self.db.commit()
             self._raise_if_ingest_cancelled(job)
             # 扫描件/影印件没有文字层：pypdf 抽不出字符，直接报「没有可用文本内容」
             # 对用户毫无帮助。这里在判定失败之前改走 OCR，识别结果同样进后续链路。
@@ -646,11 +683,19 @@ class KnowledgeService:
                         "section_count": len(section_nodes),
                         "paragraph_count": len(_paragraph_blocks(normalized_text)),
                     },
+                    **({"asset_count": len(assets_by_index)} if assets_by_index else {}),
                 },
             )
             self.db.add(document)
             self.db.commit()
             self.db.refresh(document)
+            # 图片资产落盘时文档还没建，这里补归属（去重复用的图属于原文档，不覆盖）
+            for asset in assets_by_index.values():
+                if not asset.document_id:
+                    asset.document_id = document.id
+                    self.db.add(asset)
+            if assets_by_index:
+                self.db.commit()
             job.document_id = document.id
             self.db.add(job)
             self.db.commit()
@@ -2600,7 +2645,8 @@ def _section_summary(title: Any, content: str) -> str:
 
 
 def _summarize_text(text: str, max_chars: int) -> str:
-    compact = re.sub(r"\s+", " ", text or "").strip()
+    # 摘要不保留图片引用：URL 会把一句话撑长，也会污染引用卡片的摘要
+    compact = re.sub(r"\s+", " ", _strip_markdown_images(text)).strip()
     if len(compact) <= max_chars:
         return compact
     end = compact.rfind("。", 0, max_chars)
@@ -2618,8 +2664,10 @@ def _extract_anchor_entities(text: str) -> list[str]:
         r"[\u4e00-\u9fff]{2,12}",
         r"\d+(?:\.\d+)+",
     ]
+    # 图片引用里的 asset id / 签名不是实体
+    source = _strip_markdown_images(text)
     for pattern in patterns:
-        candidates.extend(re.findall(pattern, text or ""))
+        candidates.extend(re.findall(pattern, source))
     seen: set[str] = set()
     result: list[str] = []
     for item in candidates:
@@ -3400,6 +3448,21 @@ def _query_terms(query: str) -> list[str]:
     return result[:96]
 
 
+_MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\([^)\s]*\)")
+
+
+def _strip_markdown_images(text: str) -> str:
+    """打分前剥掉图片引用。
+
+    正文里的 ``![行李寄存位置](/api/knowledge/assets/kasset_ab12?sig=...)``
+    对词法打分的唯一贡献是噪声（asset id、查询参数），剥掉后命中率与原行为一致。
+    """
+
+    if not text or "](" not in text:
+        return text or ""
+    return _MARKDOWN_IMAGE_PATTERN.sub(" ", text)
+
+
 def _score_text(query: str, text: str) -> float:
     variants = _query_variants(query)
     if not variants:
@@ -3409,7 +3472,7 @@ def _score_text(query: str, text: str) -> float:
 
 
 def _score_single_query(query: str, text: str) -> float:
-    haystack = (text or "").lower()
+    haystack = _strip_markdown_images(text).lower()
     score = 0.0
     if query and query.lower() in haystack:
         score += 5.0

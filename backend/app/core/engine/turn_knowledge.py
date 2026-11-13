@@ -82,6 +82,14 @@ from app.knowledge.citations import (
     renumber_citations,
     strip_citation_markers,
 )
+from app.knowledge.image_refs import (
+    REF_PATTERN,
+    ImageRefExpander,
+    build_image_appendix,
+    collect_legend,
+    expand_image_refs,
+    strip_image_refs,
+)
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
 from app.memory.service import memory_read
 from app.session.helpers import public_session
@@ -203,6 +211,35 @@ def _query_needs_fresh_data(message: str) -> bool:
 
     text = message or ""
     return any(marker in text for marker in _FRESHNESS_MARKERS)
+
+
+#: 「模型一张图都没引用」时自动补在文末的配图数量。
+#: 只补 2 张：再多就是噪声，图文对应关系也更弱。
+KNOWLEDGE_IMAGE_APPENDIX_LIMIT = 2
+
+#: 这些回答说明「没找到依据」，这时补图等于给空答案配图，更容易误导。
+_REFUSAL_MARKERS = (
+    "没有找到",
+    "未找到",
+    "没有相关信息",
+    "资料中没有",
+    "知识库中没有",
+    "无法回答",
+    "没有提到",
+)
+
+
+def _is_refusal(text: str) -> bool:
+    return any(marker in (text or "") for marker in _REFUSAL_MARKERS)
+
+
+def _image_appendix_enabled() -> bool:
+    """兜底补图开关。关掉后只保留「模型主动引用」这一条路径。"""
+
+    try:
+        return bool(get_settings().knowledge_image_appendix_enabled)
+    except Exception:  # pragma: no cover - 配置异常不该影响作答
+        return True
 
 
 class _KnowledgeWorkflowMixin:
@@ -411,6 +448,9 @@ class _KnowledgeWorkflowMixin:
                 persona_prompt,
                 memory_context,
                 conversation_context,
+                # 证据包里的图例：ref → 图题 → URL。模型只复述 ref，
+                # URL 由这里落地时拼，避免它抄 66 字符的签名 URL 抄出静默 404。
+                image_refs=data.get("image_refs"),
             )
             trace(
                 "knowledge_workflow_completed",
@@ -454,6 +494,7 @@ class _KnowledgeWorkflowMixin:
         persona_prompt: str | None,
         memory_context: list[dict[str, object]],
         conversation_context: dict[str, Any] | None,
+        image_refs: list[dict[str, Any]] | None = None,
     ) -> str:
         """知识工作流的唯一一次作答调用。
 
@@ -479,21 +520,63 @@ class _KnowledgeWorkflowMixin:
         )
         self._emit_stream_status("preparing", "正在整理知识答案")
         stream = self.turn_stream
+        legend = [item for item in (image_refs or []) if isinstance(item, dict)]
         # 专用 operation 名（`response.knowledge_answer`）：仅在 output_policy 里对该
         # operation 关掉思考链。通用作答仍走 response.generate(_stream)，不受影响。
         if stream is None:
-            return self.owner.response_generator.generate(
+            reply = self.owner.response_generator.generate(
                 *arguments, operation=KNOWLEDGE_ANSWER_OPERATION
             )
+            return self._finalize_image_reply(reply, legend)
         # 真流式：逐 token 下发；中途失败会把已下发内容作废并抛给调用方降级
         # （见 _run_knowledge_workflow 的 except）。
-        parts: list[str] = []
+        #
+        # `{{img:N}}` 会被分片切成 `{{` + `img:1}}`，所以用带跨片状态的扩展器：
+        # 下发的就已是最终 markdown，用户不会看到原始标记一闪而过。不用状态机的话
+        # 就只能等 reconcile 收尾时整段替换，中间那段闪烁是必然的。
+        expander = ImageRefExpander(legend)
+        raw_parts: list[str] = []
+        emitted: list[str] = []
         for chunk in self.owner.response_generator.generate_stream(
             *arguments, operation=KNOWLEDGE_ANSWER_OPERATION
         ):
-            parts.append(chunk)
-            self._emit_stream_delta(chunk)
-        return "".join(parts).strip()
+            raw_parts.append(chunk)
+            piece = expander.feed(chunk)
+            if piece:
+                emitted.append(piece)
+                self._emit_stream_delta(piece)
+        tail = expander.flush()
+        if tail:
+            emitted.append(tail)
+            self._emit_stream_delta(tail)
+        return self._finalize_image_reply(
+            "".join(raw_parts).strip(), legend, "".join(emitted).strip()
+        )
+
+    def _finalize_image_reply(
+        self,
+        raw: str,
+        legend: list[dict[str, Any]],
+        streamed: str | None = None,
+    ) -> str:
+        """把正文里的 ``{{img:N}}`` 落地成 markdown 图片。
+
+        流式路径已经边下发边替换（``streamed`` 即下发过的内容），这里只剩两件事：
+        非流式路径整段替换、以及「模型一张图都没引用」时的兜底追加。
+
+        兜底的必要性：图在证据包里、模型却没用，用户就只能看到一段没有配图的
+        说明文字，而他问的恰恰是「这张流程图怎么走」。放弃条件见 ``_is_refusal``。
+        """
+
+        text = streamed if streamed is not None else expand_image_refs(raw, legend)
+        if not legend or REF_PATTERN.search(raw or ""):
+            return text
+        if not _image_appendix_enabled() or _is_refusal(text):
+            return text
+        appendix = build_image_appendix(legend, KNOWLEDGE_IMAGE_APPENDIX_LIMIT)
+        if not appendix:
+            return text
+        return f"{text}\n\n---\n\n{appendix}"
 
     def _synthesize_reply(
         self,
@@ -530,5 +613,12 @@ class _KnowledgeWorkflowMixin:
         # 2026-10-19：不再走真流式预览通道（预览会让正文跟随上游分包抖动），
         # 改为一次性生成，正文由 _handle_turn_stream_v2 的 8 字/45ms 匀速回放。
         self._emit_stream_status("preparing", "正在生成回复")
-        return self.owner.response_generator.generate(*arguments)
+        reply = self.owner.response_generator.generate(*arguments)
+        # Harness 路径也可能吃到带图的证据（knowledge_search 作为工具被调用）。
+        # 图例从工具结果里取；取不到就把标记清掉——宁可少一张图，也不能把
+        # `{{img:1}}` 这种内部标记漏给用户。
+        legend = collect_legend(*execution_payloads)
+        if legend:
+            return expand_image_refs(reply, legend)
+        return strip_image_refs(reply)
 

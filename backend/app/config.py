@@ -216,6 +216,10 @@ class Settings(BaseSettings):
     # 低于 knowledge_ocr_min_text_chars）时自动改用 Indra OCR 逐页识别再入库。
     # 依赖 indra_ocr_base_url 可达；不可达时退回原有报错，不影响其他格式。
     knowledge_ocr_fallback_enabled: bool = True
+    # 知识库配图的兜底追加（2026-11-13）：模型一次都没引用证据里的图时，把
+    # 前 2 张按序补在答案末尾。关掉后只保留「模型主动引用」这一条路径——
+    # 适合图文弱的库，避免每段回答都被配上无关截图。
+    knowledge_image_appendix_enabled: bool = True
     # 文字层字符数低于此值即判定为「无有效文字层」而走 OCR。纯数字页/封面页
     # 往往只有几十个字符，给 80 的门槛既能跳过空扫描件，又不误判正常短文档。
     knowledge_ocr_min_text_chars: int = 80

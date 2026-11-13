@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
@@ -13,6 +14,32 @@ SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".html", ".htm", ".pdf", ".d
 #: NUL 单独处理：PostgreSQL 的 text 列不接受 0x00，flush 时会直接抛
 #: "A string literal cannot contain NUL (0x00) characters"，整个入库任务因此失败。
 _CONTROL_CHARS = re.compile(r"[\x01-\x08\x0e-\x1f\x7f]")
+#: 图片在正文里的占位协议。入库时由 app.knowledge.assets 换成带签名的真实 URL，
+#: 解析层不认识存储层，只负责「图出现在哪个段落之后」。
+DOCX_IMAGE_PLACEHOLDER = "kasset://"
+
+
+@dataclass
+class ExtractedImage:
+    """从原文档里抽出来的一张图。"""
+
+    data: bytes
+    mime: str = "image/png"
+    alt: str = ""
+    width: int | None = None
+    height: int | None = None
+
+
+@dataclass
+class ParsedDocument:
+    """解析结果：正文（markdown）+ 正文里引用到的图片。
+
+    ``text`` 里图片以 ``![图注](kasset://0)`` 占位，``images[0]`` 对应第一张。
+    """
+
+    text: str
+    file_type: str
+    images: list[ExtractedImage] = field(default_factory=list)
 
 
 class KnowledgeParseError(ValueError):
@@ -41,19 +68,31 @@ def extract_text(filename: str, content: bytes) -> tuple[str, str]:
 
 
 def _extract_raw_text(filename: str, content: bytes) -> tuple[str, str]:
+    """兼容入口：只要正文（图片信息丢弃）。"""
+
+    parsed = extract_document(filename, content)
+    return parsed.text, parsed.file_type
+
+
+def extract_document(filename: str, content: bytes) -> ParsedDocument:
+    """解析原文件，返回正文 + 正文里的图片。
+
+    目前只有 ``.docx`` 会抽图：把图单独存成资产，正文里留 markdown 引用，
+    检索与回答仍走文字（图片只是答案的补充）。
+    """
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
         raise KnowledgeParseError(f"暂不支持 {suffix or 'unknown'} 文件格式。")
     if suffix == ".doc":
         raise KnowledgeParseError("暂不支持旧版 .doc 二进制格式，请转换为 .docx 后上传。")
     if suffix in {".txt", ".md", ".markdown"}:
-        return _decode_text(content), suffix.lstrip(".")
+        return ParsedDocument(text=_decode_text(content), file_type=suffix.lstrip("."))
     if suffix in {".html", ".htm"}:
-        return _extract_html(content), "html"
+        return ParsedDocument(text=_extract_html(content), file_type="html")
     if suffix == ".pdf":
-        return _extract_pdf(content), "pdf"
+        return ParsedDocument(text=_extract_pdf(content), file_type="pdf")
     if suffix == ".docx":
-        return _extract_docx(content), "docx"
+        return _extract_docx(content)
     raise KnowledgeParseError(f"暂不支持 {suffix} 文件格式。")
 
 
@@ -97,12 +136,12 @@ def _extract_pdf(content: bytes) -> str:
     return "# PDF 文档\n\n" + "\n\n".join(pages)
 
 
-def _extract_docx(content: bytes) -> str:
-    """抽取 .docx 正文。
+def _extract_docx(content: bytes) -> ParsedDocument:
+    """抽取 .docx 正文（含图片）。
 
     三条路径依次尝试：
-    1. python-docx（正常文档，保留标题层级与表格）；
-    2. 裸 zip 解析 `word/document.xml`（python-docx 装不上或文档结构异常时兜底）；
+    1. python-docx（正常文档，保留标题层级与表格，**并抽出段落里的图片**）；
+    2. 裸 zip 解析 `word/document.xml`（python-docx 装不上或文档结构异常时兜底，不出图）；
     3. 纯文本兜底 —— 后缀写成 `.docx`、内容其实是文本（把 .txt / 网页复制内容直接改名）
        太常见了，与其报「无法解析」，不如按文本读进来。
     """
@@ -113,31 +152,135 @@ def _extract_docx(content: bytes) -> str:
     except Exception:  # noqa: BLE001 - 逐级降级，最后统一给可读报错
         pass
     try:
-        return _extract_docx_with_zip(content)
+        return ParsedDocument(text=_extract_docx_with_zip(content), file_type="docx")
     except Exception as exc:  # noqa: BLE001
         plain = _decode_docx_as_plain_text(content)
         if plain is not None:
-            return plain
+            return ParsedDocument(text=plain, file_type="docx")
         raise KnowledgeParseError(_docx_error_message(content)) from exc
 
 
-def _extract_docx_with_python_docx(content: bytes) -> str:
+def _extract_docx_with_python_docx(content: bytes) -> ParsedDocument:
+    """按文档顺序遍历段落与表格，段落里的图片紧随其文字写入占位。
+
+    旧的实现分两轮（先所有段落、再所有表格），图片信息完全丢失。这里改成走
+    ``document.element.body`` 的直接子节点，段落/表格保持原始先后，图片才能落在
+    「它所在的那个段落之后」——分块时自然和该段文字进同一个 chunk。
+    """
+
     from docx import Document
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     document = Document(BytesIO(content))
     rows: list[str] = []
-    for paragraph in document.paragraphs:
-        text = paragraph.text.strip()
-        if not text:
+    images: list[ExtractedImage] = []
+    for child in document.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            paragraph = Paragraph(child, document)
+            text = paragraph.text.strip()
+            if text:
+                heading_level = _docx_heading_level(
+                    paragraph.style.name if paragraph.style else ""
+                )
+                rows.append(f"{'#' * heading_level} {text}" if heading_level else text)
+            for image in _docx_paragraph_images(child, document):
+                index = len(images)
+                images.append(image)
+                label = image.alt or f"图片 {index + 1}"
+                rows.append(f"![{label}]({DOCX_IMAGE_PLACEHOLDER}{index})")
+        elif child.tag == qn("w:tbl"):
+            table = Table(child, document)
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    rows.append(" | ".join(cells))
+    return ParsedDocument(text="\n".join(rows), file_type="docx", images=images)
+
+
+def _docx_paragraph_images(paragraph_element, document) -> list[ExtractedImage]:
+    """取一个段落里的图片（inline / 浮动 anchor 都算，按出现顺序）。"""
+
+    from docx.oxml.ns import qn
+
+    images: list[ExtractedImage] = []
+    for blip in paragraph_element.findall(".//" + qn("a:blip")):
+        rel_id = blip.get(qn("r:embed"))
+        if not rel_id:
             continue
-        heading_level = _docx_heading_level(paragraph.style.name if paragraph.style else "")
-        rows.append(f"{'#' * heading_level} {text}" if heading_level else text)
-    for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if cells:
-                rows.append(" | ".join(cells))
-    return "\n".join(rows)
+        part = document.part.related_parts.get(rel_id)
+        blob = getattr(part, "blob", None) if part is not None else None
+        if not blob:
+            continue
+        mime = str(getattr(part, "content_type", "") or "image/png").split(";")[0].strip()
+        if not mime.startswith("image/"):
+            continue  # 视频/嵌入对象不处理
+        width, height = _docx_drawing_extent(blip)
+        images.append(
+            ExtractedImage(
+                data=blob,
+                mime=mime or "image/png",
+                alt=_docx_drawing_alt(blip),
+                width=width,
+                height=height,
+            )
+        )
+    return images
+
+
+def _docx_drawing_ancestor(element):
+    """向上找到包住这张图的 ``w:drawing``（extent / docPr 都在它的子树里）。"""
+
+    from docx.oxml.ns import qn
+
+    node = element
+    for _ in range(8):
+        node = node.getparent()
+        if node is None:
+            return None
+        if node.tag == qn("w:drawing"):
+            return node
+    return None
+
+
+def _docx_drawing_extent(blip) -> tuple[int | None, int | None]:
+    """把 EMU 尺寸换算成像素（1px = 9525 EMU），拿不到就留空。"""
+
+    from docx.oxml.ns import qn
+
+    drawing = _docx_drawing_ancestor(blip)
+    if drawing is None:
+        return None, None
+    extent = drawing.find(".//" + qn("wp:extent"))
+    if extent is None:
+        return None, None
+    try:
+        cx = int(extent.get("cx") or 0)
+        cy = int(extent.get("cy") or 0)
+    except (TypeError, ValueError):
+        return None, None
+    if cx <= 0 or cy <= 0:
+        return None, None
+    return max(1, round(cx / 9525)), max(1, round(cy / 9525))
+
+
+def _docx_drawing_alt(blip) -> str:
+    """图片替代文字：Word 的「可选文字」描述优先，其次对象名。"""
+
+    from docx.oxml.ns import qn
+
+    drawing = _docx_drawing_ancestor(blip)
+    if drawing is None:
+        return ""
+    doc_pr = drawing.find(".//" + qn("wp:docPr"))
+    if doc_pr is None:
+        return ""
+    for key in ("descr", "title", "name"):
+        value = str(doc_pr.get(key) or "").strip()
+        if value:
+            return value[:120]
+    return ""
 
 
 def _decode_docx_as_plain_text(content: bytes) -> str | None:

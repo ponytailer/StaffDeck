@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 
 import CodeBlock from '@/components/CodeBlock';
-import { ApiError } from '@/api/client';
+import { API_BASE_URL, ApiError } from '@/api/client';
 import type { StreamEvent } from '@/api/client';
 import { formatClientDateTime } from '@/lib/timezone';
 import type {
@@ -209,6 +209,24 @@ function safeExternalHttpUrl(value: string): string | null {
   }
 }
 
+/**
+ * 图片 src 的白名单。
+ *
+ * 除 http(s) 外链外，还要放行**站内相对路径**：知识库原文档的配图存在
+ * `/api/knowledge/assets/kasset_xxx?sig=xxx`（签名 URL，`<img>` 带不了
+ * Authorization 头）。仍拒绝 `javascript:`、`data:` 和协议相对的 `//host/x.png`。
+ */
+function safeMediaUrl(value: string): string | null {
+  const text = value.trim();
+  if (!text) return null;
+  if (text.startsWith('/') && !text.startsWith('//')) {
+    // 知识库配图是 API 侧资源。前后端分域部署时 `<img src="/api/...">` 会打到前端
+    // 域名上 404，所以这里补 API 基地址（同源部署时 API_BASE_URL 为空，原样返回）。
+    return `${API_BASE_URL.replace(/\/+$/, '')}${text}`;
+  }
+  return safeExternalHttpUrl(text);
+}
+
 function ExternalMarkdownImage({ alt, src }: { alt: string; src: string }) {
   const [failed, setFailed] = useState(false);
 
@@ -262,7 +280,7 @@ export function renderInlineMarkdown(
       const image = token.match(/^!\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)$/);
       if (image) {
         const alt = image[1].trim() || '图片';
-        const src = safeExternalHttpUrl(image[2].trim());
+        const src = safeMediaUrl(image[2].trim());
         if (src) {
           nodes.push(
             <ExternalMarkdownImage key={key} src={src} alt={alt} />,
