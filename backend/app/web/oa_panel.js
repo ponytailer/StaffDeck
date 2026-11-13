@@ -1522,9 +1522,6 @@
   scenarioSelect.style.flex = '1 1 auto';
   scenarioSelect.style.minWidth = '0';
   scenarioCtrl.appendChild(scenarioSelect);
-  var scenarioLink = el('a', 'flex:0 0 auto;font-size:11px;color:#0f766e;font-weight:600;text-decoration:none;white-space:nowrap;cursor:pointer;', '去报销 ↗');
-  scenarioLink.title = '在当前页面跳转到所选场景的 OA 报销表单';
-  scenarioCtrl.appendChild(scenarioLink);
   var scenarioRow = field('报销场景', scenarioCtrl);
   scenarioRow.style.order = '1';
   body.appendChild(scenarioRow);
@@ -2360,16 +2357,6 @@
     noticeBox.textContent = '';
     notices.forEach(function (n) { noticeBox.appendChild(el('div', '', '⚠ ' + n)); });
     noticeBox.style.display = notices.length ? 'flex' : 'none';
-
-    // 「↗ 打开表单」：按所选场景的 url 在当前页跳转
-    var scenarioUrl = scenario.url || '';
-    if (scenarioUrl) {
-      scenarioLink.href = scenarioUrl;
-      scenarioLink.style.display = '';
-    } else {
-      scenarioLink.removeAttribute('href');
-      scenarioLink.style.display = 'none';
-    }
 
     var options = scenario.scene_options || [];
     sceneSeg.textContent = '';
