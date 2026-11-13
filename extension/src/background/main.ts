@@ -97,14 +97,90 @@ chrome.runtime.onConnect.addListener((port) => {
 
 /** content script 里没有 chrome.tabs（仅 background 可用），新开 tab 由 SW 代劳 */
 chrome.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
-  if (
-    typeof msg === 'object' &&
-    msg !== null &&
-    (msg as { type?: unknown }).type === 'open-tab' &&
-    typeof (msg as { url?: unknown }).url === 'string'
-  ) {
+  if (typeof msg !== 'object' || msg === null) return false;
+
+  if ((msg as { type?: unknown }).type === 'open-tab' && typeof (msg as { url?: unknown }).url === 'string') {
     void chrome.tabs.create({ url: (msg as { url: string }).url });
     sendResponse({ ok: true });
+    return false; // 同步响应
   }
-  return false; // 同步响应
+
+  if ((msg as { type?: unknown }).type === 'read-platform-auth') {
+    void readPlatformAuth().then((session) => sendResponse({ ok: true, session }));
+    return true; // 异步响应：保持消息通道打开
+  }
+
+  return false;
 });
+
+/* ---------------- 平台登录态读取（插件自动登录用） ---------------- */
+
+/** 与 manifest host_permissions 对齐：只有这些站点上的 localStorage 才可能是平台会话 */
+const PLATFORM_PREFIXES = [
+  'https://ai-staff.folidaymall.com',
+  'http://localhost:8000',
+  'http://127.0.0.1:8000',
+];
+
+type PlatformSession = {
+  token: string;
+  tenantId: string | null;
+  expiresAt: number | null;
+  origin: string;
+};
+
+/**
+ * 注入到平台页 MAIN world 执行：读平台前端写下的会话。
+ * 注意必须自包含——这个函数体会被序列化后送到页面里，不能引用模块作用域变量。
+ */
+function readAuthInPage(): PlatformSession | null {
+  try {
+    const raw = window.localStorage.getItem('ultrarag_auth');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      token?: unknown;
+      user?: { tenant_id?: unknown };
+      expires_at?: unknown;
+    };
+    if (!parsed || typeof parsed.token !== 'string' || !parsed.token) return null;
+    return {
+      token: parsed.token,
+      tenantId:
+        parsed.user && typeof parsed.user.tenant_id === 'string' ? parsed.user.tenant_id : null,
+      expiresAt: typeof parsed.expires_at === 'number' ? parsed.expires_at : null,
+      origin: window.location.origin,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 在开着的平台标签页里找登录态；当前激活的标签优先 */
+async function readPlatformAuth(): Promise<PlatformSession | null> {
+  let tabs: chrome.tabs.Tab[];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return null;
+  }
+  // 没有 tabs 权限时，tab.url 只在 host_permissions 命中的标签上才有值——正好够用
+  const candidates = tabs
+    .filter((tab) => typeof tab.url === 'string' && PLATFORM_PREFIXES.some((p) => tab.url!.startsWith(p)))
+    .sort((a, b) => Number(b.active) - Number(a.active));
+
+  for (const tab of candidates) {
+    if (typeof tab.id !== 'number') continue;
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'MAIN',
+        func: readAuthInPage,
+      });
+      const session = results?.[0]?.result as PlatformSession | null | undefined;
+      if (session && typeof session.token === 'string' && session.token) return session;
+    } catch {
+      // 该标签正在加载/被浏览器策略限制，换下一个
+    }
+  }
+  return null;
+}

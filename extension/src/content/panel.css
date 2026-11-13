@@ -124,6 +124,16 @@
   background: #fde8e8; color: #b91c1c; font-size: 12px; line-height: 1.6;
 }
 
+/* ---------- 登录页：用平台登录态一键登录 ---------- */
+.sd-sync { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+.sd-sync .sd-btn { width: 100%; }
+.sd-sync-hint { font-size: 11px; color: var(--muted-soft); line-height: 1.6; }
+.sd-divider {
+  display: flex; align-items: center; gap: 10px; margin: 12px 0 14px;
+  color: var(--muted-soft); font-size: 10.5px; letter-spacing: 0.06em;
+}
+.sd-divider::before, .sd-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
 /* ---------- 员工列表 ---------- */
 .sd-list-scroll { flex: 1; overflow-y: auto; padding: 12px 14px 16px; }
 .sd-section-label {

@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils';
  */
 const EXTENSION_DOWNLOAD_URL =
   'https://ai-staff.folidaymall.com/f/Hhq9E9J1egcr/aistaff-extension.zip';
-const EXTENSION_VERSION = 'v0.2.3';
+const EXTENSION_VERSION = 'v0.2.4';
 const EXTENSION_UPDATED_AT = '2026-11-12';
 
 type InstallStep = {
@@ -36,7 +36,8 @@ const INSTALL_STEPS: InstallStep[] = [
   },
   {
     title: '登录 AIStaff 账号',
-    body: '打开任意网页，右下角会出现 AI 悬浮球，点击展开面板，用平台同款企业账号密码登录即可。',
+    body: '打开任意网页，右下角会出现 AI 悬浮球。浏览器里已登录 AIStaff 平台时，点开面板会自动接管登录态，无需再输密码。',
+    tip: '未登录平台也不影响：面板里提供平台同款账号密码登录入口，登录一次即可长期免登。',
   },
 ];
 
@@ -234,6 +235,13 @@ export default function BrowserExtensionPage({
           <div className="px-[2px] text-[13px] font-medium text-[#18181a]">常见问题</div>
           <ul className="mt-[8px] flex flex-col gap-[6px] px-[2px] text-[12px] leading-[20px] text-[#757f9c]">
             <li>· 插件使用平台同款账号登录，无需单独注册；账号、数据与平台完全同源。</li>
+            <li>
+              · 免密登录依赖浏览器里 AIStaff 平台的登录态：同一浏览器已登录平台即自动接管；平台 token
+              过期或未登录时退回密码登录。
+            </li>
+            <li>
+              · 在插件内主动登出后不会自动接管；如需恢复免密，在平台网页端重新登录一次即可。
+            </li>
             <li>· 更新插件版本：下载新 zip 解压覆盖原目录后，在扩展管理页点刷新图标即可。</li>
             <li>· 如悬浮球未出现，刷新网页一次；仍不出现请确认扩展已启用且页面非 Chrome 商店等系统页。</li>
           </ul>

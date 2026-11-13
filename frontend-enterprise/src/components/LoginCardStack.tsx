@@ -86,41 +86,75 @@ export default function LoginCardStack({ children }: LoginCardStackProps) {
       alternate: true,
     });
 
-    // 指针视差：精细指针设备才启用，触屏不做
+    // 指针视差：精细指针设备才启用，触屏不做。
+    //
+    // 这里原来每收到一次 pointermove 就 getBoundingClientRect()：那是一次强制同步布局，
+    // 而此刻页面上还有十几条 anime.js 常驻动画在跑，读一次矩形就要把整页重排一遍，
+    // 鼠标一动帧率就掉到个位数。改成：
+    //   · 矩形在 pointerenter / 滚动 / 改窗口时才量，移动过程中直接复用；
+    //   · 事件只记坐标，真正的写入合并到下一帧（一帧最多一次）。
     let tiltAnimation: ReturnType<typeof createAnimatable> | null = null;
+    let bounds: DOMRect | null = null;
+    let pendingX = 0;
+    let pendingY = 0;
+    let frameId = 0;
+
+    const measure = () => {
+      bounds = scene.getBoundingClientRect();
+    };
+
+    const applyTilt = () => {
+      frameId = 0;
+      if (!tiltAnimation || !bounds || !bounds.width || !bounds.height) return;
+      const px = (pendingX - bounds.left) / bounds.width - 0.5;
+      const py = (pendingY - bounds.top) / bounds.height - 0.5;
+      tiltAnimation.rotateY(px * 7);
+      tiltAnimation.rotateX(-py * 4.5);
+    };
+
     const onPointerMove = (event: PointerEvent) => {
-      if (!tiltAnimation) return;
-      const bounds = scene.getBoundingClientRect();
-      if (!bounds.width || !bounds.height) return;
-      const px = (event.clientX - bounds.left) / bounds.width - 0.5;
-      const py = (event.clientY - bounds.top) / bounds.height - 0.5;
-      tiltAnimation.rotateY(px * 9);
-      tiltAnimation.rotateX(-py * 6);
+      pendingX = event.clientX;
+      pendingY = event.clientY;
+      if (!frameId) frameId = requestAnimationFrame(applyTilt);
+    };
+    const onPointerEnter = () => {
+      measure();
     };
     const onPointerLeave = () => {
+      if (frameId) {
+        cancelAnimationFrame(frameId);
+        frameId = 0;
+      }
       tiltAnimation?.rotateX(0);
       tiltAnimation?.rotateY(0);
     };
 
     if (window.matchMedia('(pointer: fine)').matches) {
       tiltAnimation = createAnimatable(tilt, { rotateX: 500, rotateY: 500, ease: 'out(2)' });
+      scene.addEventListener('pointerenter', onPointerEnter);
       scene.addEventListener('pointermove', onPointerMove);
       scene.addEventListener('pointerleave', onPointerLeave);
+      window.addEventListener('scroll', measure, { passive: true });
+      window.addEventListener('resize', measure);
     }
 
     return () => {
       intro.revert();
       floats.forEach((item) => item.revert());
       frontFloat.revert();
+      if (frameId) cancelAnimationFrame(frameId);
+      scene.removeEventListener('pointerenter', onPointerEnter);
       scene.removeEventListener('pointermove', onPointerMove);
       scene.removeEventListener('pointerleave', onPointerLeave);
+      window.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
       tiltAnimation?.revert();
     };
   }, []);
 
   return (
     <div ref={sceneRef} className="relative flex w-full justify-center py-[10px] [perspective:1200px]">
-      <div ref={tiltRef} className="relative h-[352px] w-[min(560px,94vw)] [transform-style:preserve-3d]">
+      <div ref={tiltRef} className="relative h-[352px] w-[min(560px,94vw)] [transform-style:preserve-3d] [will-change:transform]">
         {BACK_CARDS.map((card, index) => (
           <div
             key={card.tone}
@@ -135,7 +169,7 @@ export default function LoginCardStack({ children }: LoginCardStackProps) {
                 backRefs.current[index] = el;
               }}
               style={hiddenState(1)}
-              className="w-[290px] rounded-[16px] border border-black/[0.06] bg-white p-[18px] shadow-[0_20px_50px_rgba(17,17,17,0.10)]"
+              className="w-[290px] rounded-[16px] border border-black/[0.06] bg-white p-[18px] shadow-[0_20px_50px_rgba(17,17,17,0.10)] [will-change:transform]"
             >
               {card.bars.map((bar, barIndex) => (
                 <div key={barIndex} className={`${BAR_CLASS} ${bar} ${barIndex > 0 ? 'mt-[10px]' : ''}`} />
@@ -156,7 +190,7 @@ export default function LoginCardStack({ children }: LoginCardStackProps) {
           <div
             ref={frontRef}
             style={hiddenState(1)}
-            className="w-[326px] rounded-[18px] border border-black/[0.07] bg-white p-[22px] shadow-[0_28px_70px_rgba(17,17,17,0.14)]"
+            className="w-[326px] rounded-[18px] border border-black/[0.07] bg-white p-[22px] shadow-[0_28px_70px_rgba(17,17,17,0.14)] [will-change:transform]"
           >
             {children}
           </div>

@@ -161,10 +161,9 @@ export default function LoginSopFlow() {
             <path
               data-sop-glow
               d={WAVE_PATH}
-              stroke="rgba(15,118,110,0.32)"
-              strokeWidth="5"
+              stroke="rgba(15,118,110,0.18)"
+              strokeWidth="9"
               strokeLinecap="round"
-              style={{ filter: 'blur(4px)' }}
             />
             <path data-sop-travel d={WAVE_PATH} stroke="none" />
             <g data-sop-pulse opacity="0">

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { storage } from '../lib/storage';
+import { fingerprintToken, syncAuthFromPlatform } from '../lib/platform-auth';
 import type { AgentProfileRead, UserRead } from '../types';
 import { LoginView } from './views/Login';
 import { AgentListView } from './views/AgentList';
@@ -22,9 +23,12 @@ export function App() {
   const ballRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const sessionsRef = useRef<Map<string, string>>(new Map());
+  /** 主动登出后，本页内不再自动接管平台登录态（避免每次开面板都去问一遍） */
+  const autoSyncBlocked = useRef(false);
 
   /* ---- 初始化：恢复登录态与悬浮球位置 ---- */
   useEffect(() => {
+    let alive = true;
     (async () => {
       const [token, expiresAt, storedUser, pos] = await Promise.all([
         storage.getToken(),
@@ -37,9 +41,17 @@ export function App() {
         setUser(storedUser);
         setLoggedOut(false);
         setView('list');
-      } else if (expired) {
-        await storage.clearSession();
+      } else {
+        if (token || expiresAt) await storage.clearSession();
+        // 插件里没有可用会话 → 试着接管浏览器里的平台登录态（装完插件不必再输一次密码）
+        const synced = await syncAuthFromPlatform();
+        if (alive && synced.ok) {
+          setUser(synced.user);
+          setLoggedOut(false);
+          setView('list');
+        }
       }
+      if (!alive) return;
       if (ballRef.current) {
         const x = pos ? Math.min(Math.max(0, pos.x), window.innerWidth - BALL_SIZE) : window.innerWidth - BALL_SIZE - 26;
         const y = pos ? Math.min(Math.max(0, pos.y), window.innerHeight - BALL_SIZE) : window.innerHeight - BALL_SIZE - 26;
@@ -47,6 +59,9 @@ export function App() {
         ballRef.current.style.top = `${y}px`;
       }
     })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   /* ---- 悬浮球拖拽 / 点击 ---- */
@@ -216,6 +231,11 @@ export function App() {
   }, []);
 
   const handleLogout = useCallback(async () => {
+    // 记下平台 token 指纹：同一个平台登录态不再被自动接管。
+    // 否则「退出登录」会被下一次打开面板立刻打回原形（平台那时还登录着）。
+    const token = await storage.getToken();
+    if (token) await storage.setLogoutFingerprint(fingerprintToken(token));
+    autoSyncBlocked.current = true;
     await storage.clearSession();
     setUser(null);
     setLoggedOut(true);
@@ -233,6 +253,22 @@ export function App() {
     setLoginNotice('会话已过期，请重新登录');
     setView('login');
   }, []);
+
+  /* ---- 打开面板时补一次自动登录 ----
+   * 覆盖「网页先打开、之后才在平台登录」的情形：初始化那次同步拿不到东西，
+   * 用户再点悬浮球时重试一次，成功后直接进员工列表（不闪一下登录页）。 */
+  useEffect(() => {
+    if (!open || !loggedOut || autoSyncBlocked.current) return;
+    let alive = true;
+    void syncAuthFromPlatform().then((res) => {
+      if (!alive) return;
+      if (res.ok) handleLoggedIn(res.user);
+      else if (res.reason === 'logged-out') autoSyncBlocked.current = true;
+    });
+    return () => {
+      alive = false;
+    };
+  }, [open, loggedOut, handleLoggedIn]);
 
   const openAgent = useCallback((agent: AgentProfileRead) => {
     setActiveAgent(agent);

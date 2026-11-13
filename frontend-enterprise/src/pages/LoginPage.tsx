@@ -1,25 +1,15 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useRef, type CSSProperties } from 'react';
 
 import { animate, createTimeline, stagger, text, utils } from 'animejs';
 
-import { api, TENANT_ID, ApiError } from '../api/client';
-import {
-  readRememberedUsername,
-  readRememberLoginPreference,
-  setEnterpriseAuthSession,
-  writeRememberedUsername,
-  writeRememberLoginPreference,
-  type EnterpriseAuthSession,
-} from '../auth';
-import AppHeader from '../components/AppHeader';
-import BrandLogo from '../components/BrandLogo';
-import EmployeeAvatar from '../components/EmployeeAvatar';
+import LoginForm from '../components/LoginForm';
+import AppHeader from '@/components/AppHeader';
+import BrandLogo from '@/components/BrandLogo';
+import EmployeeAvatar from '@/components/EmployeeAvatar';
 import LoginCardStack from '../components/LoginCardStack';
 import LoginSopFlow from '../components/LoginSopFlow';
 import LoginWingCards from '../components/LoginWingCards';
-import IconFieldClear from '../assets/icons/field-clear.svg?react';
-import IconFieldEye from '../assets/icons/field-eye.svg?react';
-import IconFieldEyeOn from '../assets/icons/field-eye-on.svg?react';
+import type { EnterpriseAuthSession } from '../auth';
 import { EMPLOYEE_AVATAR_PRESETS } from '../employee';
 
 export type LoginPageProps = {
@@ -64,61 +54,20 @@ function avatarProfile(preset: string) {
  * 两翼（宽屏）放「工作快照」卡：左执行中任务、右已交付成果——
  * 中央是「你」，两侧是数字员工正在干的活。
  * 背景只放几团缓慢漂移的光斑和一层淡网格：留白不空，但不抢内容。
+ *
+ * 性能约束（改这里之前先读一遍，实测 12fps 的教训）：
+ *   1. 背景光斑不用 `filter: blur()`：模糊半径 70px 的层每帧都要重新栅格化，
+ *      改用自身带柔边的 radial-gradient，transform 动画就只剩合成，不再重绘。
+ *   2. 任何常驻动画都只允许动 transform / opacity，不动 letterSpacing、width、height。
+ *   3. 表单状态在 LoginForm 内部：输入时这一层（连同卡片堆、两翼、光路）一次都不重渲染，
+ *      否则每敲一个字符就会打断一圈合成层。
  */
 export default function LoginPage({ onLogin }: LoginPageProps) {
-  const [username, setUsername] = useState(() => readRememberedUsername());
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  // 「记住账号」：勾选后服务端签发 30 天长效凭证，本机 30 天内免登
-  const [remember, setRemember] = useState(() => readRememberLoginPreference());
-  const [usernameError, setUsernameError] = useState('');
-  const [passwordError, setPasswordError] = useState('');
-  const [loading, setLoading] = useState(false);
-
   const pageRef = useRef<HTMLDivElement>(null);
   const brandRef = useRef<HTMLSpanElement>(null);
   const titleRef = useRef<HTMLSpanElement>(null);
   const subtitleRef = useRef<HTMLParagraphElement>(null);
   const tickerRef = useRef<HTMLDivElement>(null);
-
-  async function login() {
-    const trimmedUsername = username.trim();
-    const trimmedPassword = password.trim();
-    setUsernameError(trimmedUsername ? '' : '请输入账号');
-    setPasswordError(trimmedPassword ? '' : '请输入密码');
-    if (!trimmedUsername || !trimmedPassword) return;
-
-    setLoading(true);
-    try {
-      const session = await api.post<EnterpriseAuthSession>('/api/auth/login', {
-        tenant_id: TENANT_ID,
-        username: trimmedUsername,
-        password: trimmedPassword,
-        remember,
-      });
-      // 勾选态与账号名先落盘再进应用：登录成功就算数，不依赖组件是否还被挂着
-      writeRememberLoginPreference(remember);
-      writeRememberedUsername(remember ? trimmedUsername : null);
-      setEnterpriseAuthSession(session);
-      onLogin(session);
-    } catch (error) {
-      const messageText = error instanceof Error ? error.message : '';
-      const fallback = '登录失败，请稍后重试';
-      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-        setUsernameError('账号或密码不正确');
-        setPasswordError('请检查后重新输入');
-      } else {
-        setUsernameError('账号输入错误');
-        setPasswordError(messageText || fallback);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function onFieldKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === 'Enter') void login();
-  }
 
   useEffect(() => {
     const page = pageRef.current;
@@ -154,7 +103,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       return disposeAll;
     }
 
-    // 背景光斑：十几秒一轮的缓慢漂移，让大面积留白「活」着
+    // 背景光斑：十几秒一轮的缓慢漂移，让大面积留白「活」着。
+    // 纯 transform（位移 + 缩放），元素本身没有 filter，所以帧内不重绘。
     auroraBlobs.forEach((blob, index) => {
       const drift = animate(blob, {
         x: [0, index % 2 ? -70 : 80],
@@ -183,11 +133,12 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     });
 
     // 主入场：眼眉 → 标题逐字 → 副标题 → 在岗播报（登录卡堆入场由 LoginCardStack 自理）
+    // 原来还带一段 letterSpacing 0.62em → 0.2em 的收字距动画：那是逐帧布局，已删除，
+    // 字距直接用静态值，视觉差异肉眼几乎看不出，帧时间省一半。
     const intro = createTimeline({ defaults: { duration: 720, ease: 'outQuint' } });
     intro
       .set(title, { opacity: 1 }, 0)
       .add(brand, { opacity: [0, 1], y: [14, 0] }, 0)
-      .add(brand, { letterSpacing: ['0.62em', '0.2em'], duration: 1400, ease: 'outExpo' }, 0)
       .add(
         titleParts,
         { opacity: [0, 1], y: ['0.7em', '0em'], duration: 900, delay: stagger(30), ease: 'outExpo' },
@@ -197,7 +148,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       .add(ticker, { opacity: [0, 1], y: [14, 0] }, '-=400');
     disposers.push(() => intro.revert());
 
-    // 在岗播报：6 条职责循环滚过
+    // 在岗播报：6 条职责循环滚过（只动 translateY / opacity）
     if (tickerRows.length > 1) {
       const loop = createTimeline({ loop: true });
       tickerRows.forEach((row, index) => {
@@ -215,23 +166,23 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     return disposeAll;
   }, []);
 
-  const inputBaseClass =
-    'flex h-[44px] w-full items-center gap-[8px] rounded-[10px] border bg-white px-[16px] transition-colors';
   return (
     <div ref={pageRef} className="relative flex min-h-screen flex-col overflow-x-clip bg-[#fbfbfa]">
-      {/* 背景层：光斑 + 淡网格，纯装饰 */}
+      {/* 背景层：光斑 + 淡网格，纯装饰。
+          光斑不加 filter: blur —— 柔边由 gradient 自己的多段色标提供，
+          否则 70px 的模糊会跟着 transform 每帧重算，是原来卡顿的头号开销。 */}
       <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
         <div
           data-aurora
-          className="absolute -left-[14%] top-[4%] h-[420px] w-[540px] rounded-full bg-[radial-gradient(circle,rgba(15,118,110,0.18),transparent_68%)] blur-[70px]"
+          className="absolute -left-[18%] top-[-2%] h-[520px] w-[660px] rounded-full bg-[radial-gradient(circle,rgba(15,118,110,0.17),rgba(15,118,110,0.05)_52%,transparent_76%)] [will-change:transform]"
         />
         <div
           data-aurora
-          className="absolute -right-[12%] top-[22%] h-[460px] w-[520px] rounded-full bg-[radial-gradient(circle,rgba(168,93,50,0.14),transparent_68%)] blur-[80px]"
+          className="absolute -right-[16%] top-[16%] h-[560px] w-[640px] rounded-full bg-[radial-gradient(circle,rgba(168,93,50,0.14),rgba(168,93,50,0.04)_52%,transparent_76%)] [will-change:transform]"
         />
         <div
           data-aurora
-          className="absolute left-[30%] top-[58%] h-[380px] w-[520px] rounded-full bg-[radial-gradient(circle,rgba(111,123,66,0.13),transparent_70%)] blur-[80px]"
+          className="absolute left-[26%] top-[52%] h-[460px] w-[640px] rounded-full bg-[radial-gradient(circle,rgba(111,123,66,0.13),rgba(111,123,66,0.04)_54%,transparent_78%)] [will-change:transform]"
         />
         <div className="absolute inset-0 bg-[radial-gradient(rgba(24,24,26,0.05)_1px,transparent_1px)] [background-size:26px_26px] [mask-image:radial-gradient(ellipse_at_50%_36%,black,transparent_72%)]" />
       </div>
@@ -276,7 +227,9 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             把经验、流程与判断标准，沉淀成持续在岗的数字员工
           </p>
 
-          {/* 在岗播报：一次只露一条，逐条滚过（置于登录框上方） */}
+          {/* 在岗播报：一次只露一条，逐条滚过（置于登录框上方）。
+              原来每行还带 backdrop-blur：6 个半透明行叠在一起滚动，
+              等于每帧重采样 6 次背景，已改为纯白底。 */}
           <div
             ref={tickerRef}
             style={hiddenFrom(14)}
@@ -287,7 +240,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 key={item.role}
                 data-ticker-row
                 style={{ opacity: 0, transform: 'translateY(110%)' }}
-                className="absolute inset-0 flex items-center gap-[10px] rounded-[12px] border border-black/[0.05] bg-white/85 px-[14px] text-left shadow-[0_6px_20px_rgba(17,17,17,0.05)] backdrop-blur"
+                className="absolute inset-0 flex items-center gap-[10px] rounded-[12px] border border-black/[0.05] bg-white px-[14px] text-left shadow-[0_6px_20px_rgba(17,17,17,0.05)]"
               >
                 <EmployeeAvatar profile={avatarProfile(item.avatarPreset)} size={34} radius={10} />
                 <span className="flex min-w-0 flex-1 items-baseline gap-[8px]">
@@ -304,128 +257,10 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             ))}
           </div>
 
-          {/* 登录框：视差浮层卡片堆，前排为真实表单 */}
+          {/* 登录框：视差浮层卡片堆，前排为真实表单。
+              表单自己管状态，输入时这一层不重渲染。 */}
           <LoginCardStack>
-            <form
-              className="flex flex-col gap-[12px]"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void login();
-              }}
-            >
-              <div
-                className={`${inputBaseClass} ${usernameError ? 'border-[#f54a45]' : username ? 'border-[#18181a]' : 'border-[#e3e7f1]'}`}
-              >
-                <input
-                  value={username}
-                  autoComplete="username"
-                  placeholder="请输入OA邮箱"
-                  aria-label="账号"
-                  onChange={(event) => {
-                    setUsername(event.target.value);
-                    if (usernameError) setUsernameError('');
-                  }}
-                  onKeyDown={onFieldKeyDown}
-                  className="min-w-0 flex-1 border-0 bg-transparent text-[14px] text-[#18181a] outline-none placeholder:text-[#757f9c]"
-                />
-                {username && (
-                  <button
-                    type="button"
-                    aria-label="清空账号"
-                    onClick={() => {
-                      setUsername('');
-                      setUsernameError('');
-                    }}
-                    className="grid size-[18px] shrink-0 place-items-center text-[#667085] outline-none transition-colors hover:text-[#464c5e]"
-                  >
-                    <IconFieldClear className="size-[18px]" />
-                  </button>
-                )}
-              </div>
-              {usernameError && (
-                <p className="-mt-[6px] text-[12px] leading-none text-[#f54a45]" role="alert">
-                  {usernameError}
-                </p>
-              )}
-
-              <div
-                className={`${inputBaseClass} ${passwordError ? 'border-[#f54a45]' : password ? 'border-[#18181a]' : 'border-[#e3e7f1]'}`}
-              >
-                <input
-                  value={password}
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  placeholder="请输入密码"
-                  aria-label="密码"
-                  onChange={(event) => {
-                    setPassword(event.target.value);
-                    if (passwordError) setPasswordError('');
-                  }}
-                  onKeyDown={onFieldKeyDown}
-                  className="min-w-0 flex-1 border-0 bg-transparent text-[14px] text-[#18181a] outline-none placeholder:text-[#757f9c]"
-                />
-                <button
-                  type="button"
-                  aria-label={showPassword ? '隐藏密码' : '显示密码'}
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  className="grid size-[18px] shrink-0 place-items-center text-[#677185] outline-none transition-colors hover:text-[#464c5e]"
-                >
-                  {showPassword ? (
-                    <IconFieldEyeOn className="size-[18px]" />
-                  ) : (
-                    <IconFieldEye className="size-[18px]" />
-                  )}
-                </button>
-              </div>
-              {passwordError && (
-                <p className="-mt-[6px] text-[12px] leading-none text-[#f54a45]" role="alert">
-                  {passwordError}
-                </p>
-              )}
-
-              {/* 「记住账号」：勾选后 30 天内免登（凭证有效期由服务端签发）。
-                  复选框自绘，不用浏览器原生控件——原生勾选框在这套版式里太糙。 */}
-              <div className="mt-[2px] flex items-center justify-between gap-[10px]">
-                <label className="flex cursor-pointer select-none items-center gap-[8px]">
-                  <input
-                    type="checkbox"
-                    checked={remember}
-                    onChange={(event) => setRemember(event.target.checked)}
-                    aria-label="记住账号"
-                    className="peer sr-only"
-                  />
-                  <span
-                    aria-hidden
-                    className="grid size-[16px] shrink-0 place-items-center rounded-[5px] border border-[#dfe3ec] bg-white text-white transition-colors peer-checked:border-[#18181a] peer-checked:bg-[#18181a] peer-focus-visible:ring-2 peer-focus-visible:ring-[#18181a]/25 peer-focus-visible:ring-offset-1"
-                  >
-                    {remember && (
-                      <svg viewBox="0 0 12 12" className="size-[10px]">
-                        <path
-                          d="M1.6 6.3 4.3 9 10.4 3"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.9"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    )}
-                  </span>
-                  <span className="text-[13px] leading-none text-[#5b6274]">记住账号</span>
-                </label>
-                <span className="shrink-0 text-[12px] leading-none text-[#757f9c]">
-                  30 天内免登录
-                </span>
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="mt-[6px] flex h-[42px] w-full items-center justify-center rounded-[10px] bg-[#18181a] text-[15px] font-normal text-white transition-colors hover:bg-[#18181a]/90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loading ? '登录中…' : '登录'}
-              </button>
-            </form>
+            <LoginForm onLogin={onLogin} />
           </LoginCardStack>
         </div>
 

@@ -86,7 +86,7 @@ export default function LoginWingCards() {
 
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       utils.set(shells, { opacity: 1 });
-      if (bar) utils.set(bar, { width: '62%' });
+      if (bar) utils.set(bar, { scaleX: 0.62 });
       return;
     }
 
@@ -115,10 +115,11 @@ export default function LoginWingCards() {
       });
     });
 
-    // 左卡进度条：入场后从 0 生长到 62%
+    // 左卡进度条：入场后生长到 62%。
+    // 动 width 会逐帧触发布局（卡内文字跟着重排），改动画 scaleX，只走合成。
     if (bar) {
       const grow = animate(bar, {
-        width: ['0%', '62%'],
+        scaleX: [0, 0.62],
         duration: 1700,
         delay: 1400,
         ease: 'outExpo',
@@ -139,7 +140,7 @@ export default function LoginWingCards() {
           className="absolute top-[236px] w-[296px]"
           style={wing.side === 'left' ? { left: 'calc(50% - 620px)' } : { right: 'calc(50% - 620px)' }}
         >
-          <div data-wing-float style={{ opacity: 0 }}>
+          <div data-wing-float className="[will-change:transform]" style={{ opacity: 0 }}>
             <div
               className="rounded-[16px] border border-black/[0.06] bg-white p-[18px] shadow-[0_20px_50px_rgba(17,17,17,0.10)]"
               style={{ transform: `rotate(${wing.rotate}deg)` }}
@@ -165,7 +166,10 @@ export default function LoginWingCards() {
                     ))}
                   </ul>
                   <div className="mt-[14px] h-[6px] overflow-hidden rounded-[4px] bg-[#eef1f6]">
-                    <i data-wing-bar className="block h-full w-0 rounded-[4px] bg-[linear-gradient(90deg,#0f7268,#2a9d8f)]" />
+                    <i
+                      data-wing-bar
+                      className="block h-full w-full origin-left rounded-[4px] bg-[linear-gradient(90deg,#0f7268,#2a9d8f)] [transform:scaleX(0)]"
+                    />
                   </div>
                 </>
               ) : (

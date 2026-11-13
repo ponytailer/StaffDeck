@@ -1,7 +1,17 @@
 import { useState } from 'react';
 import { ApiError, login } from '../../lib/api';
+import { syncAuthFromPlatform, type SyncResult } from '../../lib/platform-auth';
 import { storage, DEFAULT_API_BASE, DEFAULT_TENANT_ID } from '../../lib/storage';
 import type { UserRead } from '../../types';
+
+/** 一键登录失败时的解释：每一种都告诉用户下一步该做什么，而不是干说"失败" */
+const SYNC_FAIL_HINT: Record<Extract<SyncResult, { ok: false }>['reason'], string> = {
+  'no-platform-session': '没找到平台登录态。请先在浏览器里打开并登录 AIStaff 平台（标签页保持开着），再点这里。',
+  expired: '平台登录态已过期，请回平台重新登录后再试。',
+  'logged-out': '你之前在这个插件里退出过登录，请用账号密码登录。',
+  invalid: '平台登录态已失效，请回平台重新登录后再试。',
+  unreachable: '读不到平台标签页（可能刚被关闭），可以直接用账号密码登录。',
+};
 
 export function LoginView(props: { onLoggedIn: (u: UserRead) => void; notice: string }) {
   const [apiBase, setApiBase] = useState('');
@@ -11,6 +21,25 @@ export function LoginView(props: { onLoggedIn: (u: UserRead) => void; notice: st
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncHint, setSyncHint] = useState('');
+
+  /** 主动再试一次"接管平台登录态"（自动同步没成功时的兜底入口） */
+  const syncNow = async () => {
+    setError('');
+    setSyncHint('');
+    setSyncing(true);
+    try {
+      const res = await syncAuthFromPlatform();
+      if (res.ok) {
+        props.onLoggedIn(res.user);
+        return;
+      }
+      setSyncHint(SYNC_FAIL_HINT[res.reason]);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const submit = async () => {
     setError('');
@@ -56,6 +85,17 @@ export function LoginView(props: { onLoggedIn: (u: UserRead) => void; notice: st
 
       {props.notice && <div className="sd-error">{props.notice}</div>}
       {error && <div className="sd-error">{error}</div>}
+
+      <div className="sd-sync">
+        <button className="sd-btn sd-btn-ghost" disabled={syncing} onClick={() => void syncNow()}>
+          {syncing ? '正在读取平台登录态…' : '用平台登录态一键登录'}
+        </button>
+        <div className="sd-sync-hint">
+          {syncHint || '浏览器里已登录 AIStaff 平台，插件会自动接管登录态，无需再输密码。'}
+        </div>
+      </div>
+
+      <div className="sd-divider"><span>或使用账号密码</span></div>
 
       <div className="sd-field">
         <label>账号</label>
