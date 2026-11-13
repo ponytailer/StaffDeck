@@ -11,13 +11,13 @@ import { cn } from '@/lib/utils';
  * → 替换下面两个 URL 与版本号。
  */
 const EXTENSION_DOWNLOAD_URL =
-  'https://ai-staff.folidaymall.com/f/JYQXUuNNzANu/aistaff-extension.zip';
+  'https://ai-staff.folidaymall.com/f/YtiWVzznZICh/aistaff-extension.zip';
 /** Firefox 版是 AMO unlisted 签名后的 .xpi，可直接装进正式版 Firefox */
 const EXTENSION_DOWNLOAD_URL_FIREFOX =
-  'https://ai-staff.folidaymall.com/f/l3-3s5KQ6S-l/d6bf99793dc8430197b1-0.2.5.xpi';
+  'https://ai-staff.folidaymall.com/f/xxH2fDB-RE7P/d6bf99793dc8430197b1-0.2.6.xpi';
 /** 两版各自独立发版，版本号可能不同步，标签跟随当前选中的浏览器 */
-const EXTENSION_VERSION_CHROME = 'v0.2.4';
-const EXTENSION_VERSION_FIREFOX = 'v0.2.5';
+const EXTENSION_VERSION_CHROME = 'v0.2.5';
+const EXTENSION_VERSION_FIREFOX = 'v0.2.6';
 const EXTENSION_UPDATED_AT = '2026-11-13';
 
 type BrowserId = 'chrome' | 'firefox';
@@ -65,7 +65,7 @@ const INSTALL_STEPS: Record<BrowserId, InstallStep[]> = {
   firefox: [
     {
       title: '下载 .xpi 安装包',
-      body: '点上方「下载 Firefox 版」拿到 .xpi 文件，不用解压、不用改后缀。',
+      body: '点上方「下载 Firefox 版（.xpi）」拿到 .xpi 文件，不用解压、不用改后缀。',
     },
     {
       title: '拖进 Firefox 窗口安装',
@@ -337,7 +337,7 @@ export default function BrowserExtensionPage({
             </li>
             <li>
               · Firefox 版提供 Mozilla 正式签名的 .xpi，装完常驻，重启浏览器依然生效；安装时提示
-              「不在 Mozilla 主动监控范围内」属于自签名包的正常提示，选允许即可。
+              「不在 Mozilla 主动监控范围内」属于未在附加组件商店公开上架的正常提示，选允许即可。
             </li>
             <li>
               · 更新插件版本：Chrome 解压覆盖原目录后在扩展管理页点刷新图标；Firefox 直接安装新的

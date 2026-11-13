@@ -2,7 +2,7 @@
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
@@ -297,5 +297,41 @@ describe('Agent 广场', () => {
     expect(paths.some((url) => url.includes('/api/enterprise/agents'))).toBe(false);
     expect(paths.some((url) => url.includes('/api/enterprise/knowledge-bases'))).toBe(false);
     expect(paths.some((url) => url.includes('/api/enterprise/tools'))).toBe(false);
+  });
+});
+
+
+function LocationEcho() {
+  const location = useLocation();
+  return <div data-testid="nav-target">{location.pathname}</div>;
+}
+
+describe('广场员工「使用员工」落点', () => {
+  it('直接进对话端 draft 路由，且先调 /use 打通选用标记', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubPlatformFetch();
+    render(
+      <I18nProvider>
+        <MemoryRouter initialEntries={['/enterprise/platform/agents']}>
+          <Routes>
+            <Route
+              path="/enterprise/platform/:kind"
+              element={<OpenPlatformPage currentUser={admin} isAdmin />}
+            />
+            <Route path="/workspace/chat/draft/:draftAgentId" element={<LocationEcho />} />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    await user.click(await screen.findByRole('button', { name: /小艾/ }));
+    await user.click(await screen.findByRole('button', { name: '使用员工' }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('nav-target').textContent).toBe('/workspace/chat/draft/agent-1'),
+    );
+    expect(
+      requestedPaths(fetchMock).some((path) => path.includes('/api/chat/agents/agent-1/use')),
+    ).toBe(true);
   });
 });

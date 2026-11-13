@@ -889,7 +889,10 @@ export default function OpenPlatformPage({
       }
       try {
         await markPlatformAgentUsed(agent);
-        navigate('/enterprise/dashboard');
+        // 「使用员工」的意图就是开聊：直接落对话端 draft 路由，不再绕工作台。
+        // 广场员工（published_to_gallery）本来就在对话花名册里（canAccessEmployeeAgent），
+        // 且 markPlatformAgentUsed 已调 /use 打通选用标记，draft 路由能直接解析。
+        navigate(`/workspace/chat/draft/${agent.id}`);
       } catch (error) {
         notify.error(error instanceof Error ? error.message : '使用数字员工失败');
       }
