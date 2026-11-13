@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
  * 更新插件时：重新打包 extension/dist → 上传静态资源 → 替换这里的 URL 和版本号。
  */
 const EXTENSION_DOWNLOAD_URL =
-  'https://ai-staff.folidaymall.com/f/Hhq9E9J1egcr/aistaff-extension.zip';
+  'https://ai-staff.folidaymall.com/f/JYQXUuNNzANu/aistaff-extension.zip';
 const EXTENSION_VERSION = 'v0.2.4';
 const EXTENSION_UPDATED_AT = '2026-11-12';
 
