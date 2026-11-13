@@ -11,13 +11,13 @@ import { cn } from '@/lib/utils';
  * → 替换下面两个 URL 与版本号。
  */
 const EXTENSION_DOWNLOAD_URL =
-  'https://ai-staff.folidaymall.com/f/YtiWVzznZICh/aistaff-extension.zip';
+  'https://ai-staff.folidaymall.com/f/U8EZKjjEg8j8/aistaff-extension.zip';
 /** Firefox 版是 AMO unlisted 签名后的 .xpi，可直接装进正式版 Firefox */
 const EXTENSION_DOWNLOAD_URL_FIREFOX =
-  'https://ai-staff.folidaymall.com/f/xxH2fDB-RE7P/d6bf99793dc8430197b1-0.2.6.xpi';
+  'https://ai-staff.folidaymall.com/f/YGBv4eucVNj_/d6bf99793dc8430197b1-0.2.7.xpi';
 /** 两版各自独立发版，版本号可能不同步，标签跟随当前选中的浏览器 */
-const EXTENSION_VERSION_CHROME = 'v0.2.5';
-const EXTENSION_VERSION_FIREFOX = 'v0.2.6';
+const EXTENSION_VERSION_CHROME = 'v0.2.7';
+const EXTENSION_VERSION_FIREFOX = 'v0.2.7';
 const EXTENSION_UPDATED_AT = '2026-11-13';
 
 type BrowserId = 'chrome' | 'firefox';
