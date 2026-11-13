@@ -28,6 +28,7 @@ import MyCreatedToolsPanel from '../components/MyCreatedToolsPanel';
 import MyStaticAssetsPanel from '../components/MyStaticAssetsPanel';
 import KnowledgeManagePage from './KnowledgePage';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
+import EmployeeTransferDialog from '../components/EmployeeTransferDialog';
 import { RevealGroup } from '../components/RevealGroup';
 import {
   canManageEmployeeAgent,
@@ -104,6 +105,8 @@ export default function AgentsPage({
   const [apiKeyAgent, setApiKeyAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
   const [shareAgent, setShareAgent] = useState<AgentProfileRead | null>(null);
+  // 待转让的员工（管理员或该员工当前 owner 才会打开这个弹窗）
+  const [transferAgent, setTransferAgent] = useState<AgentProfileRead | null>(null);
   // 非空表示「这次删除被多智能体挡住了」：弹窗切换成告知态，
   // 文案用后端返回的原话（里面已带上入口名字与「先解绑」的指引）。
   const [deleteBlockedBy, setDeleteBlockedBy] = useState<string | null>(null);
@@ -479,6 +482,31 @@ export default function AgentsPage({
     setAgents((current) => current.map((item) => (item.id === row.id ? row : item)));
   }
 
+  /**
+   * 转让成功后的收尾。
+   *
+   * 转让会改变「谁能管」：原来的 owner 在转让后既不再拥有管理权，甚至可能看不到这
+   * 位员工（非管理员的可见性来自归属）。所以除了刷新列表，还要处理当前对话作用域
+   * —— 如果作用域正停在这位员工上，继续留着只会在对话页撞 403，这里与删除时一样
+   * 把作用域挪到下一位可管理的员工。
+   */
+  function handleTransferred(row: AgentProfileRead) {
+    updateAgentInList(row);
+    if (!canManageEmployeeAgent(row, currentUser) && readEmployeeScope() === row.id) {
+      const nextAgent = employees.find(
+        (item) => item.id !== row.id && item.status === 'active' && canManageEmployeeAgent(item, currentUser),
+      ) || employees.find((item) => item.id !== row.id && canManageEmployeeAgent(item, currentUser));
+      if (nextAgent) {
+        window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, nextAgent.id);
+        window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: nextAgent.id } }));
+      } else {
+        window.localStorage.removeItem(ENTERPRISE_AGENT_STORAGE_KEY);
+        window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: '' } }));
+      }
+    }
+    emitAgentRosterRefresh();
+  }
+
   function openDispatcherEditor(row: DispatcherRead | null) {
     setEditingDispatcher(row);
     setDispatcherFocus(null);
@@ -740,6 +768,7 @@ export default function AgentsPage({
             onChat={() => startEmployeeChat(employee)}
             onApiKeys={() => setApiKeyAgent(employee)}
             onShare={() => setShareAgent(employee)}
+            onTransfer={() => setTransferAgent(employee)}
           />
         ))}
         {!filteredEmployees.length && (
@@ -819,6 +848,13 @@ export default function AgentsPage({
         agent={shareAgent}
         open={Boolean(shareAgent)}
         onClose={() => setShareAgent(null)}
+      />
+      <EmployeeTransferDialog
+        agent={transferAgent}
+        open={Boolean(transferAgent)}
+        currentUser={currentUser}
+        onClose={() => setTransferAgent(null)}
+        onTransferred={handleTransferred}
       />
       <ConfirmDialog
         open={Boolean(deleteTarget)}

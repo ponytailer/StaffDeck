@@ -15,7 +15,7 @@ import IconMore from '../assets/icons/more.svg?react';
 import IconPause from '../assets/icons/pause.svg?react';
 import IconPlay from '../assets/icons/play.svg?react';
 import IconTrash from '../assets/icons/trash.svg?react';
-import { KeyRound, Share2 } from 'lucide-react';
+import { ArrowLeftRight, KeyRound, Share2 } from 'lucide-react';
 import { isGalleryEmployee } from '../auth';
 import { employeeDisplayNameWithCreator, employeeProfile, resourceCount } from '../employee';
 import type { AgentProfileRead } from '../types';
@@ -56,6 +56,8 @@ export type EmployeeCardProps = {
   onChat: () => void;
   onApiKeys?: () => void;
   onShare?: () => void;
+  /** 把员工转给同租户的其他成员（管理员或当前 owner 可用）。 */
+  onTransfer?: () => void;
 };
 
 export default function EmployeeCard({
@@ -74,6 +76,7 @@ export default function EmployeeCard({
   onChat,
   onApiKeys,
   onShare,
+  onTransfer,
 }: EmployeeCardProps) {
   const profile = employeeProfile(employee);
   const sopCount = resourceCount(employee.resources, 'skill');
@@ -264,6 +267,18 @@ export default function EmployeeCard({
               >
                 <KeyRound className="size-[16px]" />
                 API 密钥
+              </DropdownMenuItem>
+            )}
+            {onTransfer && !employee.is_overall && (
+              <DropdownMenuItem
+                className={MENU_ITEM_CLASS}
+                disabled={!canManage || busy}
+                title={canManage ? '把这位员工转给其他成员' : '只有创建者或管理员可以转让'}
+                onClick={(event) => event.stopPropagation()}
+                onSelect={() => onTransfer()}
+              >
+                <ArrowLeftRight className="size-[16px]" />
+                员工转让
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator className="my-[2px] bg-[#eef0f4]" />

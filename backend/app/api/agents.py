@@ -25,6 +25,8 @@ from app.agents.schema import (
     AgentResourcesUpdateRequest,
     AgentScopeRead,
     AgentSkillRollbackRequest,
+    AgentTransferRead,
+    AgentTransferRequest,
     AgentWorkRecordEventRead,
     AgentWorkRecordRead,
     AgentWorkRecordReplyStatsRead,
@@ -92,6 +94,7 @@ from app.security.auth import (
     get_current_user,
     get_share_scope,
 )
+from app.security.permissions import GUEST_USER_SOURCES
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
@@ -451,6 +454,55 @@ def update_agent(
     db.commit()
     db.refresh(row)
     return agent_read(row, _bindings_by_agent(db, request.tenant_id).get(row.id, []))
+
+
+@enterprise_router.post("/{agent_id}/transfer", response_model=AgentTransferRead)
+def transfer_agent(
+    agent_id: str,
+    request: AgentTransferRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AgentTransferRead:
+    """把员工转给同租户的另一个成员（管理员或该员工当前 owner 可操作）。
+
+    只改归属，不复制、不删除：员工 id、会话、使用量、API 密钥全部原样保留，
+    换的只是「谁能管」。长在这个员工身上的私有资源（知识库 / 技能 / SOP / 工具）
+    一并转名，见 ``_transfer_agent_private_resources``。
+
+    为什么单独开一个接口而不是复用 PUT：``_metadata_preserving_creator`` 会刻意
+    把请求里的 owner_* 覆盖回原值，走 PUT 永远改不了归属 —— 这是「编辑资料」
+    不该顺手改主人。转让是一次独立的、需要审计的动作，所以给它自己的入口。
+    """
+    row = _get_agent(db, request.tenant_id, agent_id)
+    _ensure_can_manage_agent(row, current_user)
+    if row.is_overall:
+        raise HTTPException(status_code=400, detail="开放广场是租户公共入口，不能转让")
+    _ensure_not_dispatcher_scope(row, "员工小队是路由配置，不支持转让")
+
+    target = db.get(User, request.owner_user_id)
+    if not target or target.tenant_id != request.tenant_id:
+        raise HTTPException(status_code=404, detail="未找到该成员")
+    if target.source in GUEST_USER_SOURCES:
+        raise HTTPException(status_code=400, detail="只能转让给租户内的正式成员")
+
+    metadata = dict(row.metadata_json or {})
+    previous_owner_id = str(metadata.get("owner_user_id") or "").strip()
+    if previous_owner_id == target.id:
+        raise HTTPException(status_code=400, detail="这位员工已经属于该成员")
+
+    now = utc_now()
+    breakdown = _transfer_agent_private_resources(db, row, target, now)
+    row.metadata_json = _transferred_ownership_metadata(metadata, target, now)
+    row.updated_at = now
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return AgentTransferRead(
+        agent=agent_read(row, _bindings_by_agent(db, request.tenant_id).get(row.id, [])),
+        transferred_resources=sum(breakdown.values()),
+        transferred_breakdown=breakdown,
+        owner_username=target.username,
+    )
 
 
 @enterprise_router.post("/{agent_id}/gallery:unpublish", response_model=AgentProfileRead)
@@ -1450,6 +1502,154 @@ def _metadata_preserving_creator(
 
 def _chat_agent_visible_to_user(row: AgentProfile, user: User) -> bool:
     return _agent_visible_to_user(row, user)
+
+
+def _transferred_ownership_metadata(
+    metadata: dict[str, object] | None,
+    target: User,
+    now: datetime,
+) -> dict[str, object]:
+    """把一份 metadata 的归属改写成 target，并记下上一手 owner。
+
+    同时改 `owner_*` 与 `created_by_*` / `creator_name`：前者决定「谁能管」，后者
+    是几处列表与回退逻辑实际用来过滤的键（「我创建的技能/工具」、个人库属主回退、
+    工具创建者回退）。只改 owner_* 会出现「新 owner 能管、却在自己列表里看不到」
+    的错位。原值留档到 `previous_*`，审计时能追回上一手。
+    """
+    current = dict(metadata or {})
+    display_name = target.display_name or target.username
+    previous_owner_id = str(
+        current.get("owner_user_id") or current.get("created_by_user_id") or ""
+    ).strip()
+    previous_username = str(
+        current.get("owner_username") or current.get("created_by_username") or ""
+    ).strip()
+    current.update(
+        {
+            "owner_user_id": target.id,
+            "owner_username": target.username,
+            "owner_display_name": display_name,
+            "created_by_user_id": target.id,
+            "created_by_username": target.username,
+            "created_by": target.username,
+            "created_by_display_name": display_name,
+            "creator_name": target.username,
+            "ownership_transferred_at": now.isoformat(),
+        }
+    )
+    if previous_owner_id and previous_owner_id != target.id:
+        current["previous_owner_user_id"] = previous_owner_id
+    if previous_username and previous_username != target.username:
+        current["previous_owner_username"] = previous_username
+    return current
+
+
+def _transfer_agent_private_resources(
+    db: Session,
+    agent: AgentProfile,
+    target: User,
+    now: datetime,
+) -> dict[str, int]:
+    """把「长在这个员工身上」的资源一并转名，返回各类型条数。
+
+    边界（多一步都不做，避免误伤别人）：
+
+    - **转**：员工私有资源 —— ``metadata.owner_agent_id == 员工 id`` 的知识库与
+      通用技能，以及该员工的 SOP 分支。它们本来就只服务于这一个员工。
+    - **有条件转**：工具的定义表没有 metadata 列，归属记在绑定行上；只有「除本
+      员工外没有任何其它绑定」时才转，否则会把共享给别人员工的工具一起改名。
+    - **不转**：个人知识库（不属于任何员工）、开放广场资源（属于全租户）。
+
+    所有查询都按类型批量取（``in_``），不按绑定逐条 ``db.get`` —— 远程 PG 上
+    N 个绑定就是 N 次往返，转让一次要等十几秒。
+    """
+    counts: dict[str, int] = {}
+    bindings = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == agent.tenant_id,
+            AgentResourceBinding.agent_id == agent.id,
+            AgentResourceBinding.status != "deleted",
+        )
+    ).all()
+    if not bindings:
+        return counts
+
+    ids_by_type: dict[str, list[str]] = {}
+    for binding in bindings:
+        ids_by_type.setdefault(binding.resource_type, []).append(binding.resource_id)
+
+    for resource_type, model in (
+        ("knowledge_base", KnowledgeBase),
+        ("general_skill", GeneralSkill),
+    ):
+        resource_ids = ids_by_type.get(resource_type) or []
+        if not resource_ids:
+            continue
+        rows = db.exec(
+            select(model).where(
+                model.tenant_id == agent.tenant_id, model.id.in_(resource_ids)
+            )
+        ).all()
+        for row in rows:
+            resource_metadata = dict(row.metadata_json or {})
+            if resource_metadata.get("owner_agent_id") != agent.id:
+                continue
+            row.metadata_json = _transferred_ownership_metadata(
+                resource_metadata, target, now
+            )
+            row.updated_at = now
+            db.add(row)
+            counts[resource_type] = counts.get(resource_type, 0) + 1
+
+    # SOP：Skill 行没有 metadata 列，归属标记挂在员工分支上。
+    skill_ids = ids_by_type.get("skill") or []
+    if skill_ids:
+        skill_rows = db.exec(
+            select(Skill).where(
+                Skill.tenant_id == agent.tenant_id, Skill.id.in_(skill_ids)
+            )
+        ).all()
+        skill_id_values = [row.skill_id for row in skill_rows]
+        branches = db.exec(
+            select(AgentSkillBranch).where(
+                AgentSkillBranch.tenant_id == agent.tenant_id,
+                AgentSkillBranch.agent_id == agent.id,
+                AgentSkillBranch.skill_id.in_(skill_id_values),
+            )
+        ).all()
+        for branch in branches:
+            branch.metadata_json = _transferred_ownership_metadata(
+                branch.metadata_json, target, now
+            )
+            branch.updated_at = now
+            db.add(branch)
+            counts["skill"] = counts.get("skill", 0) + 1
+
+    tool_ids = ids_by_type.get("tool") or []
+    if tool_ids:
+        tool_bindings = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == agent.tenant_id,
+                AgentResourceBinding.resource_type == "tool",
+                AgentResourceBinding.resource_id.in_(tool_ids),
+                AgentResourceBinding.status != "deleted",
+            )
+        ).all()
+        by_resource: dict[str, list[AgentResourceBinding]] = {}
+        for binding in tool_bindings:
+            by_resource.setdefault(binding.resource_id, []).append(binding)
+        for rows in by_resource.values():
+            if {row.agent_id for row in rows} != {agent.id}:
+                continue
+            for binding in rows:
+                binding.metadata_json = _transferred_ownership_metadata(
+                    binding.metadata_json, target, now
+                )
+                binding.updated_at = now
+                db.add(binding)
+            counts["tool"] = counts.get("tool", 0) + 1
+
+    return counts
 
 
 def binding_read(row: AgentResourceBinding) -> AgentResourceBindingRead:

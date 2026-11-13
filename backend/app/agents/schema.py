@@ -71,6 +71,23 @@ class AgentProfileRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AgentTransferRequest(BaseModel):
+    """把员工连同其私有资源一并转给同租户的另一个成员。"""
+
+    tenant_id: str
+    # 新 owner 的用户 id（不是用户名：用户名可改，id 不会）
+    owner_user_id: str = Field(min_length=1)
+
+
+class AgentTransferRead(BaseModel):
+    agent: AgentProfileRead
+    # 一起转走的私有资源数量（知识库 / 技能 / SOP / 工具）：确认提示里要说清
+    # 「员工 + N 项资源」，否则用户会以为只是换了个名字。
+    transferred_resources: int = 0
+    transferred_breakdown: dict[str, int] = Field(default_factory=dict)
+    owner_username: str = ""
+
+
 class AgentFreeModelRequest(BaseModel):
     """管理员标记/取消免费员工(免费模型自动回落)。"""
 
