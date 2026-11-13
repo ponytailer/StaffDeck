@@ -474,3 +474,51 @@ def test_appendix_only_when_model_used_no_image() -> None:
     assert "/api/a.png" in appendix and "/api/b.png" in appendix
     assert "/api/c.png" not in appendix
     assert build_image_appendix([{"ref": "{{img:1}}", "url": ""}]) == ""
+
+
+def test_docx_table_images_are_extracted() -> None:
+    """「左文右图」两列表格是操作手册主流排版，图必须抽到并留在对应行。
+
+    旧实现只取 ``cell.text``，这类文档的图会一张不剩，而且正文里连 ``[图片 N]``
+    退化标记都没有——从数据上完全看不出图丢了。
+    """
+
+    from docx import Document
+    from docx.shared import Inches
+
+    document = Document()
+    document.add_heading("员工系统如何使用", level=1)
+    document.add_paragraph("参考图例：")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "登录页"
+    table.cell(0, 1).paragraphs[0].add_run().add_picture(BytesIO(PNG_1PX), width=Inches(1))
+    table.cell(1, 0).text = "首页"
+    table.cell(1, 1).paragraphs[0].add_run().add_picture(BytesIO(PNG_1PX), width=Inches(1))
+    buffer = BytesIO()
+    document.save(buffer)
+
+    parsed = extract_document("table.docx", buffer.getvalue())
+
+    assert len(parsed.images) == 2
+    assert parsed.text.count("kasset://") == 2
+    rows = [line for line in parsed.text.splitlines() if "|" in line]
+    assert "登录页" in rows[0] and "kasset://0" in rows[0]
+    assert "首页" in rows[1] and "kasset://1" in rows[1]
+
+
+def test_docx_merged_cell_image_is_not_duplicated() -> None:
+    """合并单元格在 python-docx 的 ``row.cells`` 里会重复出现，按 XML 遍历才不会入两遍。"""
+
+    from docx import Document
+    from docx.shared import Inches
+
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).merge(table.cell(0, 1))
+    table.cell(0, 0).paragraphs[0].add_run().add_picture(BytesIO(PNG_1PX), width=Inches(1))
+    buffer = BytesIO()
+    document.save(buffer)
+
+    parsed = extract_document("merged.docx", buffer.getvalue())
+
+    assert len(parsed.images) == 1

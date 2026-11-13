@@ -170,7 +170,6 @@ def _extract_docx_with_python_docx(content: bytes) -> ParsedDocument:
 
     from docx import Document
     from docx.oxml.ns import qn
-    from docx.table import Table
     from docx.text.paragraph import Paragraph
 
     document = Document(BytesIO(content))
@@ -191,12 +190,43 @@ def _extract_docx_with_python_docx(content: bytes) -> ParsedDocument:
                 label = image.alt or f"图片 {index + 1}"
                 rows.append(f"![{label}]({DOCX_IMAGE_PLACEHOLDER}{index})")
         elif child.tag == qn("w:tbl"):
-            table = Table(child, document)
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if cells:
-                    rows.append(" | ".join(cells))
+            rows.extend(_docx_table_rows(child, document, images))
     return ParsedDocument(text="\n".join(rows), file_type="docx", images=images)
+
+
+def _docx_table_rows(table_element, document, images: list[ExtractedImage]) -> list[str]:
+    """表格按行输出，**单元格里的图片也抽**。
+
+    操作手册最常见的排版是「左文右图」两列表格（2026-11-13 线上实例：正文写着
+    「参考图例：」，图全在表格里）。只取 ``cell.text`` 会让这类文档的图一张都
+    抽不到——而且正文里连退化标记都没有，从数据上完全看不出来图丢了。
+
+    刻意不遍历 ``table.rows``：合并单元格会被重复返回，同一张图会入库两次。
+    直接走 ``w:tbl > w:tr > w:tc > w:p`` 只按 XML 实际结构来。
+    """
+
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    rows: list[str] = []
+    for tr in table_element.findall(qn("w:tr")):
+        cells: list[str] = []
+        for tc in tr.findall(qn("w:tc")):
+            parts: list[str] = []
+            for paragraph_element in tc.findall(qn("w:p")):
+                text = Paragraph(paragraph_element, document).text.strip()
+                if text:
+                    parts.append(text)
+                for image in _docx_paragraph_images(paragraph_element, document):
+                    index = len(images)
+                    images.append(image)
+                    label = image.alt or f"图片 {index + 1}"
+                    parts.append(f"![{label}]({DOCX_IMAGE_PLACEHOLDER}{index})")
+            if parts:
+                cells.append(" ".join(parts))
+        if cells:
+            rows.append(" | ".join(cells))
+    return rows
 
 
 def _docx_paragraph_images(paragraph_element, document) -> list[ExtractedImage]:
