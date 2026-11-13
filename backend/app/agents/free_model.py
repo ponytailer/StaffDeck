@@ -20,7 +20,7 @@ from sqlmodel import Session, select
 
 from app.db.models import AgentProfile, GlobalFreeModelUsage, ModelConfig, utc_now
 
-FREE_MODEL_DAILY_LIMIT = 10
+FREE_MODEL_DAILY_LIMIT = 20
 
 # 超限错误码:前端按这个码译提示语,不要改
 FREE_MODEL_QUOTA_EXHAUSTED_CODE = "free_model_quota_exhausted"
