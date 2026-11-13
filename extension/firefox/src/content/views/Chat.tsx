@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import {
   ApiError,
   FREE_MODEL_QUOTA_EXHAUSTED_CODE,
@@ -6,6 +6,7 @@ import {
   streamChatTurn,
   useAgent,
 } from '../../lib/api';
+import { storage } from '../../lib/storage';
 import type { AgentProfileRead } from '../../types';
 
 type ChatMessage = {
@@ -28,6 +29,11 @@ function newId(): string {
 const URL_RE = /https?:\/\/[^\s<>"']+/g;
 const TRAILING_PUNCT_RE = /[)\]},.;:!?、。，；：！？）」』】》”’"']+$/;
 
+/** markdown 图片 `![说明](地址)`；地址部分不允许空白，避免把后面的正文吞进 URL */
+const IMAGE_MARKDOWN_RE = /!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)/g;
+/** 正常图片标记不会超过这个长度；超了还不见 `)`，就不是图片，按普通文本处理 */
+const MAX_PENDING_IMAGE_CHARS = 300;
+
 function splitLinks(text: string): Array<{ type: 'text' | 'link'; value: string }> {
   const parts: Array<{ type: 'text' | 'link'; value: string }> = [];
   let last = 0;
@@ -45,16 +51,105 @@ function splitLinks(text: string): Array<{ type: 'text' | 'link'; value: string 
   return parts;
 }
 
-function renderBubbleContent(text: string, streaming: boolean) {
+/**
+ * 把 markdown 图片地址解成可用的绝对地址。
+ *
+ * 面板是注入到宿主页面（OA 等）里的，`<img src="/api/...">` 会被解析成宿主域名，
+ * 直接 404，所以相对地址必须补 API 基地址。第三方绝对地址一律拒绝：回答正文里的
+ * 外链图会被浏览器直接请求，既是 IP/UA 泄露，也能当追踪像素用。
+ */
+function normalizeImageUrl(raw: string, apiBase: string): string | null {
+  const value = raw.trim();
+  if (!value || value.startsWith('//')) return null;
+  if (value.startsWith('/')) {
+    return apiBase ? `${apiBase}${value}` : null;
+  }
+  if (!/^https?:\/\//i.test(value) || !apiBase) return null;
+  try {
+    return new URL(value).origin === new URL(apiBase).origin ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 流式下发时末尾可能是刚写到一半的图片标记（`![图例](/api/knowledge/assets/ka`），
+ * 不压住就会先闪一段 markdown 源码。等右括号到了再由下一片补全。
+ */
+function trimPendingImage(text: string): string {
+  const start = text.lastIndexOf('![');
+  if (start < 0) return text;
+  const tail = text.slice(start);
+  if (tail.includes(')') || tail.length > MAX_PENDING_IMAGE_CHARS) return text;
+  return text.slice(0, start);
+}
+
+type BubbleSegment =
+  | { type: 'text'; value: string }
+  | { type: 'image'; src: string; alt: string };
+
+function splitImages(text: string, apiBase: string): BubbleSegment[] {
+  const segments: BubbleSegment[] = [];
+  let last = 0;
+  for (const match of text.matchAll(IMAGE_MARKDOWN_RE)) {
+    const index = match.index ?? 0;
+    if (index > last) segments.push({ type: 'text', value: text.slice(last, index) });
+    const src = normalizeImageUrl(match[2], apiBase);
+    // 解析不出来就原样保留 markdown：宁可难看，也别把用户该看到的内容吞掉
+    segments.push(src ? { type: 'image', src, alt: match[1] || '' } : { type: 'text', value: match[0] });
+    last = index + match[0].length;
+  }
+  if (last < text.length) segments.push({ type: 'text', value: text.slice(last) });
+  return segments;
+}
+
+function MsgImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <span className="sd-msg-image-failed">{alt ? `[图片加载失败：${alt}]` : '[图片加载失败]'}</span>
+    );
+  }
+  return (
+    <a
+      className="sd-msg-image-link"
+      href={src}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="点击查看大图"
+    >
+      <img
+        className="sd-msg-image"
+        src={src}
+        alt={alt}
+        loading="lazy"
+        onError={() => setFailed(true)}
+      />
+    </a>
+  );
+}
+
+function renderLinks(text: string) {
+  return splitLinks(text).map((p, i) =>
+    p.type === 'text' ? (
+      <Fragment key={i}>{p.value}</Fragment>
+    ) : (
+      <a key={i} className="sd-link" href={p.value} target="_blank" rel="noopener noreferrer">
+        {p.value}
+      </a>
+    ),
+  );
+}
+
+function renderBubbleContent(text: string, streaming: boolean, apiBase: string) {
+  const body = streaming ? trimPendingImage(text) : text;
   return (
     <>
-      {splitLinks(text).map((p, i) =>
-        p.type === 'text' ? (
-          p.value
+      {splitImages(body, apiBase).map((segment, i) =>
+        segment.type === 'image' ? (
+          <MsgImage key={i} src={segment.src} alt={segment.alt} />
         ) : (
-          <a key={i} className="sd-link" href={p.value} target="_blank" rel="noopener noreferrer">
-            {p.value}
-          </a>
+          <Fragment key={i}>{renderLinks(segment.value)}</Fragment>
         ),
       )}
       {streaming && <span className="sd-typing-cursor" />}
@@ -75,6 +170,8 @@ export function ChatView(props: {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ text: string; quota: boolean } | null>(null);
+  /** 回答里的配图是 API 侧资源，注入到宿主页面后必须用绝对地址（见 normalizeImageUrl） */
+  const [apiBase, setApiBase] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(props.getSessionId(agent.id));
   const activeTurnIdRef = useRef<string | null>(null);
@@ -90,6 +187,19 @@ export function ChatView(props: {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
+
+  useEffect(() => {
+    let alive = true;
+    void storage
+      .getApiBase()
+      .then((value) => {
+        if (alive) setApiBase(value.replace(/\/+$/, ''));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const statusText = agent.free_model_enabled
     ? `在线 · 免费${typeof agent.free_model_remaining === 'number' ? ` · 今日剩 ${agent.free_model_remaining} 问` : ''}`
@@ -274,7 +384,7 @@ export function ChatView(props: {
                     <span className="sd-typing-cursor" />
                   </span>
                 ) : (
-                  renderBubbleContent(m.content, Boolean(m.streaming))
+                  renderBubbleContent(m.content, Boolean(m.streaming), apiBase)
                 )}
               </div>
             </div>

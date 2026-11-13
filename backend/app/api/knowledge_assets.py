@@ -57,8 +57,12 @@ def read_knowledge_asset(
         # 内容按 sha256 存储，同 id 的内容不会变，可放心让浏览器缓存
         "Cache-Control": "private, max-age=86400",
         "X-Content-Type-Options": "nosniff",
-        # 图片不该被别的站点嵌入：签名 URL 一旦外泄，CORP 至少挡住跨站读取
-        "Cross-Origin-Resource-Policy": "same-origin",
+        # 必须允许跨源嵌入：浏览器插件把聊天面板注入到宿主的 OA 页面里，
+        # `<img src="https://<api>/api/knowledge/assets/...">` 是跨源请求，
+        # `same-origin` 会让它静默裂图（图片不显示，控制台也没有明显报错）。
+        # 放开的风险可控：可执行的 html/svg 已被 _RENDERABLE_MIME 排除并降级成
+        # attachment，这里能被 `cross-origin` 嵌入的只有静态位图。
+        "Cross-Origin-Resource-Policy": "cross-origin",
     }
     if not renderable:
         headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
