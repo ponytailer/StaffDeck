@@ -1,5 +1,7 @@
-// Background service worker 独立打包：src/background/main.ts → dist/background.js（IIFE）。
-// MV3 SW 用经典脚本即可（不需要 module type），与 oa-panel 同款 vite API 二次构建。
+// Background 独立打包：src/background/main.ts → dist/background.js（IIFE）。
+//
+// Firefox 的 MV3 后台是 event page（manifest 里 background.scripts），同样是经典脚本。
+// 用 vite API 二次构建，避免为每个产物再开一份配置文件。
 import { resolve } from 'node:path';
 import { build } from 'vite';
 
@@ -11,6 +13,8 @@ await build({
   build: {
     outDir: resolve(root, 'dist'),
     emptyOutDir: false,
+    target: 'firefox115',
+    minify: true,
     lib: {
       entry: resolve(root, 'src/background/main.ts'),
       formats: ['iife'],

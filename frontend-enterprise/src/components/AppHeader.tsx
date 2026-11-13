@@ -439,7 +439,7 @@ export default function AppHeader({
                   className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
                 >
                   <Puzzle className="size-[16px]" />
-                  Chrome 浏览器插件
+                  浏览器插件
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem

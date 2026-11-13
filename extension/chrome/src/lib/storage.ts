@@ -1,4 +1,6 @@
-/** chrome.storage.local 封装：token、用户、租户、API 地址、悬浮球位置 */
+/** 扩展 storage.local 封装：token、用户、租户、API 地址、悬浮球位置（Chrome / Firefox 通用） */
+
+import { extStorage } from './ext';
 
 export type StoredUser = import('../types').UserRead;
 
@@ -17,28 +19,20 @@ export const DEFAULT_API_BASE = 'https://ai-staff.folidaymall.com';
 export const DEFAULT_TENANT_ID = 'tenant_demo';
 
 function get<T>(key: string): Promise<T | null> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(key, (items) => resolve((items[key] as T) ?? null));
-  });
+  return extStorage.get<T>(key);
 }
 
 function set(key: string, value: unknown): Promise<void> {
-  return new Promise((resolve) => {
-    chrome.storage.local.set({ [key]: value }, () => resolve());
-  });
+  return extStorage.set({ [key]: value });
 }
 
 /** 一次写入多项：登录态同步要写 4~5 个键，合并成一次往返 */
 function setMany(items: Record<string, unknown>): Promise<void> {
-  return new Promise((resolve) => {
-    chrome.storage.local.set(items, () => resolve());
-  });
+  return extStorage.set(items);
 }
 
 function remove(key: string): Promise<void> {
-  return new Promise((resolve) => {
-    chrome.storage.local.remove(key, () => resolve());
-  });
+  return extStorage.remove(key);
 }
 
 export type BallPos = { x: number; y: number };

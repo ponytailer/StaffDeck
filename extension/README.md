@@ -1,37 +1,42 @@
-# AIStaff 浏览器助手（Chrome 插件）
+# AIStaff 浏览器助手
 
-把 AIStaff 数字员工装进每一个网页：注入式悬浮球 + 面板（登录 → 员工列表 → 流式聊天）。
+同一套能力的两个浏览器版本，**代码各自独立**，改一边不影响另一边。
 
-正式方案见 `../docs/chrome-extension-plan.md`；视觉基准 Demo 见 `../docs/chrome-extension-demo.html`。
-
-## 开发
-
-```bash
-cd extension
-npm install
-npm run build     # 产出 dist/（content.js + manifest.json）
-npm run dev       # watch 模式，改动后重新 build
-npm run typecheck # tsc --noEmit
+```
+extension/
+├── chrome/     Chromium（Chrome / Edge / 360 / QQ 浏览器）版
+└── firefox/    Firefox 版
 ```
 
-## 安装到 Chrome（开发者模式）
+| | chrome/ | firefox/ |
+|---|---|---|
+| manifest `background` | `service_worker` | `scripts`（event page） |
+| 构建 target | `chrome120` | `firefox115` |
+| 产物 | `dist/aistaff-extension.zip` | `dist/aistaff-firefox-extension.zip` |
+| 载入方式 | `chrome://extensions` → 开发者模式 → 加载已解压的扩展程序 | `about:debugging#/runtime/this-firefox` → 临时载入 |
 
-1. 打开 `chrome://extensions`，右上角开启「开发者模式」；
-2. 点「加载已解压的扩展程序」，选择 `extension/dist` 目录；
-3. 默认连接生产后端 `https://ai-staff.folidaymall.com`（`host_permissions` 已声明；本地开发可在登录视图「服务器与租户」中改回 `http://localhost:8000`）；
-4. 任意网页右下角出现青绿悬浮球 → 点击展开 → 登录（默认服务地址 `http://localhost:8000`，可在登录视图「服务器与租户」中修改）。
+两边功能 1:1 一致：悬浮球 + 面板、平台登录态自动接管、员工列表、流式聊天、OA 代填。
+所有跨浏览器的 API 差异（Promise / 回调、service worker / event page、MAIN world 版本）
+都收在各自 `src/lib/ext.ts` 里，业务代码不用判断浏览器。
 
-## 架构速记
+各自用法见 `chrome/README.md` 与 `firefox/README.md`。
 
-- 单文件 content script（IIFE，React 18 打包在内），Shadow DOM 隔离样式；
-- background service worker 是**唯一网络层**：content script 与宿主页面同源，跨源 fetch 会被页面 CORS 卡死（生产网关对 OPTIONS 返回 400）；SW 凭 host_permissions 豁免 CORS。content script 通过 `chrome.runtime.connect({ name: 'sd-proxy' })` 端口代理请求（JSON 一次性回传，SSE 逐块转发，断开端口即 abort）；token 存 `chrome.storage.local`；
-- API 契约与 `frontend-enterprise/src/api/client.ts` 一致：`POST /api/auth/login`、`GET /api/chat/agents`、`POST /api/chat/stream`（SSE 事件：`session_created` / `stream_delta` / `token` / `stream_replace` / 终态事件集）、`POST /api/chat/sessions/{id}/cancel`；
-- 免费配额错误码 `free_model_quota_exhausted` 由后端返回，插件展示配额提示；
-- 会话与平台 Web 共享（同一 `ChatSession`），`channel: "extension"` 用于区分来源；对外品牌名为 AIStaff。
+平台侧介绍页：`frontend-enterprise/src/pages/BrowserExtensionPage.tsx`。
+更新发布时两个 zip 都要重新打包上传，再改该文件顶部的下载地址常量。
 
-## 上线前 TODO
+## Firefox 上架 AMO 的硬性要求
 
-- [x] 生产域名 `https://ai-staff.folidaymall.com/*` 已加入 `host_permissions`，并作为默认登录地址；
-- [ ] 补插件图标（icons/16/48/128，当前未声明走默认图标）；
-- [ ] 「当前网站隐藏悬浮球」兜底入口；
-- [ ] 划词发送（二期）。
+AMO 的自动校验比 Chrome 严，以下几条踩过就装不上：
+
+1. **`browser_specific_settings.gecko.data_collection_permissions` 必填**
+   （Firefox 140+ 新规，缺了直接报 error 拒绝提交）。
+   当前声明 `required: ["authenticationInfo", "websiteContent"]`：
+   读平台登录 token 属于前者，读网页/OA 表单内容属于后者。若将来新增采集项要同步补。
+2. **版本号必须递增**，同一个版本号不能重复上传，改 manifest 与 `package.json` 两处。
+3. 代码是压缩产物，审核通常会要求提供**源码包**：
+   `cd firefox && zip -r -X dist/aistaff-firefox-source.zip src scripts manifest.json package.json package-lock.json tsconfig.json vite.config.ts -x "*/node_modules/*"`
+4. 用 **unlisted（自签名）** 通道发布，拿到 `.xpi` 后可正式版 Firefox 直接安装，
+   不必每次 `about:debugging` 临时载入。
+
+剩余 warning（`innerHTML` ×2、`import()` ×1）来自 react-dom 内部与 oa-panel 按需加载，
+不影响签名，提交时可以带着走。

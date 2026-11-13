@@ -1,10 +1,13 @@
 /**
  * content script 侧的网络 transport。
  *
- * 默认走 background service worker 代理（豁免 CORS，见 background/main.ts）；
+ * 默认走 background 代理（Chromium 是 service worker，Firefox 是 event page，
+ * 对外都是 runtime.connect 端口）——两者都凭 host_permissions 发请求，豁免 CORS；
  * SW 不可用时（理论不应发生）回退直连 fetch——同源页面下直连也能工作。
  * 对上层 api.ts 暴露统一的 proxyFetch：JSON 一次性返回，SSE 通过 onChunk 逐块回调。
  */
+
+import { extRuntime, isExtensionContext } from './ext';
 
 export type ProxyFetchResult = {
   ok: boolean;
@@ -22,10 +25,6 @@ type ProxyInit = {
   onChunk?: (text: string) => void;
 };
 
-function hasRuntime(): boolean {
-  return typeof chrome !== 'undefined' && !!chrome.runtime?.connect;
-}
-
 function abortLikeError(): Error {
   const e = new Error('aborted');
   e.name = 'AbortError';
@@ -33,12 +32,12 @@ function abortLikeError(): Error {
 }
 
 export function proxyFetch(url: string, init: ProxyInit): Promise<ProxyFetchResult> {
-  if (!hasRuntime()) return directFetch(url, init);
+  if (!isExtensionContext()) return directFetch(url, init);
 
   return new Promise<ProxyFetchResult>((resolve, reject) => {
     let port: chrome.runtime.Port;
     try {
-      port = chrome.runtime.connect({ name: 'sd-proxy' });
+      port = extRuntime.connect('sd-proxy');
     } catch {
       void directFetch(url, init).then(resolve, reject);
       return;

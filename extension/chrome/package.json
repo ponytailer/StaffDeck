@@ -1,11 +1,12 @@
 {
-  "name": "staffdeck-extension",
+  "name": "staffdeck-extension-chrome",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build && node scripts/build-background.mjs && node scripts/build-oa-panel.mjs && node scripts/copy-assets.mjs",
+    "package": "cd dist && rm -f aistaff-extension.zip && zip -j -X aistaff-extension.zip manifest.json background.js content.js oa-panel.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

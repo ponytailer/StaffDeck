@@ -6,7 +6,6 @@ const root = new URL('..', import.meta.url).pathname;
 const dist = join(root, 'dist');
 mkdirSync(dist, { recursive: true });
 
-// manifest
 copyFileSync(join(root, 'manifest.json'), join(dist, 'manifest.json'));
 
 // icons（存在才复制）

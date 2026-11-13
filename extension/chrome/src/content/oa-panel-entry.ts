@@ -4,4 +4,4 @@
 // 它是立即执行的 IIFE，动态 import 本文件时创建/显示面板——因此必须与
 // 主 content script 分开打包（主包静态引入会在每个页面自动弹面板）。
 // eslint-disable-next-line import/no-relative-packages
-import '../../../backend/app/web/oa_panel.js';
+import '../../../../backend/app/web/oa_panel.js';

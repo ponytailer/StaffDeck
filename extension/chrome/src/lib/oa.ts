@@ -1,3 +1,4 @@
+import { extRuntime, isExtensionContext } from './ext';
 import { storage } from './storage';
 import { proxyFetch } from './proxy';
 
@@ -97,7 +98,9 @@ export async function toggleOaPanel(): Promise<void> {
   w.__SD_OA_CONFIG__ = config;
   w.__SD_OA_BASE__ = (await storage.getApiBase()).replace(/\/+$/, '');
 
-  await import(/* @vite-ignore */ chrome.runtime.getURL('oa-panel.js'));
+  // Firefox 同样支持 content script 里的动态 import（仅允许 moz-extension: 地址），
+  // 但要求 oa-panel.js 在 web_accessible_resources 里，两份 manifest 都声明了
+  await import(/* @vite-ignore */ extRuntime.getURL('oa-panel.js'));
 }
 
 /** 面板场景自动匹配用的 workflowid（当前页面能唯一对应场景时，面板自动选中） */
@@ -128,17 +131,18 @@ export type OaScenarioInfo = {
 };
 
 /**
- * 新 tab 打开 url。content script 没有 chrome.tabs API（仅 background 可用），
- * 发消息让 service worker 代开；SW 不可用时回退 window.open（用户手势内不会被拦）。
+ * 新 tab 打开 url。content script 没有 tabs API（仅后台可用），
+ * 发消息让后台代开；后台不可用时回退 window.open（用户手势内不会被拦）。
  */
 export function openInNewTab(url: string): void {
-  if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-    chrome.runtime.sendMessage({ type: 'open-tab', url }, () => {
-      void chrome.runtime.lastError; // SW 唤醒失败时静默，走不了就算了
-    });
-  } else {
+  if (!isExtensionContext()) {
     window.open(url, '_blank', 'noopener');
+    return;
   }
+  // 后台没醒 / 消息没人接时补一次 window.open（可能被弹窗拦截，但不至于点了没反应）
+  void extRuntime.sendMessage<{ ok?: boolean }>({ type: 'open-tab', url }).then((res) => {
+    if (!res) window.open(url, '_blank', 'noopener');
+  });
 }
 
 /** 单据助手 tab 的场景清单（仅启用项；配置加载失败返回 null 以示区分） */

@@ -9,8 +9,8 @@
  *
  * 两条取数路径：
  *  1. 当前页就是平台页：content script 的 localStorage 与页面同源共享，直接读（零权限、最快）；
- *  2. 当前页不是平台页（如 OA 报销页）：让 service worker 找到后台开着的平台标签页，
- *     用 chrome.scripting 在 MAIN world 里读同一份 localStorage（需 scripting 权限）。
+ *  2. 当前页不是平台页（如 OA 报销页）：让后台（Chrome=SW / Firefox=event page）
+ *     找到后台开着的平台标签页，用 scripting 注入读取同一份 localStorage（需 scripting 权限）。
  *     平台标签页没开着时无法读取 —— 这是浏览器沙箱的硬边界，此时退回账号密码登录。
  *
  * 三条安全边界：
@@ -21,6 +21,7 @@
  */
 
 import { fetchMe } from './api';
+import { extRuntime, isExtensionContext } from './ext';
 import { storage } from './storage';
 import type { UserRead } from '../types';
 
@@ -95,26 +96,21 @@ function readFromThisPage(): PlatformSession | null {
   }
 }
 
-/** 路径 2：让 service worker 去开着的平台标签页里读（见 background/main.ts） */
+/** 路径 2：让后台去开着的平台标签页里读（见 background/main.ts） */
 async function readFromOpenTabs(): Promise<PlatformSession | null> {
-  if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return null;
-  try {
-    const res = (await chrome.runtime.sendMessage({ type: 'read-platform-auth' })) as
-      | { ok?: boolean; session?: PlatformSession | null }
-      | undefined;
-    if (!res || res.ok !== true || !res.session) return null;
-    const s = res.session;
-    if (typeof s.token !== 'string' || !s.token || !isPlatformOrigin(String(s.origin))) return null;
-    return {
-      token: s.token,
-      tenantId: typeof s.tenantId === 'string' ? s.tenantId : null,
-      expiresAt: typeof s.expiresAt === 'number' ? s.expiresAt : null,
-      origin: s.origin,
-    };
-  } catch {
-    // SW 未就绪 / 消息通道被页面关闭
-    return null;
-  }
+  if (!isExtensionContext()) return null;
+  const res = await extRuntime.sendMessage<{ ok?: boolean; session?: PlatformSession | null }>({
+    type: 'read-platform-auth',
+  });
+  if (!res || res.ok !== true || !res.session) return null;
+  const s = res.session;
+  if (typeof s.token !== 'string' || !s.token || !isPlatformOrigin(String(s.origin))) return null;
+  return {
+    token: s.token,
+    tenantId: typeof s.tenantId === 'string' ? s.tenantId : null,
+    expiresAt: typeof s.expiresAt === 'number' ? s.expiresAt : null,
+    origin: s.origin,
+  };
 }
 
 /**
