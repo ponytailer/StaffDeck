@@ -69,6 +69,16 @@ _MONEY_RE = re.compile(r"[¥￥]\s*([0-9][0-9,]*\.[0-9]{2})")
 _PCT_RE = re.compile(r"(?<![0-9.])([0-9]{1,2}(?:\.[0-9]{1,2})?)\s*%")
 # 可接受的税率档位：反推出来的税率只在这些档位附近才采纳（防止误取到别的数字）
 _PLAUSIBLE_RATES = (1, 3, 5, 6, 9, 10, 13)
+# 免税 / 不征税票的判据。数电票把「税率/征收率」「税额」两栏直接印成 `*`：
+# 票面既没有「税率 x%」，也没有可用于反推的税额数字，三条路全落空。
+# 此前落到这里返回 None，面板拿空税率去同名匹配发票类型，会命中第一个
+# 档位（常见是 13%）——一张免税通信服务费（367 元）因此被代填成 13%。
+#   ① 票面写「免税」/「不征税」
+#   ② 金额行紧跟 `**`（税率栏 + 税额栏都是星号，如 `367.00**`）
+#   ③ 有「税率/征收率」表头（数电票标配）却全文找不到任何百分数
+_TAX_FREE_RE = re.compile(r"免税|不征税")
+_STAR_RATE_RE = re.compile(r"\d+\.\d{2}\*{2}")
+_RATE_HEADER_RE = re.compile(r"税率/征收率")
 
 
 def _pdf_text(pdf_path: Path) -> str:
@@ -206,9 +216,13 @@ def extract_tax_rate_text(text: str, total: str | None = None) -> str | None:
                 tax = Decimal(tax_match.group(1).replace(",", ""))
                 base = Decimal(total) - tax
                 if base > 0:
-                    return _snap_rate(float(tax / base * 100))
-        except (InvalidOperation, ValueError):
-            return None
+                    snapped = _snap_rate(float(tax / base * 100))
+                    if snapped:
+                        return snapped
+                    # 反推出的比例不在常见档位（比如「税额」表头抓到的是金额列）：
+                    # 不要就此放弃，后面还有「全票唯一百分数」兜底。
+        except InvalidOperation:
+            pass
     # 最后兑底：全票只有一个百分数且落在常见档位时就认它
     # （住宿/增值税发票常见：税率写在表格里，与金额相邻）
     percents = set()
@@ -223,6 +237,12 @@ def extract_tax_rate_text(text: str, total: str | None = None) -> str | None:
             continue
     if len(percents) == 1:
         return percents.pop()
+    # 免税 / 不征税：税率栏印 `*`，没有百分数也没有税额数字可依 → 税率 0。
+    # 必须放在常规识别之后：万一免税票的备注里带了别的百分数，仍按常规优先。
+    if _TAX_FREE_RE.search(compact) or _STAR_RATE_RE.search(compact):
+        return "0"
+    if _RATE_HEADER_RE.search(compact) and not _PCT_RE.search(text):
+        return "0"
     return None
 
 

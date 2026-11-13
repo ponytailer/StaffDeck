@@ -126,7 +126,7 @@ _CATEGORIES = [
     {"key": "flight", "scene": "境内机票", "keywords": ["航空运输电子客票行程单", "机票"]},
     {"key": "train", "scene": "境内火车票", "keywords": ["铁路电子客票", "火车"]},
 ]
-_RATE_MAP = {"13": "13%", "9": "9%", "6": "6%", "3": "3%"}
+_RATE_MAP = {"0": "普通发票", "13": "13%", "9": "9%", "6": "6%", "3": "3%"}
 
 
 def _patch_texts(monkeypatch, texts):
@@ -259,6 +259,43 @@ def test_tax_rate_from_invoice_table_row() -> None:
         "*生产生活服务*住宿 707.55 6% 42.45 价税合计（小写）¥750.00"
     )
     assert invoice_amount.extract_tax_rate_text(text, "750.00") == "6"
+
+
+def test_tax_rate_zero_for_tax_free_invoice() -> None:
+    """免税/不征税票：税率/税额栏印 `*`，票面没有任何百分数与税额数字。
+
+    真实案例：联通「*电信服务*通信服务费」367 元数电普票，税率栏 `*`，
+    之前识别不出 → 面板拿空税率去同名匹配，被代填成「电子普通发票 13%」。
+    """
+    # 版式①：金额行紧跟 **（税率栏 + 税额栏都是星号）
+    text = (
+        "电子发票（普通发票） 项目名称 规格型号 单 位 数 量 单 价 金 额 税率/征收率 税 额 "
+        "*电信服务*通信服务费 无 个 1 367 367.00 * * 合计 ¥367.00 价税合计（小写）¥367.00"
+    )
+    assert invoice_amount.extract_tax_rate_text(text, "367.00") == "0"
+    # 版式②：票面直接写「免税」（备注栏常见）
+    assert invoice_amount.extract_tax_rate_text("…货物 免税… 价税合计（小写）¥88.00", "88.00") == "0"
+    # 版式③：有「税率/征收率」表头但全文无百分数（星号被版式打散时兜底）
+    assert invoice_amount.extract_tax_rate_text(
+        "税率/征收率 税 额 *电信服务*费 1 100 100.00 * *", "100.00"
+    ) == "0"
+    # 正常票不受影响：有百分数时仍按常规识别
+    assert invoice_amount.extract_tax_rate_text(
+        "税率/征收率 税 额 *服务*费 707.55 6% 42.45", "750.00"
+    ) == "6"
+
+
+def test_tax_free_invoice_row_uses_zero_rate_type(monkeypatch) -> None:
+    """免税票生成的明细行：税率 0 + OA 发票类型走「普通发票」搜索词。"""
+    text = (
+        "电子发票（普通发票） 税率/征收率 税 额 "
+        "*电信服务*通信服务费 无 个 1 367 367.00 * * 价税合计（小写）¥367.00"
+    )
+    _patch_texts(monkeypatch, {b"t": text})
+    result = invoice_amount.parse_invoice_uploads([("a.pdf", b"t")], None, _RATE_MAP, "")
+    row = result["rows"][0]
+    assert row["tax_rate"] == "0"
+    assert row["invoice_type"] == "普通发票"
 
 
 def test_category_default_tax_rate_used_when_invoice_has_none(monkeypatch) -> None:

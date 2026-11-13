@@ -1840,16 +1840,23 @@
   function invoiceTypeValueFromSearch(name, rate) {
     if (!name) return '';
     var opts = PANEL_CFG.invoice_types || [];
-    var exact = '';
     var first = '';
+    var named = 0;
     var hasRate = rate !== undefined && rate !== null && rate !== '';
     for (var i = 0; i < opts.length; i++) {
       var isName = String(opts[i].search || opts[i].value) === String(name) || String(opts[i].value) === String(name);
       if (!isName) continue;
+      named += 1;
       if (!first) first = String(opts[i].value);
-      if (hasRate && String(opts[i].tax_rate || '') === String(rate)) { exact = String(opts[i].value); break; }
+      if (hasRate && String(opts[i].tax_rate || '') === String(rate)) { return String(opts[i].value); }
     }
-    return exact || first;
+    // 同名多档位时不能乱挑一个交差：
+    // ① 带着税率却找不到同档（免税票识别成 0%，而「电子普通发票」下没有 0% 档）
+    // ② 没带税率、同名又不止一个（档位本身就是待定项，挑谁都是猜）
+    // 两种情况都交还空值，让调用方走兜底（matchInvoiceType → 0%）。
+    // 此前会返回同名第一个档位（常见 13%），一张免税通信服务费就这样被代填成 13%。
+    if (hasRate) return '';
+    return named === 1 ? first : '';
   }
 
   /** 面板里某个发票类型选项对应的 OA 搜索词（发给 OA 用）。 */
