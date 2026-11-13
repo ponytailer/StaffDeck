@@ -29,7 +29,10 @@ tool result：
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
+
+from app.knowledge.image_refs import build_image_refs, rewrite_image_refs
 
 #: 内联载荷（``data`` 的序列化长度）上限。与 ``read_file`` 的 25KB 单次上限同量级：
 #: 模型一次就能读完，不再需要「指针 → 读文件 → 读不全 → 重搜」的往返。
@@ -120,9 +123,18 @@ def compact_knowledge_search_payload(
     ]
     content_limit = KNOWLEDGE_EVIDENCE_CONTENT_CHAR_LIMIT
     concept_limit = KNOWLEDGE_CONCEPT_CONTENT_CHAR_LIMIT
+    # 图片编号必须在任何裁剪之前定下来：下面的预算循环会用不同 content_limit
+    # 反复投影，而 _clip_keeping_images 会把被截掉的图补到末尾——按裁剪后正文
+    # 编号会让同一张图在不同轮次换号，模型引用的 {{img:2}} 指向另一张图。
+    image_index, image_legend = build_image_refs(payload)
     while True:
         compacted = _project(
-            payload, evidence, content_limit=content_limit, concept_limit=concept_limit
+            payload,
+            evidence,
+            content_limit=content_limit,
+            concept_limit=concept_limit,
+            image_index=image_index,
+            image_legend=image_legend,
         )
         if serialized_chars(compacted) <= max(1, max_chars):
             return compacted
@@ -137,6 +149,8 @@ def compact_knowledge_search_payload(
                         evidence,
                         content_limit=richer_limit,
                         concept_limit=KNOWLEDGE_CONCEPT_CONTENT_CHAR_LIMIT,
+                        image_index=image_index,
+                        image_legend=image_legend,
                     )
                 )
                 if serialized_chars(richer) <= max(1, max_chars):
@@ -227,24 +241,36 @@ def _project(
     *,
     content_limit: int,
     concept_limit: int,
+    image_index: dict[str, int] | None = None,
+    image_legend: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     titles = _document_titles(payload)
     has_evidence = bool(evidence)
+    index = image_index or {}
     # evidence_pack 为空时 chunk 层是唯一的引用来源，必须带上正文。
     chunk_content_limit = 0 if has_evidence else content_limit
-    return {
+    projected: dict[str, Any] = {
         "chunk_count": len(payload.get("chunks") or []),
         "chunks": [
             entry
             for item in payload.get("chunks") or []
             if isinstance(item, dict)
-            for entry in [_chunk_entry(item, titles, content_limit=chunk_content_limit)]
+            for entry in [
+                _chunk_entry(
+                    item,
+                    titles,
+                    content_limit=chunk_content_limit,
+                    image_index=index,
+                )
+            ]
             if entry
         ],
         "evidence_pack": [
             entry
             for item in evidence
-            for entry in [_evidence_entry(item, content_limit=content_limit)]
+            for entry in [
+                _evidence_entry(item, content_limit=content_limit, image_index=index)
+            ]
             if entry
         ],
         "selected_documents": [
@@ -265,7 +291,9 @@ def _project(
             entry
             for item in payload.get("selected_concepts") or []
             if isinstance(item, dict)
-            for entry in [_concept_entry(item, content_limit=concept_limit)]
+            for entry in [
+                _concept_entry(item, content_limit=concept_limit, image_index=index)
+            ]
             if entry
         ],
         "okf_citations": [
@@ -281,6 +309,11 @@ def _project(
             if entry
         ],
     }
+    # 只有真的带图才加这个键：空列表既占预算，也会让「无图的库」多出一个
+    # 模型需要理解的无意义字段。
+    if image_legend:
+        projected["image_refs"] = [dict(item) for item in image_legend]
+    return projected
 
 
 def _chunk_entry(
@@ -288,6 +321,7 @@ def _chunk_entry(
     titles: dict[str, str],
     *,
     content_limit: int,
+    image_index: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     document_id = str(item.get("document_id") or "").strip()
@@ -310,13 +344,20 @@ def _chunk_entry(
             key: metadata[key] for key in _CHUNK_METADATA_KEYS if metadata.get(key) not in (None, "", [], {})
         },
     }
-    content = _clip(item.get("content"), content_limit)
+    content = rewrite_image_refs(
+        _clip_keeping_images(item.get("content"), content_limit), image_index or {}
+    )
     if content:
         entry["content"] = content
     return _drop_empty(entry)
 
 
-def _evidence_entry(item: dict[str, Any], *, content_limit: int) -> dict[str, Any]:
+def _evidence_entry(
+    item: dict[str, Any],
+    *,
+    content_limit: int,
+    image_index: dict[str, int] | None = None,
+) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "chunk_id": str(item.get("chunk_id") or item.get("id") or "").strip(),
         "document_id": item.get("document_id"),
@@ -324,7 +365,10 @@ def _evidence_entry(item: dict[str, Any], *, content_limit: int) -> dict[str, An
         "source_path": item.get("source_path"),
         "section_path": item.get("section_path"),
         "summary": _clip(item.get("summary"), KNOWLEDGE_SUMMARY_CHAR_LIMIT),
-        "content": _clip(item.get("content") or item.get("excerpt"), content_limit),
+        "content": rewrite_image_refs(
+            _clip_keeping_images(item.get("content") or item.get("excerpt"), content_limit),
+            image_index or {},
+        ),
         "relevance_score": item.get("relevance_score"),
         "confidence_reason": item.get("confidence_reason"),
         "related_group_id": item.get("related_group_id"),
@@ -372,7 +416,12 @@ def _bucket_entry(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _concept_entry(item: dict[str, Any], *, content_limit: int) -> dict[str, Any]:
+def _concept_entry(
+    item: dict[str, Any],
+    *,
+    content_limit: int,
+    image_index: dict[str, int] | None = None,
+) -> dict[str, Any]:
     source_refs = item.get("source_refs") if isinstance(item.get("source_refs"), list) else []
     return _drop_empty(
         {
@@ -380,7 +429,10 @@ def _concept_entry(item: dict[str, Any], *, content_limit: int) -> dict[str, Any
             "type": item.get("type"),
             "title": item.get("title"),
             "description": _clip(item.get("description"), KNOWLEDGE_SUMMARY_CHAR_LIMIT),
-            "content": _clip(item.get("content") or item.get("content_md"), content_limit),
+            "content": rewrite_image_refs(
+                _clip(item.get("content") or item.get("content_md"), content_limit),
+                image_index or {},
+            ),
             "source_refs": [
                 {
                     key: ref[key]
@@ -423,6 +475,31 @@ def _page_label(metadata: dict[str, Any]) -> str:
     if not section_path:
         return ""
     return section_path.rsplit("/", 1)[-1].strip()
+
+
+_IMAGE_LINE_PATTERN = re.compile(r"!\[[^\]]*\]\([^)\s]*\)")
+
+
+def _clip_keeping_images(value: Any, limit: int) -> str:
+    """裁剪正文，但把图片引用原样留住。
+
+    图片是答案的一部分（原文档配图），不能因为正文超预算就被截断丢掉——那样
+    模型就再也拿不到这张图。被裁掉的图片引用按出现顺序补在末尾，最多 3 张。
+    """
+
+    text = str(value or "").strip()
+    clipped = _clip(text, limit)
+    if clipped == text or not text:
+        return clipped
+    kept = set(_IMAGE_LINE_PATTERN.findall(clipped))
+    missing = [
+        token
+        for token in _IMAGE_LINE_PATTERN.findall(text)
+        if token not in kept
+    ][:3]
+    if not missing:
+        return clipped
+    return f"{clipped}{''.join(chr(10) + token for token in missing)}"
 
 
 def _clip(value: Any, limit: int) -> str:

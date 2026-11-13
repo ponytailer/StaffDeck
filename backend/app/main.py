@@ -21,6 +21,7 @@ from app.api import (
     general_skill_shares,
     general_skills,
     knowledge,
+    knowledge_assets,
     knowledge_bases,
     laya,
     memories,
@@ -173,6 +174,7 @@ app.include_router(general_skills.router)
 app.include_router(general_skill_shares.router)
 app.include_router(general_skill_shares.public_router)
 app.include_router(knowledge_bases.router)
+app.include_router(knowledge_assets.router)
 app.include_router(knowledge.router)
 app.include_router(skills.router)
 app.include_router(static_assets.router)

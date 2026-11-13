@@ -58,6 +58,7 @@ from app.knowledge.schema import (
     KnowledgeBaseUpdateRequest,
 )
 from app.knowledge.route_cache import invalidate_knowledge_base
+from app.knowledge.assets import purge_knowledge_base_assets
 from app.knowledge.okf import (
     build_okf_for_document,
     export_okf_bundle,
@@ -996,6 +997,9 @@ def delete_knowledge_base(
         bulk_delete_matching(
             db, model, tenant_id=tenant_id, knowledge_base_id=row.id
         )
+    # 图片资产最后回收：判断「还有没有别的库在用这张图」的依据是现存 chunk 里的
+    # kasset 引用，所以必须在上面这批 chunk 删完之后再做。
+    purge_knowledge_base_assets(db, tenant_id=tenant_id, knowledge_base_id=row.id)
     bulk_delete_matching(
         db,
         AgentResourceBinding,
