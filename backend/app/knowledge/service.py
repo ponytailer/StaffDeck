@@ -752,6 +752,15 @@ class KnowledgeService:
                     "target_chars": EVIDENCE_CHUNK_CHARS,
                     "section_target_chars": SECTION_TARGET_CHARS,
                 },
+                # 抽图结果落库：一次入库到底「抽到几张」和「存下几张」分开记。
+                # 两者不一致说明是保存失败（单图存不下会被 continue 吞掉）；
+                # extracted=0 则说明解析层根本没看到图。没有这两个数时，线上
+                # 出现「图不显示」只能靠翻代码和猜——2026-11-13 就踩过一次。
+                "image_stats": {
+                    "extracted": len(parsed.images),
+                    "saved": len(assets_by_index),
+                    "file_type": file_type,
+                },
                 "bucket_quality": [
                     {
                         "bucket_id": bucket.id,
